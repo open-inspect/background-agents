@@ -114,10 +114,12 @@ two decides. An unparseable ceiling is ignored with a log line and treated as 10
 probe fails, the sandbox stays on the subscription and relies on response headers instead.
 
 Requests are sent to the platform with the model unchanged. If the platform refuses the key itself
-(`401` or `403`), that turn fails once with an error naming `OPENAI_API_KEY_FALLBACK`, and the
-sandbox stops using the key: later turns go to the subscription only, as if no key were configured,
-until a new session starts with a working key. Any other platform failure clears the latch, and the
-next turn retries the subscription instead of remaining on a failing paid path.
+(`401`), that turn fails once with an error naming `OPENAI_API_KEY_FALLBACK`, and the sandbox stops
+using the key: later turns go to the subscription only, as if no key were configured, until a new
+session starts with a working key. Any other platform failure, including a `403` (which can refuse
+one model or request while the key still serves others), is returned to that turn as the platform
+sent it and clears the latch, and the next turn retries the subscription instead of remaining on a
+failing paid path; the key stays available for later spillover.
 
 Every switch is logged in the sandbox logs as
 `[codex-auth-plugin] spilling OpenAI traffic over to OPENAI_API_KEY_FALLBACK: <reason>`.

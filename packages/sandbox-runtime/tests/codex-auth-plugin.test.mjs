@@ -1255,12 +1255,61 @@ test("a fallback key refused while latched is not tried again", async () => {
   const loaded = await loadProxy("revoked-while-latched");
 
   assert.equal((await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT)).status, 200);
-  platformStatus = 403;
+  platformStatus = 401;
   const refused = await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT);
-  assert.equal(refused.status, 403);
+  assert.equal(refused.status, 401);
   assert.equal((await refused.json()).error.code, "fallback_key_rejected");
   assert.equal(await (await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT)).text(), "codex-ok");
   assert.equal(platformCalls(calls).length, 2);
+});
+
+test("a 403 arriving while latched is returned as it arrived and keeps the key", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-fallback";
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  let platformStatus = 200;
+  const calls = stubFetch({
+    codex: () => (codexCalls(calls).length === 1 ? usageLimitResponse() : new Response("codex-ok")),
+    platform: () =>
+      new Response("model access denied", {
+        status: platformStatus,
+        headers: { "x-platform": "403-body" },
+      }),
+  });
+  const loaded = await loadProxy("forbidden-while-latched");
+
+  assert.equal((await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT)).status, 200);
+  platformStatus = 403;
+  const forbidden = await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT);
+  assert.equal(forbidden.status, 403);
+  assert.equal(forbidden.headers.get("x-platform"), "403-body");
+  assert.equal(await forbidden.text(), "model access denied");
+  // Like any other platform failure, the 403 clears the latch: the next turn
+  // retries the subscription rather than staying on a failing paid path.
+  assert.equal(await (await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT)).text(), "codex-ok");
+  assert.equal(platformCalls(calls).length, 2);
+});
+
+test("a 403 for one request leaves the key usable for the next spillover", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-fallback";
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  const calls = stubFetch({
+    codex: () => usageLimitResponse(),
+    platform: () =>
+      platformCalls(calls).length === 1
+        ? new Response("model access denied", { status: 403 })
+        : new Response("platform-ok"),
+  });
+  const loaded = await loadProxy("forbidden-then-ok");
+
+  const forbidden = await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT);
+  assert.equal(forbidden.status, 403);
+  assert.equal(await forbidden.text(), "model access denied");
+
+  const next = await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT);
+  assert.equal(next.status, 200);
+  assert.equal(await next.text(), "platform-ok");
+  assert.equal(platformCalls(calls).length, 2);
+  assert.equal(platformCalls(calls)[1].headers.get("authorization"), "Bearer sk-fallback");
 });
 
 test("a key refused by one request is not sent by a request already in flight", async () => {

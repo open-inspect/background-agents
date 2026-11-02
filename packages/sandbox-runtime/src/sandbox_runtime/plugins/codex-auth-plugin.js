@@ -549,9 +549,10 @@ function usableFallbackKey() {
 
 /**
  * Stop using a fallback key the platform refused, and answer the turn that
- * found out with one error that says so. 401 and 403 do not clear on retry, and
- * OpenCode does not retry them, so the turn fails once; later turns go to the
- * subscription only, exactly as if no fallback key were configured.
+ * found out with one error that says so. Only a 401 means the key itself was
+ * refused; it does not clear on retry, and OpenCode does not retry it, so the
+ * turn fails once; later turns go to the subscription only, exactly as if no
+ * fallback key were configured.
  */
 function rejectFallbackKey(response) {
   response.body?.cancel().catch(() => {});
@@ -629,10 +630,12 @@ async function fetchFallback(fallbackUrl, baseInit, headers, apiKey, reason = nu
     if (reason) latchSpillover(reason);
     return response;
   }
-  if (response.status === 401 || response.status === 403) return rejectFallbackKey(response);
+  if (response.status === 401) return rejectFallbackKey(response);
 
   // A platform outage or unsupported model must not strand the sandbox on a
-  // permanently failing paid path.
+  // permanently failing paid path. A 403 is answered here too, as it arrived:
+  // it can refuse one model or request while the key still serves others, so it
+  // does not take the key out of play.
   if (stillCurrent()) {
     recoverSubscription(
       `request failed with status ${response.status}; retrying the subscription on the next turn`
