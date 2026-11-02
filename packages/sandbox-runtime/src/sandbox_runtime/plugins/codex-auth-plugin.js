@@ -153,6 +153,11 @@ const ALLOWED_MODELS = new Set([
 // Spillover state is module-level, so it is per sandbox: each sandbox measures
 // the ceiling and latches on its own, and nothing coordinates sandboxes sharing
 // one ChatGPT account.
+//
+// The ceiling is a soft bound. Each request is checked against the latest
+// usage reading and nothing reserves capacity, so concurrent requests within
+// one sandbox, as well as separate sandboxes, can run past it before a
+// response reports the window over the ceiling and latches spillover.
 
 // Latched for the rest of the sandbox's life once the subscription is spent, so
 // a doomed Codex call is not repeated on every later turn. A window that resets
@@ -718,23 +723,34 @@ export const CodexAuthProxy = async (input) => {
 
             const fallbackUrl = fallbackEndpoint(parsed);
 
-            if (spilloverLatched) {
-              return fetchFallback(fallbackUrl, baseInit, headers, fallbackKey);
-            }
+            // The subscription leg, built from the normalized request. Used
+            // directly, and by spillOver when the key was refused after this
+            // request read it.
+            const sendToSubscription = async () => {
+              const { accessToken, accountId } = await ensureAccessToken(getAuth, setAuth);
+              headers.set("authorization", `Bearer ${accessToken}`);
+              if (accountId) headers.set("ChatGPT-Account-Id", accountId);
+              else headers.delete("chatgpt-account-id");
+              return fetch(CODEX_API_ENDPOINT, { ...baseInit, headers });
+            };
+
+            // `fallbackKey` was read before this request's awaits, and a
+            // concurrent request may have had it refused since. Re-check at the
+            // moment of sending, so a refused key is never sent again.
+            const spillOver = (reason) =>
+              fallbackKeyRejected
+                ? sendToSubscription()
+                : fetchFallback(fallbackUrl, baseInit, headers, fallbackKey, reason);
+
+            if (spilloverLatched) return spillOver(null);
 
             let accessToken;
             let accountId;
             try {
               ({ accessToken, accountId } = await ensureAccessToken(getAuth, setAuth));
             } catch (error) {
-              if (!isPermanentSubscriptionTokenFailure(error)) throw error;
-              return fetchFallback(
-                fallbackUrl,
-                baseInit,
-                headers,
-                fallbackKey,
-                `subscription token unavailable (${error.message})`
-              );
+              if (!isPermanentSubscriptionTokenFailure(error) || fallbackKeyRejected) throw error;
+              return spillOver(`subscription token unavailable (${error.message})`);
             }
 
             headers.set("authorization", `Bearer ${accessToken}`);
@@ -768,20 +784,11 @@ export const CodexAuthProxy = async (input) => {
                 }
               }
               if (used !== null && used >= maxPercent) {
-                return fetchFallback(
-                  fallbackUrl,
-                  baseInit,
-                  headers,
-                  fallbackKey,
-                  `subscription usage at ${used}% of the ${maxPercent}% ceiling`
-                );
+                return spillOver(`subscription usage at ${used}% of the ${maxPercent}% ceiling`);
               }
             }
 
-            const response = await fetch(CODEX_API_ENDPOINT, {
-              ...baseInit,
-              headers,
-            });
+            const response = await fetch(CODEX_API_ENDPOINT, { ...baseInit, headers });
 
             // A stream that has already started cannot be replayed, so a spent
             // window observed on a successful call only redirects the next one.
@@ -796,7 +803,9 @@ export const CodexAuthProxy = async (input) => {
             // is an error, not an empty 429.
             const bodyText = await response.clone().text();
             const reason = spentReason(response, { maxPercent, bodyText });
-            if (!reason || typeof body !== "string") return response;
+            // A non-string body was streamed to the subscription and cannot be
+            // sent again; a refused key leaves the subscription's answer as is.
+            if (!reason || typeof body !== "string" || fallbackKeyRejected) return response;
             response.body?.cancel().catch(() => {});
             return fetchFallback(fallbackUrl, baseInit, headers, fallbackKey, reason);
           },

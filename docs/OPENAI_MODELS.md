@@ -122,11 +122,12 @@ next turn retries the subscription instead of remaining on a failing paid path.
 Every switch is logged in the sandbox logs as
 `[codex-auth-plugin] spilling OpenAI traffic over to OPENAI_API_KEY_FALLBACK: <reason>`.
 
-The ceiling and the latch are per sandbox, not shared across sessions. Each sandbox measures the
-account's usage and decides on its own, so concurrent sessions on one ChatGPT account can together
-run past the ceiling before each of them notices. After a successful spillover, the latch lasts for
-the rest of that sandbox's life even if the subscription window resets under it; the next sandbox
-measures afresh.
+The ceiling is a soft bound, and it and the latch are per sandbox, not shared across sessions. Each
+request is checked against the latest usage reading and nothing reserves capacity, so concurrent
+requests within one sandbox, as well as separate sandboxes on one ChatGPT account, can run past the
+ceiling before a response reports it and spillover latches. After a successful spillover, the latch
+lasts for the rest of that sandbox's life even if the subscription window resets under it; the next
+sandbox measures afresh.
 
 ---
 

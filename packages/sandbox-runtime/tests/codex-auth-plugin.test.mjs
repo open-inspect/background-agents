@@ -1263,6 +1263,68 @@ test("a fallback key refused while latched is not tried again", async () => {
   assert.equal(platformCalls(calls).length, 2);
 });
 
+test("a key refused by one request is not sent by a request already in flight", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-rejected";
+  process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT = "80";
+  const calls = stubFetch({
+    codex: () => new Response("codex-ok", { status: 200 }),
+    usage: () => usageResponse(10, 85),
+    platform: () =>
+      Response.json({ error: { message: "Incorrect API key provided" } }, { status: 401 }),
+  });
+  const loaded = await loadProxy("rejected-key-in-flight");
+
+  // B reads the key, then waits on its own streamed body while A runs the
+  // whole 85%-against-80% path and has the key refused.
+  let finishBody;
+  const bodyReady = new Promise((resolve) => (finishBody = resolve));
+  const streamed = new ReadableStream({
+    async start(controller) {
+      await bodyReady;
+      controller.enqueue(new TextEncoder().encode(REQUEST_INIT.body));
+      controller.close();
+    },
+  });
+  const pendingB = loaded.fetch(
+    new Request(MODEL_REQUEST_URL, {
+      method: "POST",
+      body: streamed,
+      duplex: "half",
+      headers: REQUEST_INIT.headers,
+    })
+  );
+
+  const a = await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT);
+  assert.equal((await a.json()).error.code, "fallback_key_rejected");
+
+  finishBody();
+  const b = await pendingB;
+  assert.equal(await b.text(), "codex-ok", "B goes to the subscription instead");
+  assert.equal(platformCalls(calls).length, 1, "the refused key is sent exactly once");
+  assert.equal(codexCalls(calls)[0].body, REQUEST_INIT.body);
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+});
+
+test("a streamed body sent to the subscription is never resent on a 429", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-fallback";
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  const calls = stubFetch({ codex: () => usageLimitResponse() });
+  const loaded = await loadProxy("streamed-init-body");
+
+  // A URL-shaped call hands its stream to the subscription leg as is, so the
+  // stream is spent once that leg is sent and a spillover could only send an
+  // empty or locked body. The 429 is returned instead.
+  const response = await loaded.fetch(MODEL_REQUEST_URL, {
+    method: "POST",
+    duplex: "half",
+    headers: REQUEST_INIT.headers,
+    body: new Response(REQUEST_INIT.body).body,
+  });
+  assert.equal(response.status, 429);
+  assert.equal(codexCalls(calls).length, 1);
+  assert.equal(platformCalls(calls).length, 0);
+});
+
 /**
  * Every control-plane broker error code, classified. Read from the control
  * plane's own union so a new code fails here until someone decides whether it
