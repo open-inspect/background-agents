@@ -810,27 +810,110 @@ test("never spends the fallback key on a non-generation request", async () => {
   let latched = false;
   const calls = stubFetch({
     codex: () => (latched ? new Response("codex-ok", { status: 200 }) : usageLimitResponse()),
+    other: () => new Response("retrieved", { status: 200 }),
   });
   const loaded = await loadProxy("non-generation-latched");
 
   assert.equal(await (await loaded.fetch(MODEL_REQUEST_URL, REQUEST_INIT)).text(), "platform-ok");
   latched = true;
 
-  // Retrieving an earlier response or calling a lookalike path is not a
-  // generation call, so even a latched sandbox sends it through the unchanged
-  // subscription proxy rather than replaying it on the paid key.
+  // Retrieving an earlier response is not a generation call, so even a latched
+  // sandbox sends it to its own URL on the subscription's credential rather than
+  // replaying it on the paid key or rewriting it to the Codex endpoint.
   const before = calls.length;
+  const response = await loaded.fetch("https://api.openai.com/v1/responses/resp_123", {
+    method: "GET",
+  });
+  assert.equal(await response.text(), "retrieved");
+  const sent = calls.slice(before).filter((call) => !call.url.startsWith("https://control.test/"));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "https://api.openai.com/v1/responses/resp_123");
+  assert.equal(sent[0].method, "GET");
+  assert.equal(sent[0].headers.get("authorization"), "Bearer cp-access");
+});
+
+test("with a fallback key, a lookalike of a generation path is not one", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-fallback";
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  const calls = stubFetch({ other: () => new Response("lookalike", { status: 200 }) });
+  const loaded = await loadProxy("non-generation-lookalike");
+
+  const response = await loaded.fetch("https://api.openai.com/v1/chat/completionsXYZ", {
+    method: "POST",
+    body: "{}",
+  });
+  assert.equal(await response.text(), "lookalike");
+  const sent = calls.filter((call) => !call.url.startsWith("https://control.test/"));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "https://api.openai.com/v1/chat/completionsXYZ");
+  assert.equal(sent[0].headers.get("authorization"), "Bearer cp-access");
+});
+
+test("with a fallback key, a non-generation call drops an inherited account id", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-fallback";
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  const calls = stubFetch({
+    broker: () => Response.json({ accessToken: "cp-access", expiresIn: 3600 }),
+    other: () => new Response("retrieved", { status: 200 }),
+  });
+  const loaded = await loadProxy("non-generation-stale-account");
+
+  // The broker answered without an account id, so a copied header would send
+  // this token against someone else's account.
+  await loaded.fetch("https://api.openai.com/v1/responses/resp_123", {
+    method: "GET",
+    headers: {
+      authorization: "Bearer opencode-oauth-dummy-key",
+      "chatgpt-account-id": "acct-stale",
+    },
+  });
+  const call = calls.at(-1);
+  assert.equal(call.url, "https://api.openai.com/v1/responses/resp_123");
+  assert.equal(call.headers.get("authorization"), "Bearer cp-access");
+  assert.equal(call.headers.get("chatgpt-account-id"), null);
+});
+
+test("with a fallback key, a non-generation call keeps fetch's own timeout", async () => {
+  process.env.OPENAI_API_KEY_FALLBACK = "sk-fallback";
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  const calls = stubFetch({ other: () => new Response("retrieved", { status: 200 }) });
+  const loaded = await loadProxy("non-generation-timeout");
+
+  // No generation stream here, so OpenCode's stream timeout does not bound it:
+  // disabling Bun's idle timer would let a stalled call hang forever.
   await loaded.fetch("https://api.openai.com/v1/responses/resp_123", { method: "GET" });
+  const call = calls.at(-1);
+  assert.equal(call.url, "https://api.openai.com/v1/responses/resp_123");
+  assert.notEqual(call.init.timeout, false);
+});
+
+// Pins upstream's subscription proxy, which the no-key path keeps byte for byte:
+// its substring match rewrites these to the Codex endpoint with Bun's idle timer
+// off, and keeps an inherited account id when the broker returns none.
+test("without a fallback key, non-generation calls take upstream's proxy as is", async () => {
+  delete process.env.OPENAI_API_KEY_FALLBACK;
+  delete process.env.OPENAI_SUBSCRIPTION_MAX_PERCENT;
+  const calls = stubFetch({
+    codex: () => new Response("codex-ok", { status: 200 }),
+    broker: () => Response.json({ accessToken: "cp-access", expiresIn: 3600 }),
+  });
+  const loaded = await loadProxy("no-key-non-generation");
+
+  await loaded.fetch("https://api.openai.com/v1/responses/resp_123", {
+    method: "GET",
+    headers: { "chatgpt-account-id": "acct-stale" },
+  });
   await loaded.fetch("https://api.openai.com/v1/chat/completionsXYZ", {
     method: "POST",
     body: "{}",
   });
-  const sent = calls.slice(before).filter((call) => !call.url.startsWith("https://control.test/"));
+  const sent = codexCalls(calls);
   assert.equal(sent.length, 2);
   for (const call of sent) {
-    assert.equal(call.url, "https://chatgpt.com/backend-api/codex/responses");
+    assert.deepEqual(call.init, { timeout: false });
     assert.equal(call.headers.get("authorization"), "Bearer cp-access");
   }
+  assert.equal(sent[0].headers.get("chatgpt-account-id"), "acct-stale");
 });
 
 test("a fallback that cannot be sent releases the latch", async () => {

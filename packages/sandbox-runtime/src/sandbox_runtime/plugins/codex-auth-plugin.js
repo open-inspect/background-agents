@@ -689,20 +689,38 @@ export const CodexAuthProxy = async (input) => {
         return {
           apiKey: OAUTH_DUMMY_KEY,
           async fetch(requestInput, init) {
-            // Without a usable fallback key nothing below applies, and a
-            // request that is not a generation call never spills over: both go
-            // through the subscription proxy untouched.
+            // Without a usable fallback key nothing below applies: every
+            // request goes through the subscription proxy untouched.
             const fallbackKey = usableFallbackKey();
-            const parsed = fallbackKey ? requestUrl(requestInput) : null;
-            if (!parsed || !isModelRequest(parsed)) {
-              return proxyToSubscription(requestInput, init, getAuth, setAuth);
-            }
+            if (!fallbackKey) return proxyToSubscription(requestInput, init, getAuth, setAuth);
 
+            const parsed = requestUrl(requestInput);
             const currentAuth = await getAuth();
 
             // A caller that has switched away from OAuth keeps its own
             // authorization, so the request is none of this proxy's business.
             if (currentAuth.type !== "oauth") return fetch(requestInput, init);
+
+            // Anything that is not a generation call never spills over and
+            // keeps its original shape: its URL is not rewritten to the Codex
+            // endpoint, and flattening it would UTF-8-decode an arbitrary body
+            // and drop Request-level options, so a retrieval or administrative
+            // call would stop being equivalent to fetch(request). Only the
+            // placeholder credential opencode signed with is replaced.
+            if (!isModelRequest(parsed)) {
+              const proxied = new Request(requestInput, init);
+              // A token and the account it belongs to must travel together:
+              // ensureAccessToken can answer without an account id, so an
+              // inherited header would pair a fresh token with a stale one.
+              proxied.headers.delete("authorization");
+              proxied.headers.delete("chatgpt-account-id");
+              const { accessToken, accountId } = await ensureAccessToken(getAuth, setAuth);
+              proxied.headers.set("authorization", `Bearer ${accessToken}`);
+              if (accountId) proxied.headers.set("ChatGPT-Account-Id", accountId);
+              // No generation stream here, so OpenCode's stream timeout does not
+              // bound it: Bun's fetch timeout stays in force.
+              return fetch(proxied);
+            }
 
             const { headers, inherited, method, body, signal } = await normalizeRequest(
               requestInput,
