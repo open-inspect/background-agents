@@ -23,11 +23,11 @@ function generateTestEncryptionKey(): string {
   return Buffer.from(key).toString("base64");
 }
 
-// vitest 4 / @cloudflare/vitest-plugin v0.16 replaced the
-// `defineWorkersConfig` + `test.poolOptions.workers` setup with the
-// `cloudflareTest()` Vite plugin, configured via `defineConfig` from
+// vitest 4 replaced the `@cloudflare/vitest-pool-workers` `defineWorkersConfig` +
+// `test.poolOptions.workers` setup with the `cloudflareTest()` Vite plugin (the
+// package is now `@cloudflare/vitest-plugin`), configured via `defineConfig` from
 // "vitest/config". The old `singleWorker`/`isolatedStorage` poolOptions are not
-// configured here; pool-workers isolates D1 storage per test FILE, so files run
+// configured here; the plugin isolates D1 storage per test FILE, so files run
 // in parallel without cross-file interference. Within a file, tests share one D1
 // instance and rely on explicit `cleanD1Tables()` cleanup (see
 // test/integration/cleanup.ts) for isolation.
