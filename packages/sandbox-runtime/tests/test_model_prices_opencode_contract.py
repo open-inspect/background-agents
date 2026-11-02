@@ -1,6 +1,6 @@
 """Opt-in comparison: OPENCODE_TEST_BINARY=/path/to/opencode pytest ... -v.
 
-Runs real OpenCode 1.18.29 against a loopback Responses fixture with the frozen
+Runs real OpenCode 1.19.5 against a loopback Responses fixture with the frozen
 catalog fixture. Token buckets and arithmetic agree, but Codex honors the
 catalog's 272k tier instead of OpenCode's legacy over-200k fallback.
 """
@@ -167,7 +167,7 @@ def opencode(tmp_path):
 
 
 def test_codex_pricing_uses_published_tiers_instead_of_opencode_legacy_fallback(opencode):
-    assert subprocess.check_output([BINARY, "--version"], text=True).strip() == "1.18.29"
+    assert subprocess.check_output([BINARY, "--version"], text=True).strip() == "1.19.5"
     session = opencode("/session", {"title": "Pricing contract"})["id"]
     for _ in CASES:
         result = opencode(

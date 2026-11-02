@@ -18,11 +18,11 @@ In a second terminal:
 ```sh
 uv venv --python 3.12 .venv-managed-mcp
 uv pip install --python .venv-managed-mcp/bin/python -e 'packages/sandbox-runtime[dev]'
-npm install --prefix /tmp/open-inspect-managed-mcp-tools opencode-ai@1.18.29
+npm install --prefix /tmp/open-inspect-managed-mcp-tools opencode-ai@1.19.5
 .venv-managed-mcp/bin/python scripts/managed-mcp/native-canary.py --opencode /tmp/open-inspect-managed-mcp-tools/node_modules/.bin/opencode
 ```
 
-The canary verifies OpenCode **1.18.29** and Claude Agent SDK **0.2.168**, creates isolated native
+The canary verifies OpenCode **1.19.5** and Claude Agent SDK **0.2.168**, creates isolated native
 HOME/config/data directories, and makes no model inference calls. It checks native deferred OpenCode
 connect, fresh personal sessions/catalogs for both users in both clients, teardown after route
 eligibility closes, fixture reader denial/operator success, and a single mutation despite a failed

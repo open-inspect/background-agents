@@ -151,7 +151,7 @@ async def check(binary: str, directory: str, origin: str, port: int) -> dict:
                 following = await wrapped.run_prompt(prompt, None)
                 assert not following.success and "restart" in following.error
                 return {
-                    "opencode": "1.18.29",
+                    "opencode": "1.19.5",
                     "after_disconnect": "disabled",
                     "after_late_initialize": "connected",
                     "runtime_poisoned": wrapped.cleanup_failed,
@@ -169,7 +169,7 @@ async def check(binary: str, directory: str, origin: str, port: int) -> dict:
 
 
 async def main(binary: str, port: int) -> None:
-    assert subprocess.check_output([binary, "--version"], text=True).strip() == "1.18.29"
+    assert subprocess.check_output([binary, "--version"], text=True).strip() == "1.19.5"
     with (
         tempfile.TemporaryDirectory(prefix="managed-mcp-cancel-") as directory,
         ThreadingHTTPServer(("127.0.0.1", 0), DelayedMcpFixture) as fixture,
