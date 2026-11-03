@@ -7,7 +7,7 @@ import {
   type McpGrantBinding,
 } from "../db/mcp-connections";
 import type { McpServerMetadata } from "@open-inspect/shared/types/integrations";
-import { mcpDestination } from "./destination";
+import { mcpDestination, mcpDestinationInRegistrableDomain } from "./destination";
 import { McpError } from "./errors";
 
 export const MCP_CREDENTIAL_TIMEOUT_MS = 20_000;
@@ -144,7 +144,7 @@ export class McpOAuthService {
       current.redirect_uri === redirectUri
     ) {
       this.assertProfile(current);
-      mcpDestination(current.authorization_endpoint, issuer.origin);
+      mcpDestinationInRegistrableDomain(current.authorization_endpoint, issuer);
       return current;
     }
     const protectedMetadata = await protectedResourceMetadata(this.fetcher, resource);
@@ -167,11 +167,10 @@ export class McpOAuthService {
       !metadata.code_challenge_methods_supported.includes("S256")
     )
       throw new McpError("mcp_denied");
-    for (const endpoint of [
-      metadata.authorization_endpoint,
-      metadata.token_endpoint,
-      metadata.registration_endpoint,
-    ])
+    // The browser-only authorization endpoint may live elsewhere on the issuer's registrable domain;
+    // endpoints the control plane calls directly stay pinned to the issuer's exact origin.
+    mcpDestinationInRegistrableDomain(metadata.authorization_endpoint, issuer);
+    for (const endpoint of [metadata.token_endpoint, metadata.registration_endpoint])
       mcpDestination(endpoint, issuer.origin);
     const registration = z
       .object({
