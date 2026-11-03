@@ -279,6 +279,16 @@ fix instead.
   `CLAUDE_CONFIG_DIR` (`~/.openinspect/claude/skills`); repository `.claude/` settings, hooks and
   agents load through `setting_sources=["user","project"]`, the same trust boundary as the
   repository's `.openinspect/setup.sh` and `.opencode/` directory under OpenCode.
+- **Multi-repository sessions.** The agent starts in the primary checkout, so its `.claude/`
+  settings, hooks, `CLAUDE.md`, rules and skills apply as in a single-repository session. The other
+  members are passed as `--add-dir`: their skills, commands and agents (and the `enabledPlugins` and
+  `extraKnownMarketplaces` keys of their settings) load at start, so the trust boundary above covers
+  every member. Their hooks and other settings don't run, and their `CLAUDE.md` files and
+  `.claude/rules/` don't load on their own; the generated `/workspace/AGENTS.md` points at them by
+  absolute path. That file reaches the agent through the system prompt and is excluded from Claude
+  Code's native `AGENTS.md` loading (under both its path and its resolved path), so it appears once.
+  After a Bash `cd` outside the start directory and the added directories, Claude Code returns the
+  shell to the primary checkout for the next command; a chained `cd /workspace && …` works.
 - **Privacy.** The harness disables Claude Code's commit, pull request, and session-link
   attribution. It also disables nonessential Anthropic traffic, error reporting, feedback and
   surveys, and both Anthropic and OpenTelemetry usage telemetry. Model requests and Open-Inspect's

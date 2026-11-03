@@ -92,17 +92,26 @@ def build_agent_harness(
             handoff = ClaudeHarnessHandoff.read()
             session_config = _session_config_from_env()
             oauth_managed = bool(os.environ.get(OAUTH_MANAGED_ENV_VAR))
+            workspace_dir = handoff.workspace_dir or handoff.workdir
+            guidance = _repository_guidance(
+                workspace_dir, multi_repo=handoff.workspace_dir is not None
+            )
             config = ClaudeHarnessConfig(
                 workdir=handoff.workdir,
+                add_dirs=handoff.additional_dirs,
+                # The generated workspace notes arrive through the system
+                # prompt; Claude Code would also read them natively from the
+                # start directory or a parent of it.
+                claude_md_excludes=_exclude_patterns(workspace_dir / "AGENTS.md")
+                if guidance and handoff.workspace_dir is not None
+                else (),
                 config_dir=handoff.config_dir,
                 # From the bridge's own SESSION_CONFIG: MCP entries can carry
                 # credentials, and the handoff file never does.
                 mcp_servers=_mcp_servers_from(session_config),
                 default_model=str(session_config.get("model") or "claude-sonnet-4-6"),
                 oauth_managed=oauth_managed,
-                system_prompt_append=append_memory(
-                    _repository_guidance(handoff.workdir), handoff.config_dir
-                ),
+                system_prompt_append=append_memory(guidance, handoff.config_dir),
                 tools=ToolServerConfig(
                     control_plane_url=identity.control_plane_url,
                     session_id=identity.session_id,
@@ -191,14 +200,34 @@ def _mcp_servers_from(session_config: dict[str, object]) -> tuple[dict[str, obje
     return tuple(server for server in servers if isinstance(server, dict))
 
 
-def _repository_guidance(workdir: Path) -> str | None:
-    """Surface the supervisor's workspace AGENTS.md through the system prompt.
+def _exclude_patterns(path: Path) -> tuple[str, ...]:
+    """``claudeMdExcludes`` entries for ``path`` as given and as resolved.
 
-    Claude reads CLAUDE.md natively; multi-repo workspaces only carry the
-    AGENTS.md the supervisor writes, and nothing is written into repositories.
+    Claude Code matches against the path it reads, which follows the child's
+    resolved cwd; a provider that symlinks ``/workspace`` would otherwise slip
+    past. The paths are runtime-owned, so they carry no glob metacharacters.
     """
-    notes = workdir / "AGENTS.md"
-    if not notes.is_file() or (workdir / "CLAUDE.md").is_file():
+    patterns = [str(path)]
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = patterns[0]
+    if resolved not in patterns:
+        patterns.append(resolved)
+    return tuple(patterns)
+
+
+def _repository_guidance(directory: Path, *, multi_repo: bool = False) -> str | None:
+    """Surface ``directory``'s AGENTS.md through the system prompt.
+
+    ``directory`` is the multi-repo workspace when there is one, else the start
+    directory. Claude reads CLAUDE.md natively; multi-repo workspaces only carry
+    the AGENTS.md the supervisor writes, and nothing is written into repositories.
+    A stray workspace CLAUDE.md (one restored from a snapshot) would stop Claude
+    Code reading the generated notes natively, so it never suppresses them.
+    """
+    notes = directory / "AGENTS.md"
+    if not notes.is_file() or (not multi_repo and (directory / "CLAUDE.md").is_file()):
         return None
     try:
         text = notes.read_text().strip()

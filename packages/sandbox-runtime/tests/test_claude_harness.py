@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from claude_agent_sdk import (
@@ -52,9 +54,6 @@ from tests.claude_fakes import (
     _stream,
     _text_delta,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestOpen:
@@ -208,6 +207,40 @@ class TestOptions:
         assert "mcp__linear__*" in options["allowed_tools"]
         assert "mcp__local__*" in options["allowed_tools"]
         assert "Bash" in options["allowed_tools"]
+
+    async def test_single_directory_session_passes_no_extra_options(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, turns=[[_result(0.1)]])
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="hi"))
+        options = h.client.options
+        assert "add_dirs" not in options
+        assert "claudeMdExcludes" not in json.loads(options["settings"])
+
+    async def test_multi_repo_session_adds_members_and_skips_native_workspace_notes(
+        self, tmp_path: Path
+    ) -> None:
+        """The other members reach the CLI as ``--add-dir``; the workspace notes,
+        already in the system prompt, are kept out of its native AGENTS.md load."""
+        h = Harness(
+            tmp_path,
+            turns=[[_result(0.1)]],
+            add_dirs=(tmp_path / "frontend", tmp_path / "infra"),
+            claude_md_excludes=(str(tmp_path / "AGENTS.md"),),
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="hi"))
+        options = h.client.options
+        assert options["cwd"] == str(tmp_path / "repo")
+        assert options["add_dirs"] == [str(tmp_path / "frontend"), str(tmp_path / "infra")]
+        assert json.loads(options["settings"]) == {
+            "attribution": {"commit": "", "pr": "", "sessionUrl": False},
+            "feedbackDrafts": "off",
+            "feedbackSurveyRate": 0,
+            "claudeMdExcludes": [str(tmp_path / "AGENTS.md")],
+        }
+        assert options["setting_sources"] == ["user", "project"]
 
     async def test_stdout_ceiling_clears_the_whole_attachment_budget(self, tmp_path: Path) -> None:
         """One NDJSON line carries every attachment the runtime accepts.
@@ -1009,3 +1042,147 @@ class TestDefaultTranscriptLookup:
         )
         assert not _default_transcript_exists("not-a-uuid", tmp_path / "repo", config_dir)
         assert not _default_transcript_exists(session_id, tmp_path / "repo", tmp_path / "missing")
+
+    def test_finds_a_transcript_written_before_the_start_directory_moved(
+        self, tmp_path: Path
+    ) -> None:
+        """A multi-repo session started in /workspace resumes from the primary checkout."""
+        from sandbox_runtime.harness.claude import _default_transcript_exists
+
+        config_dir = tmp_path / "claude-config"
+        session_id = "617347e9-9ff5-4205-9efe-c185b3459127"
+        workspace_project = config_dir / "projects" / "-workspace"
+        workspace_project.mkdir(parents=True)
+        (workspace_project / f"{session_id}.jsonl").write_text("{}\n")
+
+        assert _default_transcript_exists(session_id, Path("/workspace/api"), config_dir)
+
+
+class TestBridgeDirectories:
+    """The bridge turns the Claude handoff into SDK options."""
+
+    @staticmethod
+    def _build(tmp_path, handoff):
+        from sandbox_runtime.harness import BridgeIdentity, build_agent_harness
+        from sandbox_runtime.harness.base import HarnessId, PromptLimits
+
+        with (
+            patch("sandbox_runtime.harness.ClaudeHarnessHandoff.read", return_value=handoff),
+            patch("sandbox_runtime.harness.claude.ClaudeHarness") as claude,
+        ):
+            build_agent_harness(
+                HarnessId.CLAUDE,
+                identity=BridgeIdentity(
+                    "sandbox", "session", "https://control.test", "token", tmp_path / "r.json"
+                ),
+                attachment_processor=MagicMock(),
+                log=MagicMock(),
+                limits=PromptLimits(60, 120, 10),
+                opencode_port=4096,
+            )
+        return claude.call_args.kwargs["config"]
+
+    def test_multi_repo_reads_workspace_notes_once(self, tmp_path):
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        workspace = tmp_path / "workspace"
+        (workspace / "api").mkdir(parents=True)
+        (workspace / "web").mkdir()
+        (workspace / "api" / "CLAUDE.md").write_text("# api rules")
+        (workspace / "AGENTS.md").write_text("# Workspace notes")
+        handoff = ClaudeHarnessHandoff(
+            workspace / "api",
+            tmp_path / "config",
+            True,
+            additional_dirs=(workspace / "web",),
+            workspace_dir=workspace,
+        )
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.workdir == workspace / "api"
+        assert config.add_dirs == (workspace / "web",)
+        # The primary's CLAUDE.md must not suppress the workspace notes.
+        assert config.system_prompt_append == "Workspace guidance (AGENTS.md):\n\n# Workspace notes"
+        assert config.claude_md_excludes == (str(workspace / "AGENTS.md"),)
+
+    def test_multi_repo_without_notes_excludes_nothing(self, tmp_path):
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        workspace = tmp_path / "workspace"
+        (workspace / "api").mkdir(parents=True)
+        handoff = ClaudeHarnessHandoff(
+            workspace / "api", tmp_path / "config", True, workspace_dir=workspace
+        )
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.system_prompt_append is None
+        assert config.claude_md_excludes == ()
+
+    def test_missing_primary_still_reads_workspace_notes_once(self, tmp_path):
+        """Falling back to /workspace as the start directory is the layout where
+        Claude Code reads the notes natively, so the exclude matters most here."""
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "AGENTS.md").write_text("# Workspace notes")
+        handoff = ClaudeHarnessHandoff(
+            workspace, tmp_path / "config", True, workspace_dir=workspace
+        )
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.workdir == workspace
+        assert config.system_prompt_append == "Workspace guidance (AGENTS.md):\n\n# Workspace notes"
+        assert config.claude_md_excludes == (str(workspace / "AGENTS.md"),)
+
+    def test_stray_workspace_claude_md_does_not_suppress_the_notes(self, tmp_path):
+        """A CLAUDE.md left in /workspace stops Claude Code reading the notes
+        natively, so the system prompt is their only route."""
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        workspace = tmp_path / "workspace"
+        (workspace / "api").mkdir(parents=True)
+        (workspace / "AGENTS.md").write_text("# Workspace notes")
+        (workspace / "CLAUDE.md").write_text("Left behind by an earlier turn")
+        handoff = ClaudeHarnessHandoff(
+            workspace / "api", tmp_path / "config", True, workspace_dir=workspace
+        )
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.system_prompt_append == "Workspace guidance (AGENTS.md):\n\n# Workspace notes"
+        assert config.claude_md_excludes == (str(workspace / "AGENTS.md"),)
+
+    def test_symlinked_workspace_excludes_both_spellings(self, tmp_path):
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        real = tmp_path / "home" / "workspace"
+        (real / "api").mkdir(parents=True)
+        (real / "AGENTS.md").write_text("# Workspace notes")
+        link = tmp_path / "workspace"
+        link.symlink_to(real)
+        handoff = ClaudeHarnessHandoff(link / "api", tmp_path / "config", True, workspace_dir=link)
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.claude_md_excludes == (
+            str(link / "AGENTS.md"),
+            str((real / "AGENTS.md").resolve()),
+        )
+
+    def test_single_repo_bridge_config_is_unchanged(self, tmp_path):
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        repo = tmp_path / "api"
+        repo.mkdir()
+        (repo / "AGENTS.md").write_text("# api rules")
+
+        config = self._build(tmp_path, ClaudeHarnessHandoff(repo, tmp_path / "config", True))
+
+        assert config.workdir == repo
+        assert config.add_dirs == ()
+        assert config.claude_md_excludes == ()
+        assert config.system_prompt_append == "Workspace guidance (AGENTS.md):\n\n# api rules"
