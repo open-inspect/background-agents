@@ -74,6 +74,24 @@ async function oauthRequest(
     )
   );
 }
+/**
+ * RFC 9728 discovery by probing: the path-inserted well-known URL first, then the origin-root URL
+ * for servers that only publish metadata there. A probe that returns a non-success response falls
+ * through to the next candidate; timeouts, oversized bodies and other failures do not.
+ */
+async function protectedResourceMetadata(fetcher: McpFetch, resource: URL): Promise<unknown> {
+  const base = `${resource.origin}/.well-known/oauth-protected-resource`;
+  const candidates = resource.pathname === "/" ? [base] : [`${base}${resource.pathname}`, base];
+  for (const [index, url] of candidates.entries()) {
+    try {
+      return await oauthRequest(fetcher, url);
+    } catch (error) {
+      const retryable = error instanceof McpError && error.code === "mcp_reconnect_required";
+      if (!retryable || index === candidates.length - 1) throw error;
+    }
+  }
+  throw new McpError("mcp_unavailable", 503);
+}
 async function exchange(
   fetcher: McpFetch,
   endpoint: string,
@@ -129,10 +147,7 @@ export class McpOAuthService {
       mcpDestination(current.authorization_endpoint, issuer.origin);
       return current;
     }
-    const protectedMetadata = await oauthRequest(
-      this.fetcher,
-      `${resource.origin}/.well-known/oauth-protected-resource${resource.pathname === "/" ? "" : resource.pathname}`
-    );
+    const protectedMetadata = await protectedResourceMetadata(this.fetcher, resource);
     const protectedProfile = z
       .object({ resource: z.string(), authorization_servers: z.array(z.string()) })
       .parse(protectedMetadata);
