@@ -39,24 +39,24 @@ describe("mcpDestination", () => {
 });
 
 describe("mcpDestinationInRegistrableDomain", () => {
-  const anchor = new URL("https://api-ssl.bitly.com");
+  const anchor = new URL("https://api.foo.test");
 
   it("accepts other hosts on the same registrable domain", () => {
     expect(
-      mcpDestinationInRegistrableDomain("https://bitly.com/oauth/authorize", anchor).origin
-    ).toBe("https://bitly.com");
-    expect(mcpDestinationInRegistrableDomain("https://auth.bitly.com/a", anchor).origin).toBe(
-      "https://auth.bitly.com"
+      mcpDestinationInRegistrableDomain("https://foo.test/oauth/authorize", anchor).origin
+    ).toBe("https://foo.test");
+    expect(mcpDestinationInRegistrableDomain("https://auth.foo.test/a", anchor).origin).toBe(
+      "https://auth.foo.test"
     );
   });
 
   it.each([
-    "https://bitly.com.evil.example/a",
-    "https://evilbitly.com/a",
-    "https://bitly.co/a",
-    "http://bitly.com/a",
-    "https://bitly.com:8443/a",
-    "https://user:pw@bitly.com/a",
+    "https://foo.test.evil.example/a",
+    "https://evilfoo.test/a",
+    "https://foo.example/a",
+    "http://foo.test/a",
+    "https://foo.test:8443/a",
+    "https://user:pw@foo.test/a",
   ])("rejects %s", (value) => {
     expect(() => mcpDestinationInRegistrableDomain(value, anchor)).toThrow(
       expect.objectContaining({ code: "mcp_unsupported" })
