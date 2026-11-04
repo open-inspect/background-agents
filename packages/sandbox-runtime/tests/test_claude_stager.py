@@ -247,6 +247,26 @@ async def test_missing_primary_checkout_keeps_the_workspace(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
+async def test_each_boot_recomputes_the_handoff_from_current_checkouts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A restore whose checkouts changed since the last boot must not reuse its handoff."""
+    stager = _stager(tmp_path, monkeypatch)
+    api, web = _checkout(tmp_path, "api"), _checkout(tmp_path, "web")
+    infra = _checkout(tmp_path, "infra", git=False)
+    workspace = tmp_path / "workspace"
+    await stager.start((api, web, infra), workspace)
+
+    (api.path / ".git").rmdir()
+    (infra.path / ".git").mkdir()
+    await stager.start((api, web, infra), workspace)
+
+    handoff = ClaudeHarnessHandoff.read(tmp_path / "handoff.json")
+    assert handoff.workdir == workspace
+    assert handoff.additional_dirs == (web.path, infra.path)
+
+
+@pytest.mark.asyncio
 async def test_missing_member_checkout_is_not_passed_to_the_cli(
     tmp_path: Path, monkeypatch
 ) -> None:
