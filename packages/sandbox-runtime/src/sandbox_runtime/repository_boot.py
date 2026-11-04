@@ -29,7 +29,13 @@ if TYPE_CHECKING:
 # Per-repository instructions the workspace manifest points at, in the names
 # the supported harnesses read natively. A harness that starts outside a
 # member may never load them on its own.
-INSTRUCTION_PATHS = ("AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md", ".claude/rules")
+INSTRUCTION_PATHS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".claude/AGENTS.md",
+    ".claude/CLAUDE.md",
+    ".claude/rules",
+)
 
 
 @dataclass(frozen=True)
@@ -148,7 +154,7 @@ class RepositoryBoot:
             "# Workspace",
             "",
             f"This session spans multiple repositories, checked out side by side in "
-            f"`{self.workspace_path}` (paths below are relative to it):",
+            f"`{self.workspace_path}` (table paths are relative to it):",
             "",
             "| Path | Repository | Base branch |",
             "| --- | --- | --- |",

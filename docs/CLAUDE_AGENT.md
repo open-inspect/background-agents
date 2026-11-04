@@ -287,8 +287,9 @@ fix instead.
   `--add-dir` (one without is skipped): their skills, commands and agents (and the `enabledPlugins`
   and `extraKnownMarketplaces` keys of their settings) load at start, so the trust boundary above
   covers every member. A member's skill named like one of the primary's is hidden by the primary's,
-  with no qualified name to reach it on the bundled Claude Code. Their hooks and other settings
-  don't run, and their `CLAUDE.md` files and `.claude/rules/` don't load on their own; the generated
+  with no qualified name to reach it on the bundled Claude Code. The hooks and other settings in
+  their `settings.json` don't run (a plugin a member enables brings its own hooks), and their
+  `CLAUDE.md` files and `.claude/rules/` don't load on their own; the generated
   `/workspace/AGENTS.md` points at them by absolute path. That file reaches the agent through the
   system prompt and is excluded from Claude Code's native `AGENTS.md` loading (under both its path
   and its resolved path), so it appears once. After a Bash `cd` outside the start directory and the

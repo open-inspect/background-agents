@@ -418,11 +418,12 @@ class TestWorkspaceManifest:
         assert "`repo`" in manifest
 
     def test_lists_instruction_files_under_every_common_name(self, tmp_path):
-        """A member whose instructions live in CLAUDE.md or .claude/CLAUDE.md
-        gets a pointer too, not only AGENTS.md."""
+        """A member whose instructions live in CLAUDE.md, .claude/AGENTS.md or
+        .claude/CLAUDE.md gets a pointer too, not only AGENTS.md."""
         sup = _make_repository_boot(tmp_path)
         (tmp_path / "frontend" / ".claude").mkdir(parents=True)
         (tmp_path / "frontend" / ".claude" / "CLAUDE.md").write_text("# frontend rules")
+        (tmp_path / "frontend" / ".claude" / "AGENTS.md").write_text("# frontend agents")
         (tmp_path / "backend").mkdir()
         (tmp_path / "backend" / "AGENTS.md").write_text("# shared rules")
         (tmp_path / "backend" / "CLAUDE.md").write_text("# claude rules")
@@ -431,6 +432,7 @@ class TestWorkspaceManifest:
 
         manifest = (tmp_path / "AGENTS.md").read_text()
         assert f"`{tmp_path}/frontend/.claude/CLAUDE.md`" in manifest
+        assert f"`{tmp_path}/frontend/.claude/AGENTS.md`" in manifest
         assert f"`{tmp_path}/backend/AGENTS.md`" in manifest
         assert f"`{tmp_path}/backend/CLAUDE.md`" in manifest
         assert "frontend/AGENTS.md" not in manifest
@@ -446,7 +448,7 @@ class TestWorkspaceManifest:
 
         manifest = (tmp_path / "AGENTS.md").read_text()
         assert f"`{tmp_path}/frontend/.claude/rules/`" in manifest
-        assert f"side by side in `{tmp_path}` (paths below are relative to it)" in manifest
+        assert f"side by side in `{tmp_path}` (table paths are relative to it)" in manifest
         pointers = [line for line in manifest.splitlines() if line.startswith("- `")]
         assert pointers
         assert all(line.startswith(f"- `{tmp_path}/") for line in pointers)
