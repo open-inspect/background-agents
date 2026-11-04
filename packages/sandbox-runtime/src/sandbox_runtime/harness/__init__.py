@@ -92,19 +92,11 @@ def build_agent_harness(
             handoff = ClaudeHarnessHandoff.read()
             session_config = _session_config_from_env()
             oauth_managed = bool(os.environ.get(OAUTH_MANAGED_ENV_VAR))
-            workspace_dir = handoff.workspace_dir or handoff.workdir
-            guidance = _repository_guidance(
-                workspace_dir, multi_repo=handoff.workspace_dir is not None
-            )
+            guidance, claude_md_excludes = _claude_guidance(handoff.workdir, handoff.workspace_dir)
             config = ClaudeHarnessConfig(
                 workdir=handoff.workdir,
                 add_dirs=handoff.additional_dirs,
-                # The generated workspace notes arrive through the system
-                # prompt; Claude Code would also read them natively from the
-                # start directory or a parent of it.
-                claude_md_excludes=_exclude_patterns(workspace_dir / "AGENTS.md")
-                if guidance and handoff.workspace_dir is not None
-                else (),
+                claude_md_excludes=claude_md_excludes,
                 config_dir=handoff.config_dir,
                 # From the bridge's own SESSION_CONFIG: MCP entries can carry
                 # credentials, and the handoff file never does.
@@ -217,11 +209,40 @@ def _exclude_patterns(path: Path) -> tuple[str, ...]:
     return tuple(patterns)
 
 
-def _repository_guidance(directory: Path, *, multi_repo: bool = False) -> str | None:
+def _claude_guidance(
+    workdir: Path, workspace_dir: Path | None
+) -> tuple[str | None, tuple[str, ...]]:
+    """System-prompt guidance for Claude, and the files it must not also load natively."""
+    if workspace_dir is None:
+        return _repository_guidance(workdir), ()
+    # The generated workspace notes, and the primary's own AGENTS.md as a
+    # single-repo session would get it: any CLAUDE.md in the primary or above
+    # it stops Claude Code reading that file natively. Both arrive through the
+    # system prompt and are excluded from native loading, so each appears once.
+    sections = [(workspace_dir, _repository_guidance(workspace_dir, multi_repo=True))]
+    if workdir != workspace_dir:
+        sections.append(
+            (
+                workdir,
+                _repository_guidance(
+                    workdir, heading=f"Primary repository guidance ({workdir / 'AGENTS.md'})"
+                ),
+            )
+        )
+    found = [(directory, text) for directory, text in sections if text]
+    excludes = tuple(
+        pattern for directory, _ in found for pattern in _exclude_patterns(directory / "AGENTS.md")
+    )
+    return "\n\n".join(text for _, text in found) or None, excludes
+
+
+def _repository_guidance(
+    directory: Path, *, multi_repo: bool = False, heading: str = "Workspace guidance (AGENTS.md)"
+) -> str | None:
     """Surface ``directory``'s AGENTS.md through the system prompt.
 
-    ``directory`` is the multi-repo workspace when there is one, else the start
-    directory. Claude reads CLAUDE.md natively; multi-repo workspaces only carry
+    ``directory`` is the start directory, or in a multi-repo session the
+    workspace or the primary checkout. Claude reads CLAUDE.md natively; multi-repo workspaces only carry
     the AGENTS.md the supervisor writes, and nothing is written into repositories.
     A stray workspace CLAUDE.md (one restored from a snapshot) would stop Claude
     Code reading the generated notes natively, so it never suppresses them.
@@ -235,7 +256,7 @@ def _repository_guidance(directory: Path, *, multi_repo: bool = False) -> str | 
         return None
     if not text:
         return None
-    return "Workspace guidance (AGENTS.md):\n\n" + text
+    return f"{heading}:\n\n{text}"
 
 
 __all__ = [

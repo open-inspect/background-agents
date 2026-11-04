@@ -65,12 +65,12 @@ repositories. The session sidebar lists every repository with its branch and any
 The supervisor writes a generated `/workspace/AGENTS.md` that lists the members, the working branch
 and, by absolute path, each member's own instructions (`AGENTS.md`, `CLAUDE.md`, `.claude/CLAUDE.md`
 and `.claude/rules/`). OpenCode, Codex, code-server and the web terminal start in `/workspace`. The
-Claude Agent harness starts in the primary checkout instead, because Claude Code takes
-`.claude/settings.json` (hooks included) only from where it starts; the other members are passed as
-`--add-dir`, so their skills, commands and agents load too, as do the `enabledPlugins` and
-`extraKnownMarketplaces` keys of their settings. Hooks and other settings in non-primary members
-don't run, and their `CLAUDE.md` files and rules don't load on their own: the agent reads them
-through the pointers in the generated `AGENTS.md`.
+Claude Agent harness starts in the primary checkout instead (or in `/workspace` if that checkout is
+missing), because Claude Code takes `.claude/settings.json` (hooks included) only from where it
+starts; the other members are passed as `--add-dir`, so their skills, commands and agents load too,
+as do the `enabledPlugins` and `extraKnownMarketplaces` keys of their settings. Hooks and other
+settings in non-primary members don't run, and their `CLAUDE.md` files and rules don't load on their
+own: the agent reads them through the pointers in the generated `AGENTS.md`.
 
 GitHub-bot sessions open the webhook's repository, unless that repository's metadata names a default
 environment (`defaultEnvironmentId` via the repo-metadata API) — then a PR review or @mention opens

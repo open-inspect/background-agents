@@ -173,8 +173,9 @@ class RepositoryBoot:
             lines.extend(
                 [
                     "Each repository's own instructions may not be loaded for you. Before "
-                    "working in a repository, read its entries below (a trailing `/` is a "
-                    "directory of rule files) unless they are already in your context:",
+                    "working in a repository, read its entries below unless they are already "
+                    "in your context. A trailing `/` is a directory of rule files; a rule "
+                    "with `paths` frontmatter applies only to the files it matches:",
                     "",
                     *(f"- `{doc}`" for doc in member_docs),
                     "",

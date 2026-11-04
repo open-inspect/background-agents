@@ -1156,6 +1156,49 @@ class TestBridgeDirectories:
         assert config.system_prompt_append == "Workspace guidance (AGENTS.md):\n\n# Workspace notes"
         assert config.claude_md_excludes == (str(workspace / "AGENTS.md"),)
 
+    def test_primary_agents_md_reaches_the_prompt_once(self, tmp_path):
+        """Any CLAUDE.md in or above the primary stops Claude Code reading its
+        AGENTS.md natively, so it takes the system-prompt route single-repo uses."""
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        workspace = tmp_path / "workspace"
+        (workspace / "api" / ".claude").mkdir(parents=True)
+        (workspace / "AGENTS.md").write_text("# Workspace notes")
+        (workspace / "api" / "AGENTS.md").write_text("# Api notes")
+        (workspace / "api" / ".claude" / "CLAUDE.md").write_text("# Api rules")
+        handoff = ClaudeHarnessHandoff(
+            workspace / "api", tmp_path / "config", True, workspace_dir=workspace
+        )
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.system_prompt_append == (
+            "Workspace guidance (AGENTS.md):\n\n# Workspace notes\n\n"
+            f"Primary repository guidance ({workspace / 'api' / 'AGENTS.md'}):\n\n# Api notes"
+        )
+        assert config.claude_md_excludes == (
+            str(workspace / "AGENTS.md"),
+            str(workspace / "api" / "AGENTS.md"),
+        )
+
+    def test_primary_root_claude_md_keeps_its_agents_md_native(self, tmp_path):
+        """A root CLAUDE.md is the primary's own entry point, as in a single-repo session."""
+        from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
+
+        workspace = tmp_path / "workspace"
+        (workspace / "api").mkdir(parents=True)
+        (workspace / "AGENTS.md").write_text("# Workspace notes")
+        (workspace / "api" / "AGENTS.md").write_text("# Api notes")
+        (workspace / "api" / "CLAUDE.md").write_text("@AGENTS.md")
+        handoff = ClaudeHarnessHandoff(
+            workspace / "api", tmp_path / "config", True, workspace_dir=workspace
+        )
+
+        config = self._build(tmp_path, handoff)
+
+        assert config.system_prompt_append == "Workspace guidance (AGENTS.md):\n\n# Workspace notes"
+        assert config.claude_md_excludes == (str(workspace / "AGENTS.md"),)
+
     def test_symlinked_workspace_excludes_both_spellings(self, tmp_path):
         from sandbox_runtime.claude_stager import ClaudeHarnessHandoff
 
