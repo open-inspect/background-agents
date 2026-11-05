@@ -37,6 +37,10 @@ export const slackEventPayloadSchema = z.object({
       subtype: z.string().optional(),
       files: z.array(slackMessageFileSchema).optional(),
       attachments: z.array(slackMessageAttachmentSchema).optional(),
+      // `reaction_added` fields.
+      reaction: z.string().optional(),
+      item: z.object({ type: z.string(), channel: z.string(), ts: z.string() }).optional(),
+      event_ts: z.string().optional(),
     })
     .optional(),
 });

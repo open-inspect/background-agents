@@ -44,6 +44,7 @@ function createBody(overrides: Record<string, unknown>) {
     repoOwner: "acme",
     repoName: "web-app",
     triggerType: "slack_event",
+    eventType: "message.posted",
     ...overrides,
   };
 }
@@ -103,6 +104,7 @@ describe("POST /automations — slack_event validation (integration)", () => {
           name: "Team Slack triage",
           instructions: "Investigate the report",
           triggerType: "slack_event",
+          eventType: "message.posted",
           teamId: TEAM,
           triggerConfig: {
             conditions: [{ type: "slack_channel", operator: "any_of", value: ["C1"] }],

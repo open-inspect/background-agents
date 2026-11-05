@@ -384,11 +384,19 @@ export function getTriggerOptionsError(
  * Returns an error message, or null when valid.
  */
 export function validateSlackTriggerConfig(
-  triggerConfig: TriggerConfig | null | undefined
+  triggerConfig: TriggerConfig | null | undefined,
+  eventType: string | undefined
 ): string | null {
   const conditions = triggerConfig?.conditions ?? [];
   if (!hasValidSlackChannelCondition(conditions)) {
     return "slack_event triggers require a slack_channel condition";
+  }
+  // Without an emoji list, every reaction (👀 included) would start a run.
+  if (
+    eventType === "reaction.added" &&
+    !conditions.some((condition) => condition.type === "slack_reaction")
+  ) {
+    return "reaction.added triggers require a slack_reaction condition";
   }
   if (triggerConfig?.slack?.includeBotMessages && !hasSlackActorIncludeList(conditions)) {
     return "slack_event triggers that include bot messages require a slack_actor include condition";

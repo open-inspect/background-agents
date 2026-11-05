@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   normalizeSlackEvent,
+  normalizeSlackReaction,
   buildSlackContextBlock,
   slackChannelLabel,
   SLACK_TEXT_MAX_LENGTH,
@@ -156,5 +157,44 @@ describe("normalizeSlackEvent", () => {
       // The scheduler rebuilds the block from event fields; the two must agree.
       expect(recomposed).toBe(event!.contextBlock);
     });
+  });
+});
+
+describe("normalizeSlackReaction", () => {
+  const reactionInput = {
+    channel: "C123",
+    user: "U777",
+    reaction: "ticket::skin-tone-2",
+    eventTs: "1700000100.000200",
+    message: {
+      ts: "1700000000.000100",
+      thread_ts: "1700000000.000100",
+      text: "checkout is broken",
+      user: "U999",
+    },
+  };
+
+  it("makes the reacted-to message the event and the reactor its actor", () => {
+    const event = normalizeSlackReaction(reactionInput, { channelName: "bugs" });
+    expect(slackAutomationEventSchema.safeParse(event).success).toBe(true);
+    expect(event).toMatchObject({
+      eventType: "reaction.added",
+      triggerKey: "slack:reaction:C123:1700000000.000100",
+      concurrencyKey: "slack:C123:1700000000.000100",
+      threadTs: "1700000000.000100",
+      ts: "1700000000.000100",
+      actorUserId: "U777",
+      text: "checkout is broken",
+      reaction: { name: "ticket", eventTs: "1700000100.000200", messageUserId: "U999" },
+    });
+    expect(event!.contextBlock).toContain(
+      "In Slack channel #bugs, user U777 reacted with :ticket: to a message by user U999."
+    );
+  });
+
+  it("returns null for a message without text", () => {
+    expect(
+      normalizeSlackReaction({ ...reactionInput, message: { ts: "1.1", text: "  " } })
+    ).toBeNull();
   });
 });

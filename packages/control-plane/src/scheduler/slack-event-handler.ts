@@ -57,6 +57,8 @@ export class SlackEventHandler {
     };
 
     for (const automation of candidates) {
+      // A reaction never steers or starts a message automation, and vice versa.
+      if (automation.event_type !== event.eventType) continue;
       const now = deps.clock.now();
       const config = readTriggerConfig(automation);
       // Checked ahead of continuity, so a bot's reply cannot reach the session of

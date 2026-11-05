@@ -262,7 +262,7 @@ async function handleCreateAutomation(
 
   // Slack triggers require explicit scoping (at least one watched channel).
   if (triggerType === "slack_event") {
-    const slackError = validateSlackTriggerConfig(body.triggerConfig);
+    const slackError = validateSlackTriggerConfig(body.triggerConfig, body.eventType);
     if (slackError) return error(slackError, 400);
     body.triggerConfig = {
       ...body.triggerConfig!,
@@ -792,7 +792,7 @@ async function handleUpdateAutomation(
     );
   }
   if (body.triggerConfig && existingTriggerType === "slack_event") {
-    const slackError = validateSlackTriggerConfig(body.triggerConfig);
+    const slackError = validateSlackTriggerConfig(body.triggerConfig, effectiveEventType);
     if (slackError) return error(slackError, 400);
     body.triggerConfig = {
       ...body.triggerConfig,

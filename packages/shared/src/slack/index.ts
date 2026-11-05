@@ -4,6 +4,7 @@ export {
   completeExternalUpload,
   getChannelInfo,
   getExternalUploadUrl,
+  getMessage,
   getMessageDetails,
   getPermalink,
   getThreadMessages,
@@ -32,6 +33,7 @@ export type {
   SlackMessageAttachment,
   SlackMessageFile,
   SlackRequestOptions,
+  SlackLookedUpMessage,
   SlackThreadMessage,
   SlackUser,
 } from "./client";

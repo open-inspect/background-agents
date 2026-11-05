@@ -254,6 +254,7 @@ describe("automation create route", () => {
           name: "Slack triage",
           instructions: "Triage the message",
           triggerType: "slack_event",
+          eventType: "message.posted",
           triggerConfig: {
             conditions: [{ type: "slack_channel", operator: "exclude", value: ["C1"] }],
           },
@@ -273,6 +274,7 @@ describe("automation create route", () => {
           name: "Slack triage",
           instructions: "Triage the message",
           triggerType: "slack_event",
+          eventType: "message.posted",
           triggerConfig: {
             conditions: [{ type: "slack_channel", operator: "any_of", value: [" C1 "] }],
           },
@@ -290,6 +292,23 @@ describe("automation create route", () => {
       expect(mockSlackChannelStore.bindChannelStatements).toHaveBeenCalledWith("generated-id", [
         "C1",
       ]);
+    });
+
+    it("rejects a reaction automation without an emoji condition", async () => {
+      const res = await callRoute("POST", "/automations", {
+        body: {
+          name: "Slack issues",
+          instructions: "File an issue",
+          triggerType: "slack_event",
+          eventType: "reaction.added",
+          triggerConfig: {
+            conditions: [{ type: "slack_channel", operator: "any_of", value: ["C1"] }],
+          },
+        },
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("slack_reaction");
     });
 
     it("creates automation with valid input", async () => {
