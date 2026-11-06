@@ -23,7 +23,9 @@ def update_locks(root: Path, *, check: bool = False) -> None:
             "pnpm": tools["pnpm"],
             "bun": tools["bun"],
         },
-        "plugins": {"@opencode-ai/plugin": tools["opencode"]},
+        "plugins": {"@opencode-ai/plugin": tools["opencode"], "zod": tools["zod"]},
+        # Separate from "tools": @opencode/cli and opencode-ai both declare an `opencode` bin.
+        "opencode2": {"@opencode/cli": tools["opencode2"]},
     }
     generated = {}
     for name, dependencies in manifests.items():

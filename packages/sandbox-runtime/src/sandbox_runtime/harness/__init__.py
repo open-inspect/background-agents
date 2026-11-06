@@ -13,6 +13,7 @@ from ..credentials.provider_credential_client import RuntimeCredentialClient
 from ..managed_mcp import ManagedMcpHarness, personal_names
 from ..memories import append_memory
 from ..model_prices import ModelPriceCatalog, default_catalog_path
+from ..opencode2_runtime import OPENCODE2_PASSWORD_ENV_VAR, select_opencode_release
 from .base import (
     DEFAULT_HARNESS_ID,
     DETERMINISTIC_FAILURE_EXIT_CODE,
@@ -31,6 +32,8 @@ from .base import (
 from .claude_env import OAUTH_MANAGED_ENV_VAR
 from .codex import CodexHarness, CodexHarnessConfig
 from .opencode import OpencodeHarness
+from .opencode2 import Opencode2Harness
+from .opencode2_client import OpenCode2Client
 from .opencode_client import OpenCodeClient
 from .tools import ToolServerConfig
 
@@ -76,6 +79,20 @@ def build_agent_harness(
         )
 
     match harness_id:
+        case HarnessId.OPENCODE if select_opencode_release(os.environ).use_opencode2:
+            return managed(
+                Opencode2Harness(
+                    client=OpenCode2Client(
+                        base_url=f"http://localhost:{opencode_port}",
+                        password=os.environ.get(OPENCODE2_PASSWORD_ENV_VAR, ""),
+                        log=log,
+                    ),
+                    attachment_processor=attachment_processor,
+                    log=log,
+                    limits=limits,
+                    managed_mcp_names=personal_names(servers),
+                )
+            )
         case HarnessId.OPENCODE:
             return managed(
                 OpencodeHarness(

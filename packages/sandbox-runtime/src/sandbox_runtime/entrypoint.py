@@ -31,6 +31,8 @@ from .mcp_packages import McpPackageInstaller
 from .memories import MemoryMaterializer, SessionMemoryClient, memory_path
 from .modal_image_build_start import MODAL_IMAGE_BUILD_START_ARGUMENT, run_modal_image_build
 from .model_catalog import configure_model_catalog
+from .opencode2_runtime import select_opencode_release
+from .opencode2_server import OpenCode2Server
 from .opencode_server import OpenCodeServer, resolve_opencode_global_config_dir
 from .repository_boot import RepositoryBoot
 from .repository_hooks import RepositoryHooks
@@ -59,7 +61,12 @@ def build_harness_process(
     """The supervisor-half registry: pick the process owner for the session's harness."""
     match config.harness:
         case HarnessId.OPENCODE:
-            return OpenCodeServer(
+            release = select_opencode_release(os.environ)
+            log.info(
+                "opencode.release_selected", opencode2=release.use_opencode2, reason=release.reason
+            )
+            server_class = OpenCode2Server if release.use_opencode2 else OpenCodeServer
+            return server_class(
                 config.opencode_config(),
                 shutdown_event,
                 log,

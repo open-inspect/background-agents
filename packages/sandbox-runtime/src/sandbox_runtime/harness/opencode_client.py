@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 from urllib.parse import quote
 
 import httpx
@@ -48,6 +48,10 @@ class OpenCodeClient:
     Owns its connection pool unless one is injected.
     """
 
+    # The global event stream. OpenCode 2's client (``opencode2_client.py``)
+    # reuses the SSE transport below under its own path and credentials.
+    EVENT_PATH: ClassVar[str] = "/event"
+
     def __init__(
         self,
         *,
@@ -76,9 +80,14 @@ class OpenCodeClient:
                 timeout=httpx.Timeout(
                     self._request_timeout_seconds,
                     connect=self._connect_timeout_seconds,
-                )
+                ),
+                **self._client_options(),
             )
         return self._http_client
+
+    def _client_options(self) -> dict[str, Any]:
+        """Extra ``httpx.AsyncClient`` options, such as credentials."""
+        return {}
 
     async def set_mcp_connected(self, name: str, connected: bool) -> None:
         action = "connect" if connected else "disconnect"
@@ -134,7 +143,7 @@ class OpenCodeClient:
             async with asyncio.timeout(inactivity_timeout_seconds) as timeout_ctx:
                 async with self._client().stream(
                     "GET",
-                    f"{self._base_url}/event",
+                    f"{self._base_url}{self.EVENT_PATH}",
                     timeout=httpx.Timeout(None, connect=self._connect_timeout_seconds, read=None),
                 ) as response:
                     if response.status_code != 200:

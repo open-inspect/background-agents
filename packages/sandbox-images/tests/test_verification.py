@@ -103,6 +103,7 @@ def test_smoke_test_preserves_failures(monkeypatch):
             "15.2.0",
         ),
         ("google-chrome", "Google Chrome for Testing 152.0.7977.82", "152.0.7977.82"),
+        ("opencode2", "opencode v2.2.5", "2.2.5"),
     ],
 )
 def test_records_normalized_observed_tool_versions(command, output, expected):

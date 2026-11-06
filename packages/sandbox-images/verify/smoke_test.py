@@ -241,6 +241,7 @@ def observed_tool_version(command: str, expected: str, output: str) -> str:
     prefixes = {
         "node": r"v",
         "opencode": r"",
+        "opencode2": r"opencode v",
         "codex": r"codex-cli ",
         "bun": r"",
         "pnpm": r"",
@@ -267,6 +268,7 @@ def inspect_image(plan: dict[str, Any], tools: dict[str, Any], *, services: bool
     for command, version in (
         ("node", tools["node"][plan["target"]["node"]]["version"]),
         ("opencode", tools["opencode"]),
+        ("opencode2", tools["opencode2"]),
         ("codex", tools["codex"]["version"]),
         ("bun", tools["bun"]),
         ("pnpm", tools["pnpm"]),
@@ -327,6 +329,8 @@ def inspect_image(plan: dict[str, Any], tools: dict[str, Any], *, services: bool
         probe.service(
             ["opencode", "serve", "--hostname", "127.0.0.1", "--port", "{port}"], "/global/health"
         )
+        # The OpenCode 2 API requires a password, but its web shell answers unauthenticated.
+        probe.service(["opencode2", "serve", "--hostname", "127.0.0.1", "--port", "{port}"])
         probe.service(
             [
                 "code-server",
