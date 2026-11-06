@@ -9,6 +9,7 @@ COPY packages/sandbox-images/install/languages.sh /tmp/openinspect-image/package
 RUN bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh languages
 COPY packages/sandbox-images/locks/tools /tmp/openinspect-image/packages/sandbox-images/locks/tools
 COPY packages/sandbox-images/locks/plugins /tmp/openinspect-image/packages/sandbox-images/locks/plugins
+COPY packages/sandbox-images/locks/opencode2 /tmp/openinspect-image/packages/sandbox-images/locks/opencode2
 COPY packages/sandbox-images/install/tools.sh /tmp/openinspect-image/packages/sandbox-images/install/tools.sh
 RUN bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh tools
 COPY . /tmp/openinspect-image

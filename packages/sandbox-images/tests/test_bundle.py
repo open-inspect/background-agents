@@ -40,7 +40,15 @@ def test_image_bin_directory_heads_the_launch_path(provider):
     assert environment["PATH"].split(":")[0] == "/opt/openinspect/bin"
     tools = (REPO_ROOT / "packages/sandbox-images/install/tools.sh").read_text()
     languages = (REPO_ROOT / "packages/sandbox-images/install/languages.sh").read_text()
-    for command in ("agent-browser", "code-server", "ttyd", "rg", "google-chrome", "codex"):
+    for command in (
+        "agent-browser",
+        "code-server",
+        "ttyd",
+        "rg",
+        "google-chrome",
+        "codex",
+        "opencode2",
+    ):
         assert f"/opt/openinspect/bin/{command}" in tools
     assert '"/opt/openinspect/bin/$command"' in languages
 
@@ -52,6 +60,10 @@ def test_binary_checksum_and_minimum_tool_version_are_required():
     with pytest.raises(ValueError, match="OpenCode"):
         validate_toolchain(tools)
     tools["opencode"] = "1.18.29"
+    tools["opencode2"] = "1.19.5"
+    with pytest.raises(ValueError, match="opencode2"):
+        validate_toolchain(tools)
+    tools["opencode2"] = "2.2.5"
     del tools["agentBrowserSha256"]
     with pytest.raises(ValueError, match="agent-browser"):
         validate_toolchain(tools)

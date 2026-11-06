@@ -30,6 +30,8 @@
   "opencode": "1.19.5",
   "opencodeMinimum": "1.18.15",
   "opencodeMinimumReason": "Earlier releases order turns by wrapped message IDs rather than creation time.",
+  "opencode2": "2.2.5",
+  "opencode2Reason": "OpenCode 2 ships as @opencode/cli with a new server API and plugin format. It is installed beside 1.x as `opencode2` until the runtime moves to it.",
   "agentBrowser": "0.37.0",
   "agentBrowserSha256": "78e0c5a14a7fa1f3d1ae2acdbdcc94a047b435b998a8c505fcc49d7fa4935a49",
   "pnpm": "10.34.5",

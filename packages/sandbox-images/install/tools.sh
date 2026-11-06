@@ -12,6 +12,17 @@ node node_modules/bun/install.js
 for command in opencode bun bunx pnpm; do
   ln -sf "/opt/openinspect/tools/node_modules/.bin/$command" "/usr/local/bin/$command"
 done
+# OpenCode 2 lives in its own prefix: its package also declares an `opencode`
+# bin, so it is linked only as `opencode2` beside the 1.x release.
+mkdir -p /opt/openinspect/opencode2
+cp "$OI_BUNDLE/packages/sandbox-images/locks/opencode2/"package*.json /opt/openinspect/opencode2/
+(cd /opt/openinspect/opencode2 && npm ci --ignore-scripts --no-audit --no-fund && node node_modules/@opencode/cli/postinstall.mjs)
+# npm installs every x64 variant (glibc, musl, baseline), about 240 MB each.
+# postinstall has already copied or hard-linked the selected one into the
+# launcher's bin, so the platform packages are dead weight.
+rm -rf /opt/openinspect/opencode2/node_modules/@opencode/cli-*
+ln -sf /opt/openinspect/opencode2/node_modules/@opencode/cli/bin/opencode.exe /usr/local/bin/opencode2
+ln -sf /opt/openinspect/opencode2/node_modules/@opencode/cli/bin/opencode.exe /opt/openinspect/bin/opencode2
 cp "$OI_BUNDLE/packages/sandbox-images/locks/plugins/"package*.json /app/opencode-deps/
 (cd /app/opencode-deps && npm ci --ignore-scripts --no-audit --no-fund)
 download_dir="$(mktemp -d /tmp/openinspect-tools.XXXXXX)"
