@@ -403,3 +403,32 @@ describe("hasSlackActorIncludeList", () => {
     ).toBe(true);
   });
 });
+
+describe("slack_reaction condition", () => {
+  const reacted = (name: string) => buildMockEvent("slack", { reaction: { name, eventTs: "1.2" } });
+  const condition: TriggerCondition = {
+    type: "slack_reaction",
+    operator: "any_of",
+    value: [":ticket:", "bug"],
+  };
+
+  it("matches a listed emoji, with or without colons", () => {
+    expect(match(condition, reacted("ticket"))).toBe(true);
+    expect(match(condition, reacted("bug"))).toBe(true);
+  });
+
+  it("rejects other emoji and plain messages", () => {
+    expect(match(condition, reacted("eyes"))).toBe(false);
+    expect(match(condition, slackEvent({ text: "hi" }))).toBe(false);
+  });
+
+  it("requires at least one emoji", () => {
+    expect(
+      validateConditions(
+        [{ type: "slack_reaction", operator: "any_of", value: [] }],
+        "slack",
+        conditionRegistry
+      )
+    ).not.toHaveLength(0);
+  });
+});

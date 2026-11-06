@@ -118,6 +118,12 @@ const triggerConditionSchema = z.discriminatedUnion("type", [
     operator: z.enum(["include", "exclude"]),
     value: stringArrayConditionValueSchema,
   }),
+  // Emoji names (without colons) for `reaction.added` events.
+  z.object({
+    type: z.literal("slack_reaction"),
+    operator: z.literal("any_of"),
+    value: stringArrayConditionValueSchema,
+  }),
 ]);
 
 export type TriggerCondition = z.infer<typeof triggerConditionSchema>;
@@ -264,6 +270,20 @@ export const slackAutomationEventSchema = z
     botId: z.string().min(1).optional(),
     /** Bot-mention token stripped and length-capped. */
     text: z.string(),
+    /**
+     * Set on `reaction.added` events. `actorUserId` is then the person
+     * who reacted, and `ts` / `text` are the message they reacted to.
+     */
+    reaction: z
+      .object({
+        /** Emoji name without colons or skin-tone suffix. */
+        name: z.string().min(1),
+        /** When the reaction was added; the upper bound for thread context. */
+        eventTs: z.string().min(1),
+        /** Author of the reacted-to message, when it was a person. */
+        messageUserId: z.string().min(1).optional(),
+      })
+      .optional(),
   })
   .refine((event) => (event.actorUserId === undefined) !== (event.botId === undefined), {
     message: "A Slack event needs exactly one of actorUserId or botId",

@@ -9,7 +9,7 @@
 
 import type { ConditionRegistry } from "../conditions";
 import type { AutomationEvent, TextMatchValue, TriggerCondition } from "../types";
-import { SLACK_TEXT_MAX_LENGTH } from "./normalizer";
+import { SLACK_TEXT_MAX_LENGTH, slackEmojiName } from "./normalizer";
 
 type SlackChannelCondition = Extract<TriggerCondition, { type: "slack_channel" }>;
 
@@ -202,6 +202,20 @@ export const slackConditions = {
         (id) => id !== undefined && c.value.includes(id)
       );
       return c.operator === "include" ? inList : !inList;
+    },
+  },
+  // Which emoji a `reaction.added` event must carry.
+  slack_reaction: {
+    appliesTo: ["slack"] as const,
+    validate(c: { value: string[] }) {
+      return isNonEmptyStringArray(c.value) ? null : "slack_reaction requires at least one emoji";
+    },
+    /** A message event never matches; names compare without colons or skin tone. */
+    evaluate(c: { value: string[] }, event: AutomationEvent) {
+      if (event.source !== "slack") return true;
+      if (!event.reaction) return false;
+      const name = event.reaction.name;
+      return c.value.some((emoji) => slackEmojiName(emoji.replace(/^:|:$/g, "")) === name);
     },
   },
 } satisfies Partial<ConditionRegistry>;

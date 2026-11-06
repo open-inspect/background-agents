@@ -170,7 +170,8 @@ export class AutomationSlackService {
       const body = {
         channel: event.channelId,
         threadTs: event.threadTs,
-        ts: event.ts,
+        // A reaction shows the whole thread as it stood when someone reacted.
+        ts: event.reaction?.eventTs ?? event.ts,
       };
       const signature = await this.deps.sign(JSON.stringify(body), secret);
       const response = await binding.fetch("https://internal/internal/thread-context", {
@@ -199,6 +200,7 @@ export class AutomationSlackService {
         permalink: event.permalink,
         text: event.text,
         threadContext,
+        reaction: event.reaction,
       });
     } catch (error) {
       this.deps.log.warn("Slack thread context request threw", {

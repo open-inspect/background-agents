@@ -9,12 +9,14 @@ const {
   mockGetChannelInfo,
   mockGetPermalink,
   mockAddReaction,
+  mockGetMessage,
 } = vi.hoisted(() => ({
   mockVerifySlackSignature: vi.fn(),
   mockAuthTest: vi.fn(),
   mockGetChannelInfo: vi.fn(),
   mockGetPermalink: vi.fn(),
   mockAddReaction: vi.fn(),
+  mockGetMessage: vi.fn(),
 }));
 
 vi.mock("@open-inspect/shared/slack", async () => {
@@ -26,6 +28,7 @@ vi.mock("@open-inspect/shared/slack", async () => {
     getChannelInfo: mockGetChannelInfo,
     getPermalink: mockGetPermalink,
     addReaction: mockAddReaction,
+    getMessage: mockGetMessage,
   };
 });
 
@@ -382,5 +385,75 @@ describe("channel-message automation triggers (POST /events)", () => {
 
       expect(forwardedFrom(env)).toHaveLength(0);
     });
+  });
+});
+
+describe("reaction automation triggers (POST /events)", () => {
+  const reactionRequest = (event: Record<string, unknown>) =>
+    channelMessageRequest({
+      type: "reaction_added",
+      user: "U777",
+      reaction: "ticket",
+      item: { type: "message", channel: "C123", ts: "1700000000.000100" },
+      event_ts: "1700000100.000200",
+      channel: undefined,
+      ts: undefined,
+      text: undefined,
+      channel_type: undefined,
+      ...event,
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearLocalCache();
+    clearBotIdentityCache();
+    mockVerifySlackSignature.mockResolvedValue(true);
+    mockAuthTest.mockResolvedValue({ ok: true, user_id: BOT_USER_ID, bot_id: BOT_ID });
+    mockGetChannelInfo.mockResolvedValue({ ok: true, channel: { id: "C123", name: "bugs" } });
+    mockGetPermalink.mockResolvedValue({ ok: false, error: "nope" });
+    mockAddReaction.mockResolvedValue({ ok: true });
+    mockGetMessage.mockResolvedValue({
+      ok: true,
+      message: { ts: "1700000000.000100", text: "checkout is broken", user: "U999" },
+    });
+  });
+
+  const forwardsFor = (env: Env) =>
+    forwardedSlackEvents(
+      env.CONTROL_PLANE.fetch as unknown as { mock: { calls: readonly (readonly unknown[])[] } }
+    );
+
+  it("forwards the reacted-to message as a reaction.added event", async () => {
+    const env = makeEnv({ watched: ["C123"] });
+    const ctx = makeCtx();
+
+    await app.fetch(reactionRequest({}), env, ctx);
+    await flushWaitUntil(ctx);
+
+    expect(forwardsFor(env)).toEqual([
+      expect.objectContaining({
+        eventType: "reaction.added",
+        actorUserId: "U777",
+        text: "checkout is broken",
+        reaction: { name: "ticket", eventTs: "1700000100.000200", messageUserId: "U999" },
+      }),
+    ]);
+    expect(mockAddReaction).toHaveBeenCalledWith("xoxb-test", "C123", "1700000000.000100", "eyes");
+  });
+
+  it("ignores the bot's own reactions and unwatched channels", async () => {
+    const env = makeEnv({ watched: ["C123"] });
+    const ctx = makeCtx();
+    await app.fetch(reactionRequest({ user: BOT_USER_ID }), env, ctx);
+    await flushWaitUntil(ctx);
+
+    const otherEnv = makeEnv({ watched: ["C999"] });
+    const otherCtx = makeCtx();
+    await app.fetch(reactionRequest({}), otherEnv, otherCtx);
+    await flushWaitUntil(otherCtx);
+
+    expect(forwardsFor(env)).toHaveLength(0);
+    expect(forwardsFor(otherEnv)).toHaveLength(0);
+    expect(mockGetMessage).not.toHaveBeenCalled();
   });
 });
