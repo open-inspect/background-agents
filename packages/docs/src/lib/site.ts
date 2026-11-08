@@ -7,7 +7,7 @@ export const site = {
   repositoryUrl: "https://github.com/open-inspect/background-agents",
   /** The one place that knows where public content lives in the repository. */
   repository: {
-    owner: "ColeMurray",
+    owner: "open-inspect",
     name: "background-agents",
     branch: "main",
     contentDirectory: "packages/docs/content/docs",
