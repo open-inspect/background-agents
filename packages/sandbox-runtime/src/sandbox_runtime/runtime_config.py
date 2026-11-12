@@ -76,6 +76,7 @@ class OpenCodeConfig:
     mcp_servers: tuple[Mapping[str, Any], ...]
     has_repository: bool
     workspace_path: Path
+    session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,7 @@ class RuntimeConfig:
             mcp_servers=self._mcp_servers(),
             has_repository=self.has_repository,
             workspace_path=self.workspace_path,
+            session_id=self.session_id,
         )
 
     def claude_stager_config(self) -> ClaudeStagerConfig:

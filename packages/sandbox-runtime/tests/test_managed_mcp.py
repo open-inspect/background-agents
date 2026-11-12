@@ -300,10 +300,14 @@ async def test_opencode_distinguishes_unavailable_from_uncertain_preparation(unc
 @pytest.mark.parametrize("connected", [False, True])
 async def test_unknown_native_state_never_confirms_connection_or_cleanup(state, connected):
     def respond(request):
-        return httpx.Response(200, json={"example": {"status": state}})
+        return httpx.Response(
+            200, json={"data": [{"name": "example", "status": {"status": state}}]}
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-        client = OpenCodeClient(base_url="http://native.test", log=None, http_client=http)
+        client = OpenCodeClient(
+            base_url="http://native.test", password="test", log=None, http_client=http
+        )
         with pytest.raises(RuntimeError) as error:
             await client.set_mcp_connected("example", connected)
         assert not isinstance(error.value, McpInitializationUnavailable)

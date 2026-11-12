@@ -78,7 +78,9 @@ def validate_toolchain(tools: dict[str, Any]) -> None:
         raise ValueError("Unsupported image toolchain schema")
     if version(tools["opencode"]) < version(tools["opencodeMinimum"]):
         raise ValueError("OpenCode is below the image toolchain minimum")
-    for name in ("agentBrowser", "pnpm", "bun", "zod", "python"):
+    if version(tools["opencode"])[0] != 2:
+        raise ValueError("OpenCode must pin an OpenCode 2 release")
+    for name in ("agentBrowser", "pnpm", "bun", "python"):
         version(tools[name])
     for pin in tools["npmOverrides"].values():
         version(pin)

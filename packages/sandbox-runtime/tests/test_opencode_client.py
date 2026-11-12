@@ -1,283 +1,213 @@
-"""
-Unit tests for OpenCodeClient transport seams exposed by the extraction.
+"""The OpenCode ``/api`` client against a mocked server."""
 
-SSE frame parsing and end-to-end streaming stay covered by test_bridge_sse.py;
-these tests target stop/idle deadlines, HTTP pool ownership, and the events()
-context manager against a fake HTTP transport.
-"""
+from __future__ import annotations
 
 import asyncio
+import base64
 import json
-from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 from sandbox_runtime.harness.opencode_client import (
+    McpInitializationUnavailable,
     OpenCodeClient,
     SSEConnectionError,
     SSEInactivityTimeoutError,
     SSEStreamDisconnectedError,
 )
-from tests.conftest import MockResponse
 
-BASE_URL = "http://localhost:4096"
-SESSION_ID = "oc-session-123"
+BASE = "http://localhost:4096"
 
 
-def make_client(http_client: AsyncMock) -> OpenCodeClient:
-    return OpenCodeClient(
-        http_client=http_client,
-        base_url=BASE_URL,
-        log=MagicMock(),
+def make_client(handler) -> tuple[OpenCodeClient, list[httpx.Request]]:
+    seen: list[httpx.Request] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    client = OpenCodeClient(base_url=BASE, password="pw", log=MagicMock())
+    # The client builds its own pool lazily; give it a mock transport with the same auth.
+    client._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(record), **client._client_options()
     )
+    return client, seen
 
 
-class TestRequestStop:
-    async def test_posts_abort_and_reports_success(self):
-        http_client = AsyncMock()
-        http_client.post.return_value = MockResponse(200)
-
-        stopped = await make_client(http_client).request_stop(SESSION_ID, reason="command")
-
-        assert stopped is True
-        args, _ = http_client.post.await_args
-        assert args[0] == f"{BASE_URL}/session/{SESSION_ID}/abort"
-
-    async def test_no_session_id_is_a_noop(self):
-        http_client = AsyncMock()
-
-        stopped = await make_client(http_client).request_stop(None, reason="command")
-
-        assert stopped is False
-        http_client.post.assert_not_awaited()
-
-    async def test_transport_error_reports_failure(self):
-        http_client = AsyncMock()
-        http_client.post.side_effect = ConnectionError("refused")
-
-        stopped = await make_client(http_client).request_stop(SESSION_ID, reason="command")
-
-        assert stopped is False
+async def test_requests_carry_basic_auth_and_api_prefix():
+    client, seen = make_client(lambda _r: httpx.Response(200, json={"data": {"id": "ses_1"}}))
+    assert await client.create_session() == "ses_1"
+    request = seen[0]
+    assert request.url.path == "/api/session"
+    assert request.headers["authorization"] == "Basic " + base64.b64encode(b"opencode:pw").decode()
 
 
-class TestWaitUntilIdle:
-    async def test_polls_until_execution_domain_is_idle(self):
-        http_client = AsyncMock()
-        http_client.get.side_effect = [
-            MockResponse(200, {SESSION_ID: {"type": "busy"}}),
-            MockResponse(200, {}),
+async def test_prompt_select_model_and_interrupt_use_v2_routes():
+    client, seen = make_client(
+        lambda r: httpx.Response(204 if r.url.path.endswith("/model") else 200, json={})
+    )
+    await client.select_model("ses_1", {"providerID": "anthropic", "id": "claude-opus-5-5"})
+    await client.post_prompt("ses_1", {"text": "hi"})
+    assert await client.request_stop("ses_1", reason="command")
+    assert [r.url.path for r in seen] == [
+        "/api/session/ses_1/model",
+        "/api/session/ses_1/prompt",
+        "/api/session/ses_1/interrupt",
+    ]
+    assert json.loads(seen[0].content) == {
+        "model": {"providerID": "anthropic", "id": "claude-opus-5-5"}
+    }
+
+
+async def test_rejected_prompt_raises_with_the_server_reason():
+    client, _ = make_client(lambda _r: httpx.Response(409, text="busy"))
+    with pytest.raises(RuntimeError, match="409 - busy"):
+        await client.post_prompt("ses_1", {"text": "hi"})
+
+
+async def test_model_variants_reads_the_listing():
+    listing = {
+        "data": [
+            {
+                "providerID": "anthropic",
+                "id": "claude-opus-5-5",
+                "variants": [{"id": "high"}, {"id": "max"}],
+            },
+            {"providerID": "opencode", "id": "big-pickle", "variants": []},
         ]
+    }
+    client, _ = make_client(lambda _r: httpx.Response(200, json=listing))
+    assert await client.model_variants("anthropic", "claude-opus-5-5") == ["high", "max"]
+    assert await client.model_variants("opencode", "big-pickle") == []
+    assert await client.model_variants("openai", "gpt-6.1-sol") is None
 
-        stopped = await make_client(http_client).wait_until_idle(timeout_seconds=1)
 
-        assert stopped is True
-        assert http_client.get.await_count == 2
+async def test_idle_means_no_active_session():
+    responses = iter([{"data": {"ses_1": {"type": "running"}}}, {"data": {}}])
+    client, _ = make_client(lambda _r: httpx.Response(200, json=next(responses)))
+    assert await client.wait_until_idle(timeout_seconds=2.0)
 
-    @pytest.mark.parametrize(
-        "statuses",
-        [
-            {"child": {"type": "busy"}},
-            {SESSION_ID: {"type": "idle"}, "child": {"type": "busy"}},
-        ],
+
+async def test_messages_after_follow_pages_to_the_user_message():
+    pages = {
+        None: {"data": [{"id": "msg_3"}, {"id": "msg_2"}], "cursor": {"next": "c1"}},
+        "c1": {"data": [{"id": "msg_user"}, {"id": "msg_0"}], "cursor": {"next": "c2"}},
+    }
+    client, seen = make_client(
+        lambda r: httpx.Response(200, json=pages[r.url.params.get("cursor")])
     )
-    async def test_busy_child_prevents_domain_idle(self, statuses):
-        http_client = AsyncMock()
-        http_client.get.return_value = MockResponse(200, statuses)
+    assert await client.messages_after("ses_1", "msg_user") == [{"id": "msg_3"}, {"id": "msg_2"}]
+    assert seen[0].url.params["order"] == "desc"
+    assert seen[1].url.params["cursor"] == "c1"
+    assert "order" not in seen[1].url.params
 
-        assert await make_client(http_client).wait_until_idle(timeout_seconds=0.01) is False
 
-    async def test_waits_until_child_is_idle(self):
-        http_client = AsyncMock()
-        http_client.get.side_effect = [
-            MockResponse(200, {SESSION_ID: {"type": "idle"}, "child": {"type": "busy"}}),
-            MockResponse(200, {SESSION_ID: {"type": "idle"}, "child": {"type": "idle"}}),
-        ]
-
-        assert await make_client(http_client).wait_until_idle(timeout_seconds=1) is True
-        assert http_client.get.await_count == 2
-
-    async def test_active_session_at_deadline_is_unconfirmed(self):
-        http_client = AsyncMock()
-        http_client.get.return_value = MockResponse(200, {SESSION_ID: {"type": "busy"}})
-
-        stopped = await make_client(http_client).wait_until_idle(timeout_seconds=0.01)
-
-        assert stopped is False
-
-    async def test_hung_status_request_cannot_outlive_deadline(self):
-        http_client = AsyncMock()
-        request_started = asyncio.Event()
-
-        async def hung_status(*_args, **_kwargs):
-            request_started.set()
-            await asyncio.Event().wait()
-
-        http_client.get.side_effect = hung_status
-
-        stopped = await asyncio.wait_for(
-            make_client(http_client).wait_until_idle(timeout_seconds=0.01),
-            timeout=0.2,
-        )
-
-        assert stopped is False
-        assert request_started.is_set()
-
-    async def test_explicit_cancellation_propagates_during_status_request(self):
-        http_client = AsyncMock()
-        request_started = asyncio.Event()
-
-        async def hung_status(*_args, **_kwargs):
-            request_started.set()
-            await asyncio.Event().wait()
-
-        http_client.get.side_effect = hung_status
-        waiting = asyncio.create_task(make_client(http_client).wait_until_idle(timeout_seconds=1))
-        await request_started.wait()
-        waiting.cancel()
-
-        with pytest.raises(asyncio.CancelledError):
-            await waiting
-
-    async def test_delayed_busy_status_uses_recalculated_sleep_budget(self, monkeypatch):
-        http_client = AsyncMock()
-        real_sleep = asyncio.sleep
-        requested_sleeps = []
-
-        async def delayed_busy(*_args, **_kwargs):
-            await real_sleep(0.1)
-            return MockResponse(200, {SESSION_ID: {"type": "busy"}})
-
-        async def record_sleep(delay):
-            requested_sleeps.append(delay)
-            await real_sleep(delay)
-
-        http_client.get.side_effect = delayed_busy
-        monkeypatch.setattr("sandbox_runtime.harness.opencode_client.asyncio.sleep", record_sleep)
-        monkeypatch.setattr(
-            "sandbox_runtime.harness.opencode_client.EXECUTION_STOP_POLL_SECONDS", 1.0
-        )
-
-        stopped = await asyncio.wait_for(
-            make_client(http_client).wait_until_idle(timeout_seconds=0.2),
-            timeout=0.5,
-        )
-
-        assert stopped is False
-        assert len(requested_sleeps) == 1
-        assert requested_sleeps[0] < 0.15
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            [{"type": "idle"}],
-            "idle",
-            {SESSION_ID: "idle"},
-            {SESSION_ID: {"type": "idle"}, "child": {"status": "idle"}},
-            {SESSION_ID: {"type": "idle"}, "child": {"type": "unknown"}},
-        ],
+async def test_messages_after_an_absent_message_is_none():
+    client, _ = make_client(
+        lambda _r: httpx.Response(200, json={"data": [{"id": "msg_1"}], "cursor": {"next": None}})
     )
-    async def test_malformed_status_payload_is_not_idle_evidence(self, payload):
-        http_client = AsyncMock()
-        http_client.get.return_value = MockResponse(200, payload)
-
-        stopped = await make_client(http_client).wait_until_idle(timeout_seconds=0.01)
-
-        assert stopped is False
+    assert await client.messages_after("ses_1", "msg_user") is None
 
 
-class TestPoolOwnership:
-    async def test_aclose_leaves_injected_pool_open(self):
-        pool = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
-        client = OpenCodeClient(base_url=BASE_URL, log=MagicMock(), http_client=pool)
-
-        assert await client.session_exists(SESSION_ID) is True
-        await client.aclose()
-
-        assert pool.is_closed is False
-        await pool.aclose()
-
-    async def test_owned_pool_created_lazily_and_closed_by_aclose(self):
-        client = OpenCodeClient(base_url=BASE_URL, log=MagicMock())
-
-        pool = client._client()
-
-        assert client._client() is pool
-        await client.aclose()
-        assert pool.is_closed
-
-
-class MockSSEStream:
-    """Fake httpx streaming response: a context manager yielding text chunks."""
-
-    def __init__(self, chunks: list[str], status_code: int = 200):
-        self.status_code = status_code
-        self._chunks = chunks
-
-    async def aiter_text(self) -> AsyncIterator[str]:
-        for chunk in self._chunks:
-            yield chunk
-            await asyncio.sleep(0)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return None
-
-
-def sse_frame(event_type: str) -> str:
-    return f"data: {json.dumps({'type': event_type, 'properties': {}})}\n\n"
-
-
-class TestEvents:
-    async def test_yields_decoded_event_dicts(self):
-        http_client = MagicMock()
-        http_client.stream.return_value = MockSSEStream(
-            [sse_frame("server.connected"), sse_frame("session.idle")]
+@pytest.mark.parametrize(
+    ("connected", "status", "error"),
+    [
+        (True, "connected", None),
+        (True, "needs_auth", McpInitializationUnavailable),
+        (True, "pending", RuntimeError),
+        (False, "disabled", None),
+        (False, "connected", RuntimeError),
+    ],
+)
+async def test_mcp_toggle_confirms_the_listed_status(connected, status, error):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(204)
+        return httpx.Response(
+            200, json={"data": [{"name": "linear", "status": {"status": status}}]}
         )
 
-        received = []
-        async with make_client(http_client).events(inactivity_timeout_seconds=5.0) as events:
-            async for event in events:
-                received.append(event)
+    client, seen = make_client(handler)
+    if error is None:
+        await client.set_mcp_connected("linear", connected)
+    else:
+        with pytest.raises(error):
+            await client.set_mcp_connected("linear", connected)
+    action = "connect" if connected else "disconnect"
+    assert seen[0].url.path == f"/api/experimental/mcp/linear/{action}"
 
-        assert [e["type"] for e in received] == ["server.connected", "session.idle"]
 
-    async def test_raises_on_non_200_response(self):
-        http_client = MagicMock()
-        http_client.stream.return_value = MockSSEStream([], status_code=503)
+async def test_events_stream_from_api_event():
+    body = (
+        'data: {"type":"server.connected","data":{}}\n\n'
+        ": heartbeat\n\n"
+        'data: {"type":"session.execution.started","data":{"sessionID":"ses_1"}}\n\n'
+    )
+    client, seen = make_client(
+        lambda _r: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+    )
+    async with client.events(inactivity_timeout_seconds=5.0) as events:
+        received = [event["type"] async for event in events]
+    assert received == ["server.connected", "session.execution.started"]
+    assert seen[0].url.path == "/api/event"
 
-        with pytest.raises(SSEConnectionError, match="SSE connection failed: 503"):
-            async with make_client(http_client).events(inactivity_timeout_seconds=5.0):
+
+async def test_session_active_reads_the_running_sessions():
+    client, seen = make_client(
+        lambda _r: httpx.Response(200, json={"data": {"ses_1": {"type": "running"}}})
+    )
+    assert await client.session_active("ses_1")
+    assert not await client.session_active("ses_2")
+    assert seen[0].url.path == "/api/session/active"
+
+
+async def test_events_reassemble_a_frame_split_across_chunks():
+    async def chunks():
+        yield b'data: {"ty'
+        yield b'pe":"session.execution.started","data":{}}\n'
+        yield b"\n"
+
+    client, _ = make_client(
+        lambda _r: httpx.Response(
+            200, content=chunks(), headers={"content-type": "text/event-stream"}
+        )
+    )
+    async with client.events(inactivity_timeout_seconds=5.0) as events:
+        received = [event["type"] async for event in events]
+    assert received == ["session.execution.started"]
+
+
+async def test_events_rejected_handshake_is_a_connection_error():
+    client, _ = make_client(lambda _r: httpx.Response(401, text="unauthorized"))
+    with pytest.raises(SSEConnectionError) as raised:
+        async with client.events(inactivity_timeout_seconds=5.0):
+            pass
+    assert not isinstance(raised.value, SSEStreamDisconnectedError)
+
+
+async def test_events_transport_failure_is_a_disconnect():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client, _ = make_client(handler)
+    with pytest.raises(SSEStreamDisconnectedError):
+        async with client.events(inactivity_timeout_seconds=5.0):
+            pass
+
+
+async def test_events_silence_is_an_inactivity_timeout():
+    async def silent():
+        yield b": heartbeat\n\n"
+        await asyncio.Event().wait()
+
+    client, _ = make_client(
+        lambda _r: httpx.Response(
+            200, content=silent(), headers={"content-type": "text/event-stream"}
+        )
+    )
+    with pytest.raises(SSEInactivityTimeoutError):
+        async with client.events(inactivity_timeout_seconds=0.2) as events:
+            async for _event in events:
                 pass
-
-    async def test_translates_transport_failure(self):
-        class DroppingSSEStream(MockSSEStream):
-            async def aiter_text(self) -> AsyncIterator[str]:
-                async for chunk in super().aiter_text():
-                    yield chunk
-                raise httpx.RemoteProtocolError("peer closed connection")
-
-        http_client = MagicMock()
-        http_client.stream.return_value = DroppingSSEStream([sse_frame("server.connected")])
-
-        with pytest.raises(SSEStreamDisconnectedError):
-            async with make_client(http_client).events(inactivity_timeout_seconds=5.0) as events:
-                async for _event in events:
-                    pass
-
-    async def test_raises_inactivity_error_when_stream_hangs(self):
-        class HangingSSEStream(MockSSEStream):
-            async def aiter_text(self) -> AsyncIterator[str]:
-                yield sse_frame("server.connected")
-                await asyncio.sleep(60)
-
-        http_client = MagicMock()
-        http_client.stream.return_value = HangingSSEStream([])
-
-        with pytest.raises(SSEInactivityTimeoutError, match="SSE stream inactive"):
-            async with make_client(http_client).events(inactivity_timeout_seconds=0.05) as events:
-                async for _event in events:
-                    pass

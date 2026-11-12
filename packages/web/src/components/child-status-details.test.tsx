@@ -3,7 +3,6 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SandboxEvent } from "@/types/session";
-import { childStatusDetailOutput } from "../../../sandbox-runtime/src/sandbox_runtime/tools/get-child-status-format.js";
 import { ToolCallItem } from "./tool-call-item";
 import { ToolCallGroup } from "./tool-call-group";
 import { toolCallKey } from "@/lib/timeline-items";
@@ -71,11 +70,16 @@ describe("child status tool presentation", () => {
   });
 
   it("includes the producer's original Markdown inside Full tool output", () => {
-    const output = childStatusDetailOutput(
-      { session: detail.session, finalResponse: detail.finalResponse },
-      detail.session.id,
-      { includeResponse: true }
-    );
+    // The envelope the runtime's get-child-status tool returns: the response
+    // Markdown travels in finalResponse, not in the agent message.
+    const output = JSON.stringify({
+      version: 1,
+      kind: "detail",
+      session: detail.session,
+      hasUnfinishedPrompt: false,
+      finalResponse: detail.finalResponse,
+      agentMessage: "Child: child-1\n  Status: completed",
+    });
     expect(JSON.parse(output).agentMessage).not.toContain(detail.finalResponse.textContent);
     show(event(output));
     const summary = screen.getByText("Full tool output");

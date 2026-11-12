@@ -90,6 +90,7 @@ def wire_opencode_transport(bridge: "AgentBridge", http_client: Any) -> Any:
     harness = OpencodeHarness(
         client=OpenCodeClient(
             base_url=f"http://localhost:{bridge.opencode_port}",
+            password="test-password",
             log=bridge.log,
             http_client=http_client,
         ),
@@ -200,7 +201,6 @@ __all__ = [
     "MockResponse",
     "PromptLimits",
     "ScriptedHarness",
-    "oc_message_id",
     "set_prompt_limits",
     "stream_opencode_events",
     "wire_opencode_transport",
@@ -225,16 +225,3 @@ class MockResponse:
                 request=httpx.Request("GET", "http://test"),
                 response=httpx.Response(self.status_code),
             )
-
-
-def oc_message_id(timestamp_ms: int, counter: int, suffix: str = "a") -> str:
-    """Build a valid OpenCode ascending message ID at a chosen creation point.
-
-    Mirrors OpenCodeIdentifier's format: ``msg_`` + 12 hex chars encoding
-    ``timestamp_ms * 0x1000 + counter`` + 14 base62 chars. Deterministic
-    inputs let boundary tests place IDs immediately before, at, or after a
-    prompt's user message instead of relying on ad-hoc strings that happen
-    to compare in the desired order.
-    """
-    encoded = (timestamp_ms * 0x1000 + counter) & 0xFFFFFFFFFFFF
-    return "msg_" + encoded.to_bytes(6, byteorder="big").hex() + (suffix * 14)[:14]

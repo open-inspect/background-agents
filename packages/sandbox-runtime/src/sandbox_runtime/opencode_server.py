@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import filecmp
 import json
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
-from .constants import OPENCODE_PORT
+from .constants import OPENCODE_PORT, REPO_MANIFEST_FILE_PATH
 from .git_excludes import install_runtime_git_excludes
+from .harness.tools import OI_TOOL_SERVER_NAME as OI_MCP_SERVER_NAME
 from .managed_mcp import managed_marker
 from .mcp_packages import McpPackageInstaller
 from .memories import memory_path
+from .opencode_auth import OPENCODE_PASSWORD_ENV_VAR, OPENCODE_USERNAME, ensure_server_password
 from .process_output import iter_process_lines
 from .sandbox_bin import install_bin_scripts
 
@@ -27,8 +29,32 @@ if TYPE_CHECKING:
     from .runtime_config import OpenCodeConfig
 
 _LOG_FORWARD_STREAM_LIMIT_BYTES = 1024 * 1024
-AGENT_TOOLS_GATED_ON_ENV = {"slack-notify.js": "AGENT_SLACK_NOTIFY_ENABLED"}
-AGENT_TOOLS_REQUIRING_REPOSITORY: set[str] = set()
+PLUGINS_DIR: Final = Path("/app/sandbox_runtime/plugins")
+RUNTIME_PLUGIN: Final = "opencode-runtime.js"
+PROVIDER_AUTH_PLUGIN: Final = "provider-auth.js"
+# Subscriptions whose rotating refresh tokens stay in the control plane:
+# (environment marker, OpenCode integration, OpenCode sign-in method).
+MANAGED_OAUTH_PROVIDERS: Final = (
+    ("OPENAI_OAUTH_MANAGED", "openai", "chatgpt-browser"),
+    ("XAI_OAUTH_MANAGED", "xai", "device"),
+)
+MANAGED_REFRESH_PLACEHOLDER: Final = "managed-by-control-plane"
+HEALTH_POLL_INTERVAL_SECONDS: Final = 0.25
+
+# Ordered, last match wins. Everything is allowed: the sandbox is the boundary
+# and no one is there to answer a permission prompt. Then:
+# - ``execute`` is Code Mode. Denying it exposes every tool, MCP tools
+#   included, to the model directly.
+# - ``question`` waits for a human answer the bridge cannot relay.
+# - Worktrees and moving the session would take the agent out of the
+#   workspace the session is bound to.
+PERMISSIONS: Final = (
+    {"action": "*", "resource": "*", "effect": "allow"},
+    {"action": "execute", "resource": "*", "effect": "deny"},
+    {"action": "question", "resource": "*", "effect": "deny"},
+    {"action": "opencode_worktree_*", "resource": "*", "effect": "deny"},
+    {"action": "opencode_session_move", "resource": "*", "effect": "deny"},
+)
 
 
 def resolve_opencode_global_config_dir() -> Path:
@@ -42,6 +68,12 @@ def resolve_opencode_global_config_dir() -> Path:
 
 
 class OpenCodeServer:
+    """Stage the workspace and run ``opencode serve`` for the bridge to drive.
+
+    The API requires a per-boot password, shared with the bridge through the
+    environment. The Open Inspect tools come from the ``oi`` MCP server.
+    """
+
     HEALTH_CHECK_TIMEOUT = 30.0
 
     def __init__(
@@ -50,6 +82,7 @@ class OpenCodeServer:
         shutdown_event: asyncio.Event,
         log: Any,
         record_boot_warning: Callable[..., None],
+        environ: dict[str, str] | os._Environ[str] | None = None,
     ) -> None:
         self.shutdown_event = shutdown_event
         self.log = log
@@ -60,7 +93,10 @@ class OpenCodeServer:
         self.model = config.model
         self.mcp_servers = config.mcp_servers
         self._mcp_packages = McpPackageInstaller(log)
+        self.session_id = config.session_id
         self._opencode_process: asyncio.subprocess.Process | None = None
+        # The bridge is spawned later from this process's environment.
+        self._password = ensure_server_password(os.environ if environ is None else environ)
 
     def _assemble_workspace_opencode(self, repositories: Sequence[RepoEntry]) -> None:
         """Merge member repos' .opencode/ into the workspace root (multi-repo only).
@@ -68,8 +104,8 @@ class OpenCodeServer:
         OpenCode discovers config relative to its cwd — /workspace for
         multi-repo sessions — so per-repo custom tools/skills/commands would
         never load. Files are copied in position order, last write wins with a
-        warning naming both members; the system tools installed afterwards
-        still override on filename collision (same as single-repo today).
+        warning naming both members; the runtime's skills and plugins installed
+        afterwards still override on filename collision.
         """
         if len(repositories) <= 1:
             return
@@ -77,16 +113,10 @@ class OpenCodeServer:
         dest_root = self.workspace_path / ".opencode"
         # The merged tree is generated state: rebuild it from scratch so
         # entries removed from a member (or a removed member) don't survive
-        # snapshot/repo-image boots. System tools and staged deps are
-        # re-installed after assembly on every boot. node_modules is spared:
-        # assembly never writes into it (member node_modules are skipped), so
-        # it's purely image-managed — deleting it would force
-        # _stage_opencode_deps to re-copy the whole module tree on every
-        # snapshot restore instead of taking its skip-if-present fast path.
+        # snapshot/repo-image boots. The runtime's skills and plugins are
+        # re-installed after assembly on every boot.
         if dest_root.is_dir():
             for child in dest_root.iterdir():
-                if child.name == "node_modules":
-                    continue
                 if child.is_dir() and not child.is_symlink():
                     shutil.rmtree(child, ignore_errors=True)
                 else:
@@ -123,139 +153,6 @@ class OpenCodeServer:
                 file_count=len(provenance),
                 repo_count=len(repositories),
             )
-
-    def _install_tools(self, workdir: Path) -> set[str]:
-        """Copy custom tools into the .opencode/tool directory for OpenCode to discover."""
-        installed: set[str] = set()
-        opencode_dir = workdir / ".opencode"
-        tool_dest = opencode_dir / "tool"
-
-        # Legacy tool (inspect-plugin.js → create-pull-request.js)
-        legacy_tool = Path("/app/sandbox_runtime/plugins/inspect-plugin.js")
-        # New tools directory
-        tools_dir = Path("/app/sandbox_runtime/tools")
-
-        has_tools = legacy_tool.exists() or tools_dir.exists()
-        if not has_tools:
-            return installed
-
-        tool_dest.mkdir(parents=True, exist_ok=True)
-
-        if legacy_tool.exists() and self.has_repository:
-            shutil.copy(legacy_tool, tool_dest / "create-pull-request.js")
-            installed.add(".opencode/tool/create-pull-request.js")
-
-        # Copy all .js files from tools/ — these must export tool() for OpenCode.
-        # Tools listed in AGENT_TOOLS_GATED_ON_ENV are skipped unless their gate
-        # env var is "true".
-        if tools_dir.exists():
-            for tool_file in tools_dir.iterdir():
-                if not (tool_file.is_file() and tool_file.suffix == ".js"):
-                    continue
-                gate_env = AGENT_TOOLS_GATED_ON_ENV.get(tool_file.name)
-                if gate_env and os.environ.get(gate_env, "").lower() != "true":
-                    continue
-                if tool_file.name in AGENT_TOOLS_REQUIRING_REPOSITORY and not self.has_repository:
-                    continue
-                shutil.copy(tool_file, tool_dest / tool_file.name)
-                installed.add(f".opencode/tool/{tool_file.name}")
-
-        # Copy pre-built deps (package.json, package-lock.json, node_modules) from the image
-        # staging directory so OpenCode's Npm.install() finds the tree in sync and skips the
-        # arborist reify() that would otherwise block the first request.
-        staged_at = time.monotonic()
-        installed.update(
-            f".opencode/{path}"
-            for path in self._stage_opencode_deps(Path("/app/opencode-deps"), opencode_dir)
-        )
-        self.log.info(
-            "opencode.repo_deps_staged",
-            dir=str(opencode_dir),
-            duration_ms=round((time.monotonic() - staged_at) * 1000),
-        )
-        return installed
-
-    @staticmethod
-    def _stage_opencode_deps(deps_cache: Path, dest_dir: Path) -> set[str]:
-        """Copy the pre-staged OpenCode plugin deps into dest_dir.
-
-        Copies package.json, package-lock.json and node_modules from the image staging
-        directory (base.py's /app/opencode-deps) into dest_dir, per file and only when the
-        destination is absent. This gives OpenCode a lockfile that matches node_modules so
-        Npm.install() finds @opencode-ai/plugin in sync and skips the arborist reify() that
-        would otherwise block the first request.
-        """
-        installed: set[str] = set()
-        for name in ("package.json", "package-lock.json"):
-            src = deps_cache / name
-            dest = dest_dir / name
-            if src.exists() and not dest.exists():
-                shutil.copy2(src, dest)
-                installed.add(name)
-            elif src.is_file() and dest.is_file() and filecmp.cmp(src, dest, shallow=False):
-                installed.add(name)
-        cached_modules = deps_cache / "node_modules"
-        local_modules = dest_dir / "node_modules"
-        copied_modules = False
-        if cached_modules.is_dir() and not local_modules.exists():
-            shutil.copytree(cached_modules, local_modules, symlinks=True)
-            copied_modules = True
-        if copied_modules:
-            installed.add("node_modules/")
-        return installed
-
-    def _seed_global_opencode_deps(self) -> None:
-        """Fallback seed of OpenCode's global config dir with the staged plugin tree.
-
-        OpenCode bootstraps every directory in its config search path and forks
-        ``npm install @opencode-ai/plugin`` for each. The global config dir is created empty and
-        is never seeded by _install_tools (which only covers the repo's .opencode/), so with a
-        plugin configured the first POST /session would block on an arborist reify() of it.
-
-        The image bakes this tree into the global dir at build time (base.py), so this is
-        normally a no-op (we skip when node_modules already exists); it stays as a fallback for
-        environments where the baked dir is absent (e.g. a different HOME).
-        """
-        deps_cache = Path("/app/opencode-deps")
-        if not deps_cache.is_dir():
-            return
-        config_dir = resolve_opencode_global_config_dir()
-        # Only seed a pristine dir — never mix our modules into a user's manifest. The image
-        # bakes this tree in (base.py), so node_modules is normally already present and we skip.
-        nm_exists = (config_dir / "node_modules").exists()
-        if nm_exists or (config_dir / "package.json").exists():
-            self.log.info(
-                "opencode.global_deps_skip",
-                config_dir=str(config_dir),
-                reason="already_present" if nm_exists else "foreign_manifest",
-            )
-            return
-        seeded_at = time.monotonic()
-        config_dir.mkdir(parents=True, exist_ok=True)
-        self._stage_opencode_deps(deps_cache, config_dir)
-        self.log.info(
-            "opencode.global_deps_seeded",
-            config_dir=str(config_dir),
-            duration_ms=round((time.monotonic() - seeded_at) * 1000),
-        )
-
-    def _prepare_opencode_filesystem(
-        self, workdir: Path, repositories: Sequence[RepoEntry]
-    ) -> set[str]:
-        """Stage OpenCode's filesystem assets (tools, deps, skills, bin) before launch.
-
-        The global seed is best-effort (degrades to a slower reify); the rest fail fast.
-        """
-        installed: set[str] = set()
-        self._assemble_workspace_opencode(repositories)
-        installed.update(self._install_tools(workdir))
-        try:
-            self._seed_global_opencode_deps()
-        except Exception as e:
-            self.log.warn("opencode.global_deps_seed_failed", exc=e)
-        installed.update(self._install_skills(workdir))
-        install_bin_scripts(self.log)
-        return installed
 
     def _install_skills(self, workdir: Path) -> set[str]:
         """Copy bundled Skills into the .opencode/skills directory."""
@@ -295,68 +192,65 @@ class OpenCodeServer:
             self.log.info("opencode.skills_installed", skills_path=str(skills_dest))
         return installed
 
-    def _setup_managed_oauth(self) -> None:
-        """Write OpenCode OAuth sentinels for control-plane-managed providers."""
-        openai_managed = os.environ.get("OPENAI_OAUTH_MANAGED")
-        xai_managed = os.environ.get("XAI_OAUTH_MANAGED")
-        if not openai_managed and not xai_managed:
+    @staticmethod
+    def _managed_oauth_providers() -> list[tuple[str, str]]:
+        """``(integration, sign-in method)`` for each control-plane-managed subscription."""
+        return [
+            (provider, method)
+            for marker, provider, method in MANAGED_OAUTH_PROVIDERS
+            if os.environ.get(marker)
+        ]
+
+    async def _seed_managed_credentials(self, client: httpx.AsyncClient) -> None:
+        """Give each managed subscription an expired placeholder credential.
+
+        OpenCode treats the credential like a signed-in subscription and
+        refreshes it before use; ``provider-auth.js`` replaces that refresh
+        with the control plane's token broker. A restored snapshot already has
+        the credential in OpenCode's database, so existing ones are kept.
+        """
+        providers = self._managed_oauth_providers()
+        if not providers:
             return
-
+        api = f"http://localhost:{OPENCODE_PORT}/api"
+        # A failure only costs that subscription's models, so the session still boots.
         try:
-            auth_dir = Path.home() / ".local" / "share" / "opencode"
-            auth_dir.mkdir(parents=True, exist_ok=True)
-
-            oauth_entry = {
-                "type": "oauth",
-                "refresh": "managed-by-control-plane",
-                "access": "",
-                "expires": 0,
-            }
-            entries = {}
-            if openai_managed:
-                entries["openai"] = {**oauth_entry}
-            if xai_managed:
-                entries["xai"] = {**oauth_entry}
-
-            auth_file = auth_dir / "auth.json"
-            tmp_file = auth_dir / ".auth.json.tmp"
-
-            existing_entries = {}
-            if auth_file.exists():
+            listing = await client.get(f"{api}/credential")
+            listing.raise_for_status()
+            existing = {entry.get("integrationID") for entry in listing.json().get("data", [])}
+        except httpx.HTTPError as error:
+            self.record_boot_warning(
+                scope="managed_oauth",
+                message=f"Could not list OpenCode credentials; subscriptions are unavailable: {error}",
+            )
+            return
+        seeded = []
+        for provider, method in providers:
+            if provider not in existing:
                 try:
-                    existing = json.loads(auth_file.read_text())
-                    if isinstance(existing, dict):
-                        existing_entries = existing
-                except (OSError, json.JSONDecodeError):
-                    self.log.warn("managed_oauth.existing_auth_invalid")
-            existing_entries = {
-                key: value
-                for key, value in existing_entries.items()
-                if not (
-                    isinstance(value, dict)
-                    and value.get("refresh") == "managed-by-control-plane"
-                    and key not in entries
-                )
-            }
-            entries = {**existing_entries, **entries}
-
-            # Write to a temp file created with 0o600 from the start, then
-            # atomically rename so the target is never world-readable.
-            fd = os.open(str(tmp_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            try:
-                os.fchmod(fd, 0o600)
-                os.write(fd, json.dumps(entries).encode())
-                os.close(fd)
-                fd = -1
-                tmp_file.replace(auth_file)
-            finally:
-                if fd >= 0:
-                    os.close(fd)
-                tmp_file.unlink(missing_ok=True)
-
-            self.log.info("managed_oauth.setup", providers=list(entries))
-        except Exception as e:
-            self.log.warn("managed_oauth.setup_error", exc=e)
+                    response = await client.post(
+                        f"{api}/credential",
+                        json={
+                            "integrationID": provider,
+                            "label": "Open-Inspect managed subscription",
+                            "value": {
+                                "type": "oauth",
+                                "methodID": method,
+                                "refresh": MANAGED_REFRESH_PLACEHOLDER,
+                                "access": "",
+                                "expires": 0,
+                            },
+                        },
+                    )
+                    response.raise_for_status()
+                except httpx.HTTPError as error:
+                    self.record_boot_warning(
+                        scope="managed_oauth",
+                        message=f"Could not set up the {provider} subscription: {error}",
+                    )
+                    continue
+            seeded.append(provider)
+        self.log.info("managed_oauth.setup", providers=seeded)
 
     def _resolve_mcp_servers(self) -> list[Mapping[str, Any]]:
         """Resolve MCP servers from session config."""
@@ -397,15 +291,13 @@ class OpenCodeServer:
                 config[name] = entry
         return config
 
-    async def start(self, repositories: Sequence[RepoEntry], workdir: Path) -> None:
-        """Start OpenCode server with configuration."""
-        self._setup_managed_oauth()
-        self.log.info("opencode.start")
-
-        # Build OpenCode config from session settings
-        opencode_config: dict[str, Any] = {
+    def build_config(self, mcp_config: Mapping[str, Any]) -> dict[str, Any]:
+        config: dict[str, Any] = {
             "model": f"{self.provider}/{self.model}",
-            "permission": {"*": {"*": "allow"}},
+            "permissions": [dict(rule) for rule in PERMISSIONS],
+            "mcp": {**mcp_config, OI_MCP_SERVER_NAME: self._oi_mcp_server()},
+            # The catalog gives these models no reasoning variants; the
+            # bridge selects ``high`` and ``max`` as variants by name.
             "provider": {
                 "anthropic": {
                     "models": {
@@ -415,72 +307,74 @@ class OpenCodeServer:
                                 for effort, budget in (("high", 16_000), ("max", 31_999))
                             }
                         }
-                        for model in (
-                            "claude-haiku-4-5",
-                            "claude-sonnet-4-5",
-                            "claude-opus-4-5",
-                        )
+                        for model in ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5")
                     }
                 }
             },
         }
-
         memory_file = memory_path(resolve_opencode_global_config_dir())
         if memory_file.is_file() and memory_file.stat().st_size:
-            opencode_config["instructions"] = [str(memory_file)]
+            config["instructions"] = [str(memory_file)]
+        return config
 
-        # Inject MCP servers
+    def _oi_mcp_server(self) -> dict[str, Any]:
+        command = [
+            sys.executable,
+            "-m",
+            "sandbox_runtime.harness.oi_mcp_server",
+            "--session-id",
+            self.session_id,
+            "--repo-manifest",
+            REPO_MANIFEST_FILE_PATH,
+        ]
+        if self.has_repository:
+            command.append("--has-repository")
+        return {"type": "local", "command": command}
+
+    def _install_plugins(self, workdir: Path) -> set[str]:
+        """Copy the runtime's plugins into ``.opencode/plugins``, where OpenCode loads them."""
+        names = [RUNTIME_PLUGIN]
+        if self._managed_oauth_providers():
+            names.append(PROVIDER_AUTH_PLUGIN)
+        installed: set[str] = set()
+        plugin_dir = workdir / ".opencode" / "plugins"
+        for name in names:
+            source = PLUGINS_DIR / name
+            if not source.is_file():
+                continue
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(source, plugin_dir / name)
+            installed.add(f".opencode/plugins/{name}")
+        return installed
+
+    async def start(self, repositories: Sequence[RepoEntry], workdir: Path) -> None:
+        """Start the OpenCode server with the session's configuration."""
+        self.log.info("opencode.start")
         mcp_servers = self._resolve_mcp_servers()
+        mcp_config: dict[str, Any] = {}
         if mcp_servers:
             await self._install_mcp_packages(mcp_servers)
             mcp_config = self._build_mcp_config(mcp_servers)
-            if mcp_config:
-                opencode_config["mcp"] = mcp_config
-                self.log.info("mcp.configured", count=len(mcp_config))
+            self.log.info("mcp.configured", count=len(mcp_config))
 
         # Working directory: the repo for single-repo sessions, /workspace
         # for multi-repo (every member visible) and repo-less sessions.
-        installed_runtime_paths = self._prepare_opencode_filesystem(workdir, repositories)
-        # Deploy auth proxy plugins for control-plane-managed subscriptions.
-        opencode_dir = workdir / ".opencode"
-        managed_plugins = (
-            ("OPENAI_OAUTH_MANAGED", "codex-auth-plugin.js", "openai_oauth.plugin_deployed"),
-            ("XAI_OAUTH_MANAGED", "xai-auth-plugin.js", "xai_oauth.plugin_deployed"),
-        )
-        broker_client_deployed = False
-        for marker, filename, log_event in managed_plugins:
-            plugin_source = Path(f"/app/sandbox_runtime/plugins/{filename}")
-            if not plugin_source.exists() or not os.environ.get(marker):
-                continue
-            plugin_dir = opencode_dir / "plugins"
-            plugin_dir.mkdir(parents=True, exist_ok=True)
-            if not broker_client_deployed:
-                broker_client = Path("/app/sandbox_runtime/plugins/provider-token-broker.js")
-                shutil.copy(broker_client, plugin_dir / broker_client.name)
-                installed_runtime_paths.add(f".opencode/plugins/{broker_client.name}")
-                broker_client_deployed = True
-            shutil.copy(plugin_source, plugin_dir / filename)
-            installed_runtime_paths.add(f".opencode/plugins/{filename}")
-            self.log.info(log_event)
-
-        if installed_runtime_paths and (workdir / ".git").exists():
+        self._assemble_workspace_opencode(repositories)
+        installed = self._install_skills(workdir)
+        installed.update(self._install_plugins(workdir))
+        install_bin_scripts(self.log)
+        if installed and (workdir / ".git").exists():
             try:
-                install_runtime_git_excludes(workdir, installed_runtime_paths)
+                install_runtime_git_excludes(workdir, installed)
             except Exception as error:
                 self.log.warn("opencode.git_excludes_failed", exc=error)
 
         env = {
             **os.environ,
-            "OPENCODE_CONFIG_CONTENT": json.dumps(opencode_config),
-            # Disable OpenCode's question tool in headless mode. The tool blocks
-            # on a Promise waiting for user input via the HTTP API, but the bridge
-            # has no channel to relay questions to the web client and back. Without
-            # this, the session hangs until the SSE inactivity timeout (120s).
-            # See: https://github.com/anomalyco/opencode/blob/19b1222cd/packages/opencode/src/tool/registry.ts#L100
-            "OPENCODE_CLIENT": "serve",
+            OPENCODE_PASSWORD_ENV_VAR: self._password,
+            "OPENCODE_CONFIG_CONTENT": json.dumps(self.build_config(mcp_config)),
+            "OPENCODE_DISABLE_AUTOUPDATE": "1",
         }
-
-        # Start OpenCode server in the repo directory
         self._opencode_process = await asyncio.create_subprocess_exec(
             "opencode",
             "serve",
@@ -488,19 +382,19 @@ class OpenCodeServer:
             str(OPENCODE_PORT),
             "--hostname",
             "0.0.0.0",
-            "--print-logs",  # Print logs to stdout for debugging
-            cwd=workdir,  # Start in repo directory
+            "--print-logs",
+            cwd=workdir,
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             limit=_LOG_FORWARD_STREAM_LIMIT_BYTES,
         )
-
-        # Start log forwarder
         asyncio.create_task(self._forward_opencode_logs())
-
-        # Wait for health check
         await self._wait_for_health()
+        async with httpx.AsyncClient(
+            auth=httpx.BasicAuth(OPENCODE_USERNAME, self._password), timeout=10.0
+        ) as client:
+            await self._seed_managed_credentials(client)
         self.log.info("opencode.ready")
 
     async def _forward_opencode_logs(self) -> None:
@@ -514,11 +408,19 @@ class OpenCodeServer:
             print(f"[opencode] {line}")
 
     async def _wait_for_health(self) -> None:
-        """Poll health endpoint until server is ready."""
-        health_url = f"http://localhost:{OPENCODE_PORT}/global/health"
-        start_time = time.time()
+        """Poll until the server answers and the session tools are ready.
 
-        async with httpx.AsyncClient() as client:
+        OpenCode loads a workspace on the first request that touches it and
+        answers that request from the empty state; MCP connect and disconnect
+        calls in that window fail as unknown servers. It then starts the MCP
+        servers in the background, and a prompt sent before ``oi`` connects
+        runs without the session tools. So the server is ready once ``oi`` has
+        left ``pending``.
+        """
+        mcp_url = f"http://localhost:{OPENCODE_PORT}/api/mcp"
+        auth = httpx.BasicAuth(OPENCODE_USERNAME, self._password)
+        start_time = time.time()
+        async with httpx.AsyncClient(auth=auth) as client:
             while time.time() - start_time < self.HEALTH_CHECK_TIMEOUT:
                 if self.shutdown_event.is_set():
                     raise RuntimeError("Shutdown requested during startup")
@@ -526,18 +428,25 @@ class OpenCodeServer:
                     raise RuntimeError(
                         f"OpenCode server exited with status {self._opencode_process.returncode}"
                     )
-
                 try:
-                    resp = await client.get(health_url, timeout=2.0)
-                    if resp.status_code == 200:
+                    response = await client.get(mcp_url, timeout=2.0)
+                    oi_status = next(
+                        (
+                            (server.get("status") or {}).get("status")
+                            for server in response.json().get("data", [])
+                            if server.get("name") == OI_MCP_SERVER_NAME
+                        ),
+                        None,
+                    )
+                    if response.status_code == 200 and oi_status not in {None, "pending"}:
+                        if oi_status != "connected":
+                            self.log.warn("opencode.oi_mcp_unavailable", status=oi_status)
                         return
                 except httpx.ConnectError:
                     pass
-                except Exception as e:
-                    self.log.debug("opencode.health_check_error", exc=e)
-
-                await asyncio.sleep(0.5)
-
+                except Exception as error:
+                    self.log.debug("opencode.health_check_error", exc=error)
+                await asyncio.sleep(HEALTH_POLL_INTERVAL_SECONDS)
         raise RuntimeError("OpenCode server failed to become healthy")
 
     async def stop(self) -> None:

@@ -102,10 +102,9 @@ def runtime_state_dir(default: str | Path, environment: Mapping[str, str] | None
 
 # Canonical repository manifest written by the supervisor before any child
 # process starts, rewritten on every boot. Consumed by the bridge (push
-# targeting) and the JS create-pull-request tool so the /workspace checkout
+# targeting) and the create-pull-request tool so the /workspace checkout
 # layout has a single authority. JSON: {"repositories": [{owner, name, branch,
-# path, baseSha?}]}. plugins/inspect-plugin.js derives the same path from
-# STATE_DIR_ENV_VAR and REPO_MANIFEST_FILE_NAME.
+# path, baseSha?}]}.
 REPO_MANIFEST_FILE_PATH = str(runtime_state_dir("/tmp") / REPO_MANIFEST_FILE_NAME)
 
 # Supervisor-to-bridge decisions only; no credentials.

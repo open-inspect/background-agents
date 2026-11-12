@@ -1,9 +1,9 @@
 {
-  "runtimeVersion": "v80-managed-mcp",
-  "generation": 80,
+  "runtimeVersion": "v81-opencode-2",
+  "generation": 81,
   "minimumCompatibleGeneration": 62,
   "minimumPreservationGeneration": 71,
-  "minimumRebuildGeneration": 80,
+  "minimumRebuildGeneration": 81,
   "harnessMinimumGeneration": {
     "claude": 76,
     "opencode": 76,

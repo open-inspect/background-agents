@@ -2,18 +2,21 @@
 set -euo pipefail
 source "$OI_INSTALL_DIR/common.sh"
 export PATH="/opt/openinspect/node/bin:$PATH"
-mkdir -p /opt/openinspect/bin /opt/openinspect/tools /app/opencode-deps /opt/openinspect/code-server
+mkdir -p /opt/openinspect/bin /opt/openinspect/tools /opt/openinspect/code-server
 cp "$OI_BUNDLE/packages/sandbox-images/locks/tools/"package*.json /opt/openinspect/tools/
 cd /opt/openinspect/tools
 npm ci --ignore-scripts --no-audit --no-fund
 # Run only the explicitly reviewed native binary installers. npm's lifecycle defaults differ by substrate.
-node node_modules/opencode-ai/postinstall.mjs
+node node_modules/@opencode/cli/postinstall.mjs
 node node_modules/bun/install.js
+# npm installs every x64 OpenCode variant (glibc, musl, baseline), about 240 MB
+# each. postinstall has already copied or hard-linked the selected one into the
+# launcher's bin, so the platform packages are dead weight.
+rm -rf node_modules/@opencode/cli-*
 for command in opencode bun bunx pnpm; do
   ln -sf "/opt/openinspect/tools/node_modules/.bin/$command" "/usr/local/bin/$command"
 done
-cp "$OI_BUNDLE/packages/sandbox-images/locks/plugins/"package*.json /app/opencode-deps/
-(cd /app/opencode-deps && npm ci --ignore-scripts --no-audit --no-fund)
+ln -sf /opt/openinspect/tools/node_modules/.bin/opencode /opt/openinspect/bin/opencode
 download_dir="$(mktemp -d /tmp/openinspect-tools.XXXXXX)"
 trap 'rm -rf "$download_dir"' EXIT
 download_checked "https://github.com/vercel-labs/agent-browser/releases/download/v$AGENT_BROWSER_VERSION/agent-browser-linux-x64" "$AGENT_BROWSER_SHA256" "$download_dir/agent-browser"

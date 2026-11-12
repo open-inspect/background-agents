@@ -14,7 +14,6 @@ import pytest
 NODE_BINARY = shutil.which("node")
 RUNTIME_DIR = Path(__file__).resolve().parents[1] / "src" / "sandbox_runtime"
 UPLOAD_MEDIA_SCRIPT = RUNTIME_DIR / "bin" / "upload-media.js"
-BRIDGE_CLIENT_MODULE = RUNTIME_DIR / "tools" / "_bridge-client.js"
 TOOL_SUBPROCESS_TIMEOUT_SECONDS = 10
 MP4_BYTES = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
 
@@ -184,28 +183,3 @@ def test_upload_media_posts_video_metadata(tmp_path: Path) -> None:
     assert 'name="caption"\r\n\r\nMenu opens' in body
     assert 'name="durationMs"\r\n\r\n1200' in body
     assert 'name="dimensions"\r\n\r\n{"width":1280,"height":720}' in body
-
-
-def test_bridge_client_requires_sandbox_auth_token() -> None:
-    result = subprocess.run(
-        [
-            NODE_BINARY,
-            "--input-type=module",
-            "-e",
-            (
-                "import(process.argv[1]).catch((error) => {"
-                "console.error(error.message);"
-                "process.exit(1);"
-                "});"
-            ),
-            BRIDGE_CLIENT_MODULE.as_uri(),
-        ],
-        capture_output=True,
-        text=True,
-        env=_tool_env({"SANDBOX_AUTH_TOKEN": ""}),
-        check=False,
-        timeout=TOOL_SUBPROCESS_TIMEOUT_SECONDS,
-    )
-
-    assert result.returncode == 1
-    assert "SANDBOX_AUTH_TOKEN not set" in result.stderr

@@ -20,11 +20,21 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 OPENCODE_VERSION = json.loads(
     (Path(__file__).resolve().parents[2] / "packages/sandbox-images/toolchain.json").read_text()
 )["opencode"]
+OPENCODE_PASSWORD = "canary"
+OPENCODE_API = "http://127.0.0.1:17882/api"
+
+
+def mcp_status(response: httpx.Response, name: str) -> str | None:
+    response.raise_for_status()
+    return next(
+        (s["status"]["status"] for s in response.json()["data"] if s["name"] == name), None
+    )
 
 
 async def main(binary: str, origin: str) -> None:
     assert importlib.metadata.version("claude-agent-sdk") == "0.2.168"
-    assert subprocess.check_output([binary, "--version"], text=True).strip() == OPENCODE_VERSION
+    version = subprocess.check_output([binary, "--version"], text=True).strip()
+    assert version == f"opencode v{OPENCODE_VERSION}", version
     proxy = f"{origin}/sessions/local/mcp/example"
     headers = {"Authorization": "Bearer sandbox-fixture"}
     async with httpx.AsyncClient(timeout=30) as http:
@@ -85,6 +95,7 @@ async def main(binary: str, origin: str) -> None:
                 "OPENCODE_CONFIG_CONTENT": json.dumps(config),
                 "OPENCODE_DISABLE_AUTOUPDATE": "true",
                 "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+                "OPENCODE_SERVER_PASSWORD": OPENCODE_PASSWORD,
             }
             with (root / "opencode.log").open("w") as log:
                 process = subprocess.Popen(
@@ -94,11 +105,15 @@ async def main(binary: str, origin: str) -> None:
                     stdout=log,
                     stderr=log,
                 )
+                opencode = httpx.AsyncClient(
+                    timeout=30, auth=httpx.BasicAuth("opencode", OPENCODE_PASSWORD)
+                )
                 try:
                     for _ in range(100):
                         try:
-                            status = await http.get("http://127.0.0.1:17882/mcp")
-                            if status.is_success:
+                            # OpenCode loads the workspace's MCP servers after the first request.
+                            status = await opencode.get(f"{OPENCODE_API}/mcp")
+                            if status.is_success and mcp_status(status, "example"):
                                 break
                         except httpx.ConnectError:
                             pass
@@ -107,21 +122,24 @@ async def main(binary: str, origin: str) -> None:
                         raise RuntimeError(
                             "OpenCode did not start: " + (root / "opencode.log").read_text()[-2000:]
                         )
-                    assert status.json()["example"]["status"] == "disabled", status.text
+                    assert mcp_status(status, "example") == "disabled", status.text
                     for owner in ("reader", "operator"):
                         await http.post(f"{origin}/test/context", json={"owner": owner})
-                        connected = await http.post("http://127.0.0.1:17882/mcp/example/connect")
+                        connected = await opencode.post(
+                            f"{OPENCODE_API}/experimental/mcp/example/connect"
+                        )
                         connected.raise_for_status()
-                        status = await http.get("http://127.0.0.1:17882/mcp")
-                        assert status.json()["example"]["status"] == "connected", status.text
+                        status = await opencode.get(f"{OPENCODE_API}/mcp")
+                        assert mcp_status(status, "example") == "connected", status.text
                         await http.post(f"{origin}/test/context", json={"active": False})
-                        disconnected = await http.post(
-                            "http://127.0.0.1:17882/mcp/example/disconnect"
+                        disconnected = await opencode.post(
+                            f"{OPENCODE_API}/experimental/mcp/example/disconnect"
                         )
                         disconnected.raise_for_status()
-                        status = await http.get("http://127.0.0.1:17882/mcp")
-                        assert status.json()["example"]["status"] != "connected", status.text
+                        status = await opencode.get(f"{OPENCODE_API}/mcp")
+                        assert mcp_status(status, "example") != "connected", status.text
                 finally:
+                    await opencode.aclose()
                     process.terminate()
                     try:
                         process.wait(timeout=10)

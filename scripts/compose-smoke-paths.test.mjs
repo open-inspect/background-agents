@@ -37,7 +37,7 @@ const unrelated = [
   "packages/boat-infra/launcher.sh",
   "packages/sandbox-runtime/src/sandbox_runtime/bridge.py",
   "packages/sandbox-runtime/src/sandbox_runtime/skills/example/SKILL.md",
-  "packages/sandbox-runtime/src/sandbox_runtime/tools/slack-notify.js",
+  "packages/sandbox-runtime/src/sandbox_runtime/plugins/opencode-runtime.js",
   "terraform/environments/production/main.tf",
   "terraform/modules/aws-control-plane/templates/user-data.sh.tftpl",
   "terraform/README.md",

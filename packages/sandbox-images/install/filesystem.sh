@@ -9,7 +9,6 @@ mkdir -p /workspace /tmp/opencode /app/plugins /app/verify \
   "$OI_RUNTIME_HOME/.agent-browser"
 # Configure only newly built images; do not inject a new Chrome path into legacy snapshots.
 cp "$OI_INSTALL_DIR/agent-browser.json" "$OI_RUNTIME_HOME/.agent-browser/config.json"
-cp -a /app/opencode-deps/. "$OI_RUNTIME_HOME/.config/opencode/"
 install -m 0755 /app/sandbox_runtime/gh-wrapper.sh /usr/local/bin/gh
 printf '%s\n' '#!/bin/sh' 'exec /opt/openinspect/python/bin/python -m sandbox_runtime.credentials.git_credential_helper "$@"' > /usr/local/bin/oi-git-credentials
 chmod 0755 /usr/local/bin/oi-git-credentials

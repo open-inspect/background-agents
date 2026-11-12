@@ -18,7 +18,7 @@ In a second terminal:
 ```sh
 uv venv --python 3.12 .venv-managed-mcp
 uv pip install --python .venv-managed-mcp/bin/python -e 'packages/sandbox-runtime[dev]'
-npm install --prefix /tmp/open-inspect-managed-mcp-tools opencode-ai@"$(jq -r .opencode packages/sandbox-images/toolchain.json)"
+npm install --prefix /tmp/open-inspect-managed-mcp-tools @opencode/cli@"$(jq -r .opencode packages/sandbox-images/toolchain.json)"
 .venv-managed-mcp/bin/python scripts/managed-mcp/native-canary.py --opencode /tmp/open-inspect-managed-mcp-tools/node_modules/.bin/opencode
 ```
 
@@ -52,11 +52,12 @@ The OpenCode cancellation regression also needs only the Python environment and 
 .venv-managed-mcp/bin/python scripts/managed-mcp/opencode-cancel-canary.py --opencode /tmp/open-inspect-managed-mcp-tools/node_modules/.bin/opencode
 ```
 
-It reproduces the pin's late-connect behavior: cancelling a control request and observing a
-successful disconnect does **not** fence pending initialization in the native server. The production
-wrapper must remain poisoned and refuse following turns after an uncertain prepare. The control
-plane also keeps delegation disabled for that allocation across bridge-only restarts; recovery
-requires replacing the sandbox/native server, not merely reconnecting its bridge.
+It cancels a connect whose initialization is still pending, disconnects, then lets the
+initialization finish and reports whether the native server connected anyway (OpenCode 1.x did;
+2.2.5 stays disabled). Either way, the production wrapper must remain poisoned and refuse following
+turns after an uncertain prepare. The control plane also keeps delegation disabled for that
+allocation across bridge-only restarts; recovery requires replacing the sandbox/native server, not
+merely reconnecting its bridge.
 
 ## Automated suites
 

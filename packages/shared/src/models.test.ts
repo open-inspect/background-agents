@@ -106,7 +106,7 @@ const KIMI_CODE_PLAN_MODELS = [
 ] as const;
 const ZAI_CODING_PLAN_MODELS = ["zai-coding-plan/glm-5.2", "zai-coding-plan/glm-5.3"] as const;
 
-it("keeps the OpenCode gateway wire-test efforts aligned with the catalog", () => {
+it("keeps the OpenCode gateway effort fixture aligned with the catalog", () => {
   const fixture = JSON.parse(
     readFileSync(
       new URL(

@@ -17,13 +17,10 @@ def update_locks(root: Path, *, check: bool = False) -> None:
     tools = read_json(package / "toolchain.json")
     manifests = {
         "tools": {
-            "opencode-ai": tools["opencode"],
-            "@opencode-ai/plugin": tools["opencode"],
-            "zod": tools["zod"],
+            "@opencode/cli": tools["opencode"],
             "pnpm": tools["pnpm"],
             "bun": tools["bun"],
         },
-        "plugins": {"@opencode-ai/plugin": tools["opencode"]},
     }
     generated = {}
     for name, dependencies in manifests.items():

@@ -1,9 +1,20 @@
-"""OpenCode prompt streaming: translates OpenCode SSE events to bridge events."""
+"""OpenCode prompt streaming: translate ``/api/event`` into bridge events.
+
+OpenCode reports a turn as granular session events. Each prompt runs as one
+*execution* of the session,
+opened by ``session.execution.started`` and closed by ``succeeded``,
+``failed`` or ``interrupted``, so attribution needs no message-ID bookkeeping:
+the bridge prompts one turn at a time, and every parent-session event between
+the prompt and the execution's end belongs to it.
+
+The bridge emits ``token``, ``tool_call``, ``step_start``, ``step_finish``,
+``error``, ``session_title`` and ``context_compacted`` events, with tool names
+and arguments mapped to the names the web UI and completion extractor know.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 import time
 from contextlib import AsyncExitStack
@@ -11,22 +22,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
-from ..child_activity import (
-    MAX_PENDING_CHILD_ACTIVITY,
-    ChildActivityCorrelator,
-    MessageDisposition,
-    PendingChildActivity,
-    PendingChildError,
-    PendingChildMessage,
-)
-from ..message_attribution import AssistantMessageDisposition, MessageAttribution
-from ..opencode_identifier import OpenCodeIdentifier
 from .opencode_client import (
     SSEConnectionError,
     SSEInactivityTimeoutError,
     SSEStreamDisconnectedError,
 )
-from .opencode_step_ids import StepIdTracker
+from .tools import OI_TOOL_SERVER_NAME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -35,123 +36,99 @@ if TYPE_CHECKING:
     from ..log_config import StructuredLogger
     from .opencode_client import OpenCodeClient
 
-# Cap on parts buffered for assistant messages that have not been authorized
-# yet (their message.updated may arrive after their first parts).
-MAX_PENDING_PART_EVENTS: Final = 2000
-CONTEXT_OVERFLOW_ERROR_NAME: Final = "ContextOverflowError"
+# Bridge events keep the tool names the web UI and completion extractor know.
+_TOOL_NAMES: Final = {"shell": "bash", "subagent": "task"}
+_OI_TOOL_PREFIX: Final = f"{OI_TOOL_SERVER_NAME}_"
+# OpenCode's file tools take ``path``; the UI reads ``filePath``.
+_PATH_ARG_TOOLS: Final = frozenset({"read", "edit", "write"})
 # Providers whose models take the requested reasoning effort as an OpenCode
 # variant. OpenCode Zen and Go route each model to its own SDK, but OpenCode
 # derives the variants from the catalog either way.
 VARIANT_REASONING_PROVIDERS: Final = frozenset(
     {"anthropic", "openai", "xai", "opencode", "opencode-go"}
 )
-
+# OpenCode names a session after its first execution ends. A short first
+# turn finishes before the name exists, so the stream waits this long for it.
+SESSION_TITLE_GRACE_SECONDS: Final = 3.0
 OPENCODE_DEFAULT_TITLE_RE: Final = re.compile(
     r"^(new session|child session) - " r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$",
     re.IGNORECASE,
 )
 
 
-@dataclass(frozen=True)
-class _PendingPart:
-    """A part event held back until its assistant message is authorized."""
+class _PromptMaxDurationTimeout(Exception):
+    """The prompt's max-duration deadline expired."""
 
-    part: dict[str, Any]
-    delta: Any
+
+class _Outcome(Enum):
+    CONTINUE = "continue"
+    FINISHED = "finished"
+
+
+def bridge_tool_name(name: str) -> str:
+    if name.startswith(_OI_TOOL_PREFIX):
+        return name[len(_OI_TOOL_PREFIX) :]
+    return _TOOL_NAMES.get(name, name)
+
+
+def bridge_tool_args(tool: str, args: Any) -> dict[str, Any]:
+    if not isinstance(args, dict):
+        return {}
+    normalized = dict(args)
+    if tool in _PATH_ARG_TOOLS and "path" in normalized:
+        normalized.setdefault("filePath", normalized["path"])
+    if tool == "task" and "agent" in normalized:
+        normalized.setdefault("subagent_type", normalized["agent"])
+    return normalized
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        str(item.get("text", ""))
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "text"
+    )
+
+
+def _error_message(error: Any) -> str:
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("type") or "Unknown error")
+    return str(error) if error else "Unknown error"
+
+
+@dataclass
+class _ToolCall:
+    name: str
+    args: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class _PromptState:
-    """Mutable translation state for one ``stream_prompt`` call."""
-
     opencode_session_id: str
     message_id: str
-    opencode_message_id: str
     start_time: float
-    cumulative_text: dict[str, str] = field(default_factory=dict)
-    emitted_tool_states: set[str] = field(default_factory=set)
-    attribution: MessageAttribution = field(init=False)
-    pending_parts: dict[str, list[_PendingPart]] = field(default_factory=dict)
-    pending_parts_total: int = 0
-    pending_drop_logged: bool = False
-    child_activity: ChildActivityCorrelator = field(default_factory=ChildActivityCorrelator)
-    emitted_error_messages: set[str] = field(default_factory=set)
-    # Priced step costs keyed by OpenCode part id. Last write wins, so a part
-    # OpenCode re-emits with a corrected cost replaces its earlier value.
+    user_message_id: str | None = None
+    texts: dict[str, str] = field(default_factory=dict)
+    sent_texts: dict[str, str] = field(default_factory=dict)
+    tools: dict[str, _ToolCall] = field(default_factory=dict)
+    emitted_tool_states: set[tuple[str, str]] = field(default_factory=set)
+    # Child session -> its parent session, for every descendant of this prompt.
+    children: dict[str, str] = field(default_factory=dict)
+    # Child session -> the parent ``subagent`` call that started it.
+    child_calls: dict[str, str] = field(default_factory=dict)
     step_costs: dict[str, float] = field(default_factory=dict)
-    step_ids: StepIdTracker = field(default_factory=StepIdTracker)
-    # Set when a parent context-overflow announcement was swallowed; cleared by
-    # session.compacted. If still set at idle with no error emitted, the
-    # promised compaction never happened and the prompt must fail.
-    pending_overflow_error: str | None = None
-
-    def __post_init__(self) -> None:
-        self.attribution = MessageAttribution(
-            self.opencode_message_id,
-            # start_time is captured before the prompt is posted, so nothing
-            # OpenCode creates for this prompt can predate it.
-            int(self.start_time * 1000),
-        )
+    emitted_error: bool = False
 
     def message_cost_usd(self) -> float:
-        """Cumulative priced cost of this turn, including subtask steps."""
         return sum(self.step_costs.values())
 
 
-class _Disposition(Enum):
-    """What the stream loop should do after applying one SSE event."""
-
-    CONTINUE = "continue"
-    # Parent session went idle: emit the final message state, then finish.
-    FINISHED_IDLE = "finished_idle"
-    # Parent session errored: the error event was emitted, finish immediately.
-    FAILED = "failed"
-
-
-class _PromptMaxDurationTimeout(Exception):
-    pass
-
-
-@dataclass(frozen=True)
-class _StreamStep:
-    """Bridge events produced by one SSE event, plus the loop disposition."""
-
-    events: list[dict[str, Any]]
-    disposition: _Disposition
-
-
-def _message_created_epoch_ms(info: dict[str, Any]) -> int | None:
-    """Read `time.created` off an OpenCode message, or None when it is absent.
-
-    Non-finite values are treated as absent rather than converted: `int()`
-    raises on NaN and infinity, which would tear down the SSE loop over a
-    malformed payload.
-    """
-    time_info = info.get("time")
-    if not isinstance(time_info, dict):
-        return None
-    created = time_info.get("created")
-    if isinstance(created, bool) or not isinstance(created, (int, float)):
-        return None
-    if not math.isfinite(created):
-        return None
-    return int(created)
-
-
 class OpenCodePromptStream:
-    """Streams one prompt through OpenCode and translates its SSE events.
-
-    Uses messageID-based correlation for reliable event attribution:
-    1. Generate an OpenCode-compatible ascending ID for the user message
-    2. OpenCode creates assistant messages with parentID = our ascending ID
-    3. Filter events to only process parts from our assistant messages
-    4. Use the control plane's message_id for events sent back
-    5. Track child sessions (sub-tasks) and forward their non-text events
-       with isSubtask=True
-
-    The instance is long-lived (one per bridge); the OpenCode session ID is a
-    per-call parameter because the bridge can recreate its OpenCode session.
-    """
+    """One long-lived translator per bridge."""
 
     def __init__(
         self,
@@ -169,9 +146,10 @@ class OpenCodePromptStream:
         self._sse_inactivity_timeout_seconds = sse_inactivity_timeout_seconds
         self._prompt_max_duration_seconds = prompt_max_duration_seconds
         self._prompt_cleanup_timeout_seconds = prompt_cleanup_timeout_seconds
-        # Session title dedupe survives across prompts so an unchanged title
-        # is forwarded to the control plane at most once.
         self._last_forwarded_session_title: str | None = None
+        self._selected_models: dict[str, dict[str, str]] = {}
+        # The post-execution wait for a title happens at most once per bridge.
+        self._title_waited = False
 
     async def stream_prompt(
         self,
@@ -184,25 +162,9 @@ class OpenCodePromptStream:
         attachments: list[HydratedSessionAttachment] | None = None,
         max_duration_seconds: float | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream response from OpenCode using Server-Sent Events.
-
-        Supplying our own user message ID is what makes attribution possible:
-        OpenCode stamps the assistant messages it generates for this prompt
-        with `parentID` pointing at it. The ID's ordering carries no meaning —
-        see OpenCodeIdentifier on why these IDs must never be compared.
-
-        ``max_duration_seconds`` bounds this turn instead of the configured
-        maximum, for a caller that already spent part of the prompt's budget.
-        """
-        opencode_message_id = OpenCodeIdentifier.ascending("message")
-        request_body = self._build_prompt_request_body(
-            content, model, opencode_message_id, reasoning_effort, attachments
-        )
-
         state = _PromptState(
             opencode_session_id=opencode_session_id,
             message_id=message_id,
-            opencode_message_id=opencode_message_id,
             start_time=time.time(),
         )
         loop = asyncio.get_running_loop()
@@ -216,74 +178,64 @@ class OpenCodePromptStream:
             async with AsyncExitStack() as stack:
                 try:
                     async with asyncio.timeout(prompt_deadline - loop.time()):
-                        sse_events = await stack.enter_async_context(
+                        await self._settle_previous_execution(opencode_session_id)
+                        await self._select_model(opencode_session_id, model, reasoning_effort)
+                        events = await stack.enter_async_context(
                             self._client.events(
                                 inactivity_timeout_seconds=self._sse_inactivity_timeout_seconds
                             )
                         )
-                        await self._client.post_prompt(opencode_session_id, request_body)
+                        await self._client.post_prompt(
+                            opencode_session_id, self._prompt_body(content, attachments)
+                        )
                 except TimeoutError as error:
                     raise _PromptMaxDurationTimeout from error
-                event_iterator = aiter(sse_events)
-
+                iterator = aiter(events)
                 while True:
-                    remaining_seconds = prompt_deadline - loop.time()
-                    if remaining_seconds <= 0:
+                    remaining = prompt_deadline - loop.time()
+                    if remaining <= 0:
                         raise _PromptMaxDurationTimeout
                     try:
-                        async with asyncio.timeout(remaining_seconds):
-                            sse_event = await anext(event_iterator)
+                        async with asyncio.timeout(remaining):
+                            event = await anext(iterator)
                     except StopAsyncIteration:
                         break
                     except TimeoutError as error:
                         raise _PromptMaxDurationTimeout from error
-
-                    step = self._apply_sse_event(state, sse_event)
-                    if step.disposition is not _Disposition.CONTINUE:
-                        for event in self._flush_unassociated_child_activity(state):
-                            yield event
-                    for event in step.events:
-                        yield event
-
-                    if step.disposition is _Disposition.FINISHED_IDLE:
-                        async for final_event in self._fetch_final_message_state(state):
-                            yield final_event
+                    outcome, translated = self.apply_event(state, event)
+                    for bridge_event in translated:
+                        yield bridge_event
+                    if outcome is _Outcome.FINISHED:
+                        if self._last_forwarded_session_title is None and not self._title_waited:
+                            self._title_waited = True
+                            title = await self._late_session_title(state, iterator)
+                            if title:
+                                yield title
                         return
-                    if step.disposition is _Disposition.FAILED:
-                        return
-
-                for event in self._flush_unassociated_child_activity(state):
-                    yield event
-
+                raise SSEStreamDisconnectedError("OpenCode closed the event stream")
         except _PromptMaxDurationTimeout:
-            elapsed = time.time() - state.start_time
             self._log.error(
                 "bridge.prompt_max_duration_timeout",
                 timeout_ms=int(max_duration * 1000),
-                elapsed_ms=int(elapsed * 1000),
+                elapsed_ms=int((time.time() - state.start_time) * 1000),
                 message_id=message_id,
             )
-            pending_child_events = self._flush_unassociated_child_activity(state)
-            for event in pending_child_events:
-                yield event
-            final_events: list[dict[str, Any]] = []
+            recovered: list[dict[str, Any]] = []
             try:
                 async with asyncio.timeout(self._prompt_cleanup_timeout_seconds):
                     await self._client.request_stop(
                         opencode_session_id, reason="prompt_max_duration_timeout"
                     )
-                    async for event in self._fetch_final_message_state(state):
-                        final_events.append(event)
+                    recovered = await self._recover_final_text(state)
             except TimeoutError:
                 self._log.error(
                     "bridge.prompt_timeout_cleanup_timeout",
                     timeout_ms=int(self._prompt_cleanup_timeout_seconds * 1000),
                     message_id=message_id,
                 )
-            for final_event in final_events:
-                yield final_event
+            for bridge_event in recovered:
+                yield bridge_event
             raise RuntimeError(f"Prompt exceeded max duration of {max_duration:.0f}s.")
-
         except SSEInactivityTimeoutError:
             elapsed = time.time() - state.start_time
             self._log.error(
@@ -294,704 +246,355 @@ class OpenCodePromptStream:
                 operation="bridge.sse",
                 message_id=message_id,
             )
-            pending_child_events = self._flush_unassociated_child_activity(state)
-            for event in pending_child_events:
-                yield event
             await self._client.request_stop(opencode_session_id, reason="inactivity_timeout")
-            async for final_event in self._fetch_final_message_state(state):
-                yield final_event
+            for bridge_event in await self._recover_final_text(state):
+                yield bridge_event
             raise RuntimeError(
                 f"SSE stream inactive for {self._sse_inactivity_timeout_seconds:.0f}s "
                 f"(no data received). Total elapsed: {elapsed:.0f}s"
             )
-
-        except SSEStreamDisconnectedError as e:
-            for event in self._flush_unassociated_child_activity(state):
-                yield event
-            async for final_event in self._fetch_final_message_state(state):
-                yield final_event
+        except SSEStreamDisconnectedError as error:
+            # OpenCode drops a subscriber that falls behind its event buffer.
+            for bridge_event in await self._recover_final_text(state):
+                yield bridge_event
             raise SSEConnectionError(
                 "OpenCode event stream disconnected before completion; "
                 "partial output was preserved when available."
-            ) from e
+            ) from error
 
-    def _apply_sse_event(self, state: _PromptState, sse_event: dict[str, Any]) -> _StreamStep:
-        """Translate one OpenCode SSE event into bridge events, mutating state."""
-        event_type = sse_event.get("type")
-        props = sse_event.get("properties", {})
-        if not isinstance(props, dict):
-            props = {}
+    async def _settle_previous_execution(self, opencode_session_id: str) -> None:
+        """Interrupt an execution an earlier prompt left running, and wait until it stops.
 
-        if event_type in ("server.connected", "server.heartbeat"):
-            return _StreamStep(events=[], disposition=_Disposition.CONTINUE)
+        A prompt whose stream disconnected or timed out can leave its execution
+        running. Its terminal event would otherwise end the next prompt's
+        stream, and its output would be attributed to the next prompt.
+        """
+        if not await self._client.session_active(opencode_session_id):
+            return
+        self._log.warn("bridge.previous_execution_running")
+        await self._client.request_stop(opencode_session_id, reason="previous_execution")
+        if not await self._client.wait_until_idle(
+            timeout_seconds=self._prompt_cleanup_timeout_seconds
+        ):
+            raise RuntimeError("The previous OpenCode execution did not stop")
+
+    async def _late_session_title(
+        self, state: _PromptState, iterator: AsyncIterator[dict[str, Any]]
+    ) -> dict[str, str] | None:
+        try:
+            async with asyncio.timeout(SESSION_TITLE_GRACE_SECONDS):
+                async for event in iterator:
+                    data = event.get("data")
+                    if (
+                        event.get("type") == "session.renamed"
+                        and isinstance(data, dict)
+                        and data.get("sessionID") == state.opencode_session_id
+                    ):
+                        return self._session_title_event_once(data.get("title"))
+        except (TimeoutError, SSEConnectionError, SSEInactivityTimeoutError):
+            pass
+        return None
+
+    async def _select_model(
+        self, opencode_session_id: str, model: str | None, reasoning_effort: str | None
+    ) -> None:
+        """Apply the prompt's model to the session; prompts carry none."""
+        if not model:
+            return
+        provider_id, model_id = model.split("/", 1) if "/" in model else ("anthropic", model)
+        selection = {"providerID": provider_id, "id": model_id}
+        if reasoning_effort and provider_id in VARIANT_REASONING_PROVIDERS:
+            # An effort the model has no variant for would fail the whole
+            # turn, so it is dropped and the model's default applies.
+            variants = await self._client.model_variants(provider_id, model_id)
+            if variants is None or reasoning_effort in variants:
+                selection["variant"] = reasoning_effort
+            else:
+                self._log.warn(
+                    "opencode.variant_unavailable",
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    variants=variants,
+                )
+        if self._selected_models.get(opencode_session_id) == selection:
+            return
+        await self._client.select_model(opencode_session_id, selection)
+        self._selected_models[opencode_session_id] = selection
+
+    def _prompt_body(
+        self, content: str, attachments: list[HydratedSessionAttachment] | None
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"text": content}
+        files = [
+            {"uri": part["url"], "name": part["filename"]}
+            for part in self._attachment_processor.build_file_parts(attachments)
+        ]
+        if files:
+            body["files"] = files
+        return body
+
+    def apply_event(
+        self, state: _PromptState, event: dict[str, Any]
+    ) -> tuple[_Outcome, list[dict[str, Any]]]:
+        """Translate one OpenCode event, mutating ``state``."""
+        event_type = event.get("type")
+        data = event.get("data")
+        if not isinstance(event_type, str) or not isinstance(data, dict):
+            return _Outcome.CONTINUE, []
+        session_id = data.get("sessionID")
+        parent = state.opencode_session_id
 
         if event_type == "session.created":
-            # Track direct child sessions before filtering. Nothing downstream
-            # processes session.created, so it never falls through.
-            self._track_child_session(state, props)
-            return _StreamStep(events=[], disposition=_Disposition.CONTINUE)
+            child_parent = data.get("parentID")
+            if session_id and (child_parent == parent or child_parent in state.children):
+                state.children[session_id] = child_parent
+                self._log.info("bridge.child_session_detected", child_session_id=session_id)
+            return _Outcome.CONTINUE, []
 
+        if session_id == parent:
+            return self._apply_parent_event(state, event_type, data)
+        if session_id in state.children:
+            return _Outcome.CONTINUE, self._child_events(state, session_id, event_type, data)
+        return _Outcome.CONTINUE, []
+
+    def _apply_parent_event(
+        self, state: _PromptState, event_type: str, data: dict[str, Any]
+    ) -> tuple[_Outcome, list[dict[str, Any]]]:
         events: list[dict[str, Any]] = []
-        title_event = self._session_title_event_from_sse(state, event_type, props)
-        if title_event:
-            events.append(title_event)
-        if event_type == "session.updated":
-            return _StreamStep(events=events, disposition=_Disposition.CONTINUE)
-
-        event_session_id = props.get("sessionID") or props.get("part", {}).get("sessionID")
-        is_child = state.child_activity.is_tracked(event_session_id)
-        if event_session_id and event_session_id != state.opencode_session_id and not is_child:
-            return _StreamStep(events=events, disposition=_Disposition.CONTINUE)
-
-        if event_type == "message.updated":
-            events.extend(self._on_message_updated(state, props))
-
-        elif event_type == "message.part.updated":
-            events.extend(self._on_part_updated(state, props))
-
-        elif event_type == "session.idle":
-            # Only parent idle terminates the stream
-            if props.get("sessionID") == state.opencode_session_id:
-                self._log_parent_idle(state, "bridge.session_idle")
-                events.extend(self._unrecovered_overflow_events(state))
-                return _StreamStep(events=events, disposition=_Disposition.FINISHED_IDLE)
-
-        elif event_type == "session.status":
-            status = props.get("status", {})
-            # Only parent status=idle terminates the stream
-            if props.get("sessionID") == state.opencode_session_id and status.get("type") == "idle":
-                self._log_parent_idle(state, "bridge.session_status_idle")
-                events.extend(self._unrecovered_overflow_events(state))
-                return _StreamStep(events=events, disposition=_Disposition.FINISHED_IDLE)
-
-        elif event_type == "session.error":
-            return self._on_session_error(state, props)
-
-        elif event_type == "session.compacted":
-            if props.get("sessionID") == state.opencode_session_id:
-                state.attribution.mark_compacted()
-                state.pending_overflow_error = None
-                self._log.info("bridge.session_compacted", message_id=state.message_id)
-                events.append({"type": "context_compacted", "messageId": state.message_id})
-
-        return _StreamStep(events=events, disposition=_Disposition.CONTINUE)
-
-    def _track_child_session(self, state: _PromptState, props: dict[str, Any]) -> None:
-        info = props.get("info", {})
-        child_id = info.get("id")
-        child_parent = info.get("parentID")
-        if child_id and child_parent == state.opencode_session_id:
-            if state.child_activity.track(child_id):
-                self._log.info(
-                    "bridge.child_session_detected",
-                    child_session_id=child_id,
-                    source="session.created",
-                )
-
-    def _on_message_updated(
-        self, state: _PromptState, props: dict[str, Any]
-    ) -> list[dict[str, Any]]:
-        """Authorize assistant messages and drain any parts buffered for them."""
-        info = props.get("info", {})
-        msg_session_id = info.get("sessionID")
-
-        if msg_session_id == state.opencode_session_id:
-            oc_msg_id = info.get("id", "")
-            parent_id = info.get("parentID", "")
-            role = info.get("role", "")
-            finish = info.get("finish", "")
-
-            if role == "user" and oc_msg_id:
-                if state.attribution.add_user_message(oc_msg_id):
-                    self._log.info(
-                        "bridge.user_message_id_discovered",
-                        expected_id=state.opencode_message_id,
-                        actual_id=oc_msg_id,
-                    )
-
-            parent_matches = state.attribution.parent_matches(parent_id)
-            is_compaction_summary = info.get("summary") is True
-
-            self._log.debug(
-                "bridge.message_updated",
-                role=role,
-                oc_msg_id=oc_msg_id,
-                parent_match=parent_matches,
-                compaction_occurred=state.attribution.is_compacted,
-                is_compaction_summary=is_compaction_summary,
-            )
-
-            events: list[dict[str, Any]] = []
-            if role == "assistant" and oc_msg_id:
-                disposition = state.attribution.assistant_disposition(
-                    oc_msg_id,
-                    parent_id,
-                    is_summary=is_compaction_summary,
-                    created_epoch_ms=_message_created_epoch_ms(info),
-                )
-                if disposition is not AssistantMessageDisposition.REJECT and info.get("error"):
-                    error_event = self._parent_error_event_once(state, info["error"])
-                    if error_event:
-                        self._log.error(
-                            "bridge.message_error",
-                            error_msg=error_event["error"],
-                            oc_msg_id=oc_msg_id,
-                        )
-                        events.append(error_event)
-
-                if disposition is AssistantMessageDisposition.OUTPUT:
-                    events.extend(self._drain_pending_parts(state, oc_msg_id, is_subtask=False))
-
-            if finish and finish not in ("tool-calls", ""):
-                self._log.debug(
-                    "bridge.message_finished",
-                    finish=finish,
-                )
-            return events
-
-        if state.child_activity.is_tracked(msg_session_id):
-            oc_msg_id = info.get("id", "")
-            role = info.get("role", "")
-            if role == "assistant" and oc_msg_id:
-                child_disposition = state.child_activity.authorize_or_queue_message(
-                    msg_session_id, oc_msg_id
-                )
-                if child_disposition is MessageDisposition.DROPPED:
-                    self._log_pending_child_drop(state)
-                    return []
-                if child_disposition is MessageDisposition.QUEUED:
-                    return []
-                state.attribution.allow_assistant(oc_msg_id)
-                return self._drain_pending_parts(state, oc_msg_id, is_subtask=True)
-
-        return []
-
-    def _on_part_updated(self, state: _PromptState, props: dict[str, Any]) -> list[dict[str, Any]]:
-        """Forward parts of authorized messages; buffer parts that arrive early."""
-        part = props.get("part", {})
-        delta = props.get("delta")
-        oc_msg_id = part.get("messageID", "")
-        part_session_id = part.get("sessionID", "")
-        events: list[dict[str, Any]] = []
-        correlated_child_sid: str | None = None
-
-        # Discover child sessions from task tool metadata (covers task_id resume)
-        if part.get("tool") == "task" and part_session_id == state.opencode_session_id:
-            tool_state = part.get("state", {})
-            metadata = tool_state.get("metadata") if isinstance(tool_state, dict) else None
-            child_sid = metadata.get("sessionId") if isinstance(metadata, dict) else None
-            task_call_id = part.get("callID")
-            if child_sid:
-                if task_call_id:
-                    is_new_child = state.child_activity.associate(child_sid, task_call_id)
-                    correlated_child_sid = child_sid
-                else:
-                    is_new_child = state.child_activity.track(child_sid)
-                if is_new_child:
-                    self._log.info(
-                        "bridge.child_session_detected",
-                        child_session_id=child_sid,
-                        source="task_metadata",
-                    )
-
-        if state.attribution.is_assistant_allowed(oc_msg_id):
-            is_subtask = state.child_activity.is_tracked(part_session_id)
-            events.extend(self._handle_part(state, part, delta, is_subtask=is_subtask))
-        elif oc_msg_id:
-            self._buffer_part(state, oc_msg_id, part, delta)
-
-        if correlated_child_sid:
-            events.extend(self._release_child_activity(state, correlated_child_sid))
-
-        if part.get("tool") == "task":
-            status = part.get("state", {}).get("status", "")
-            if status in ("completed", "error"):
-                state.child_activity.close(part.get("callID", ""))
-
-        return events
-
-    def _on_session_error(self, state: _PromptState, props: dict[str, Any]) -> _StreamStep:
-        error_session_id = props.get("sessionID")
-
-        if error_session_id == state.opencode_session_id:
-            error = props.get("error", {})
-            if isinstance(error, dict) and error.get("name") == CONTEXT_OVERFLOW_ERROR_NAME:
-                # With OpenCode's default automatic compaction enabled, this event
-                # announces recovery; session.compacted and more work follow it.
-                # Remember the error so idle-without-compaction still fails.
-                state.pending_overflow_error = (
-                    self._extract_error_message(error) or "Context overflow"
-                )
-                self._log.info(
-                    "bridge.context_overflow_compacting",
-                    error_msg=state.pending_overflow_error,
-                )
-                return _StreamStep(events=[], disposition=_Disposition.CONTINUE)
-
-            error_event = self._parent_error_event_once(state, error)
-            self._log.error(
-                "bridge.session_error",
-                error_msg=self._extract_error_message(error),
-                deduped=error_event is None,
-            )
-            return _StreamStep(
-                events=[error_event] if error_event else [],
-                disposition=_Disposition.FAILED,
-            )
-
-        if isinstance(error_session_id, str) and state.child_activity.is_tracked(error_session_id):
-            error = props.get("error", {})
-            if isinstance(error, dict) and error.get("name") == CONTEXT_OVERFLOW_ERROR_NAME:
-                # Child sessions recover through the same automatic compaction;
-                # surfacing this would fail the whole prompt spuriously.
-                self._log.info(
-                    "bridge.child_context_overflow_compacting",
-                    error_msg=self._extract_error_message(error),
-                    child_session_id=error_session_id,
-                )
-                return _StreamStep(events=[], disposition=_Disposition.CONTINUE)
-
-            error_msg = self._extract_error_message(error)
-            self._log.error(
-                "bridge.child_session_error",
-                error_msg=error_msg,
-                child_session_id=error_session_id,
-            )
-            # Stream does not end — the parent continues after a sub-task error
-            normalized_error = error_msg or "Sub-task error"
-            task_call_id = state.child_activity.task_for_activity(error_session_id)
-            if not task_call_id:
-                if not state.child_activity.queue_error(error_session_id, normalized_error):
-                    self._log_pending_child_drop(state)
-                return _StreamStep(events=[], disposition=_Disposition.CONTINUE)
-            return _StreamStep(
-                events=[
-                    self._child_error_event(
-                        state,
-                        error_session_id,
-                        normalized_error,
-                        task_call_id,
-                    )
-                ],
-                disposition=_Disposition.CONTINUE,
-            )
-
-        return _StreamStep(events=[], disposition=_Disposition.CONTINUE)
-
-    def _unrecovered_overflow_events(self, state: _PromptState) -> list[dict[str, Any]]:
-        """Fail the prompt if a swallowed overflow's promised compaction never came.
-
-        The context-overflow announcement is only safe to swallow because
-        compaction normally follows it. If the session goes idle without
-        compacting and without any error emitted, surface the original
-        overflow error instead of reporting silent success.
-        """
-        if state.pending_overflow_error is None or state.emitted_error_messages:
-            return []
-        self._log.error(
-            "bridge.context_overflow_unrecovered",
-            error_msg=state.pending_overflow_error,
-        )
-        state.emitted_error_messages.add(state.pending_overflow_error)
-        return [
-            {
-                "type": "error",
-                "error": state.pending_overflow_error,
-                "messageId": state.message_id,
-            }
-        ]
-
-    def _parent_error_event_once(self, state: _PromptState, error: object) -> dict[str, Any] | None:
-        """Build one parent error event across message.updated and session.error."""
-        error_msg = self._extract_error_message(error) or "Unknown error"
-        if error_msg in state.emitted_error_messages:
-            return None
-        state.emitted_error_messages.add(error_msg)
-        return {
-            "type": "error",
-            "error": error_msg,
-            "messageId": state.message_id,
-        }
-
-    def _handle_part(
-        self,
-        state: _PromptState,
-        part: dict[str, Any],
-        delta: Any,
-        *,
-        is_subtask: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Translate one authorized part into bridge events."""
-        part_type = part.get("type", "")
-        part_id = part.get("id", "")
-        events: list[dict[str, Any]] = []
-
-        if part_type == "text":
-            if is_subtask:
-                return events  # Don't forward child text tokens
-            text = part.get("text", "")
-            if delta:
-                state.cumulative_text[part_id] = state.cumulative_text.get(part_id, "") + delta
-            else:
-                state.cumulative_text[part_id] = text
-
-            if state.cumulative_text.get(part_id):
+        match event_type:
+            case "session.inbox.enqueued" if state.user_message_id is None:
+                state.user_message_id = data.get("inboxID")
+            case "session.step.started":
                 events.append(
                     {
-                        "type": "token",
-                        "content": state.cumulative_text[part_id],
+                        "type": "step_start",
                         "messageId": state.message_id,
-                        **({"partId": part_id} if isinstance(part_id, str) and part_id else {}),
+                        "stepId": data.get("assistantMessageID", ""),
                     }
                 )
-
-        elif part_type == "tool":
-            tool_event = self._tool_call_event(part, state.message_id)
-            if tool_event:
-                tool_state = part.get("state", {})
-                status = tool_state.get("status", "")
-                call_id = part.get("callID", "")
-                part_sid = part.get("sessionID", "")
-                child_session_id = state.child_activity.child_for_task(call_id) or ""
-                tool_key = f"tool:{part_sid}:{call_id}:{status}:{child_session_id}"
-
-                if part.get("tool") == "task":
-                    if child_session_id:
-                        tool_event["childSessionId"] = child_session_id
-
-                if tool_key not in state.emitted_tool_states:
-                    state.emitted_tool_states.add(tool_key)
-                    events.append(tool_event)
-
-        elif part_type == "step-start":
-            message_id = part.get("messageID") or part.get("sessionID") or ""
-            step_id = state.step_ids.start(
-                message_id, part_id if isinstance(part_id, str) else None
-            )
-            events.append(
-                {
-                    "type": "step_start",
-                    "messageId": state.message_id,
-                    "stepId": step_id,
-                }
-            )
-
-        elif part_type == "step-finish":
-            message_id = part.get("messageID") or part.get("sessionID") or ""
-            step_id = state.step_ids.finish(
-                message_id, part_id if isinstance(part_id, str) else None
-            )
-            cost = part.get("cost")
-            if isinstance(cost, int | float) and not isinstance(cost, bool):
-                state.step_costs[str(part.get("id", ""))] = float(cost)
-            finish_event = {
-                "type": "step_finish",
-                "messageId": state.message_id,
-                "stepId": step_id,
-                "messageCostUsd": state.message_cost_usd(),
-            }
-            if part.get("tokens") is not None:
-                finish_event["tokens"] = part["tokens"]
-            if part.get("reason") is not None:
-                finish_event["reason"] = part["reason"]
-            if cost is not None:
-                finish_event["cost"] = cost
-            events.append(finish_event)
-
-        if is_subtask:
-            child_session_id = part.get("sessionID", "")
-            for ev in events:
-                ev["isSubtask"] = True
-                if child_session_id:
-                    ev["childSessionId"] = child_session_id
-                    task_call_id = state.child_activity.task_for_message(part.get("messageID", ""))
-                    if task_call_id:
-                        ev["taskCallId"] = task_call_id
-        return events
-
-    def _release_child_activity(
-        self, state: _PromptState, child_session_id: str
-    ) -> list[dict[str, Any]]:
-        return [
-            event
-            for activity in state.child_activity.release(child_session_id)
-            for event in self._emit_pending_child_activity(state, activity)
-        ]
-
-    def _flush_unassociated_child_activity(self, state: _PromptState) -> list[dict[str, Any]]:
-        return [
-            event
-            for activity in state.child_activity.flush()
-            for event in self._emit_pending_child_activity(state, activity)
-        ]
-
-    def _emit_pending_child_activity(
-        self, state: _PromptState, activity: PendingChildActivity
-    ) -> list[dict[str, Any]]:
-        task_call_id = state.child_activity.task_for_pending(activity)
-        if isinstance(activity, PendingChildError):
-            return [
-                self._child_error_event(
-                    state, activity.child_session_id, activity.error, task_call_id
-                )
-            ]
-
-        if not isinstance(activity, PendingChildMessage):
-            return []
-        state.attribution.allow_assistant(activity.message_id)
-        return self._drain_pending_parts(state, activity.message_id, is_subtask=True)
-
-    def _log_pending_child_drop(self, state: _PromptState) -> None:
-        if not state.child_activity.should_log_drop():
-            return
-        self._log.warn(
-            "bridge.pending_child_activity_dropped",
-            message_id=state.message_id,
-            limit=MAX_PENDING_CHILD_ACTIVITY,
-        )
-
-    def _child_error_event(
-        self,
-        state: _PromptState,
-        child_session_id: str,
-        error: str,
-        task_call_id: str | None,
-    ) -> dict[str, Any]:
-        event = {
-            "type": "error",
-            "error": error,
-            "messageId": state.message_id,
-            "isSubtask": True,
-            "childSessionId": child_session_id,
-        }
-        if task_call_id:
-            event["taskCallId"] = task_call_id
-        return event
-
-    def _buffer_part(
-        self, state: _PromptState, oc_msg_id: str, part: dict[str, Any], delta: Any
-    ) -> None:
-        if state.pending_parts_total >= MAX_PENDING_PART_EVENTS:
-            if not state.pending_drop_logged:
+            case "session.step.ended" | "session.step.failed":
+                events.append(self._step_finish(state, data, failed=event_type.endswith("failed")))
+            case "session.text.delta":
+                key = self._text_key(data)
+                state.texts[key] = state.texts.get(key, "") + str(data.get("delta", ""))
+                events.extend(self._token(state, key))
+            case "session.text.ended":
+                key = self._text_key(data)
+                state.texts[key] = str(data.get("text", ""))
+                events.extend(self._token(state, key))
+            case (
+                "session.tool.called"
+                | "session.tool.progress"
+                | "session.tool.success"
+                | "session.tool.failed"
+                | "session.tool.input.started"
+            ):
+                events.extend(self._tool_events(state, event_type, data))
+            case "session.renamed":
+                title = self._session_title_event_once(data.get("title"))
+                if title:
+                    events.append(title)
+            case "session.compaction.ended":
+                self._log.info("bridge.session_compacted", message_id=state.message_id)
+                events.append({"type": "context_compacted", "messageId": state.message_id})
+            case "session.retry.scheduled":
                 self._log.warn(
-                    "bridge.pending_parts_dropped",
-                    message_id=state.message_id,
-                    limit=MAX_PENDING_PART_EVENTS,
+                    "bridge.opencode_retry_scheduled",
+                    attempt=data.get("attempt"),
+                    error_msg=_error_message(data.get("error")),
                 )
-                state.pending_drop_logged = True
-            return
-        state.pending_parts.setdefault(oc_msg_id, []).append(_PendingPart(part=part, delta=delta))
-        state.pending_parts_total += 1
+            case "session.execution.succeeded":
+                self._log_finished(state, "succeeded")
+                return _Outcome.FINISHED, events
+            case "session.execution.interrupted":
+                self._log_finished(state, f"interrupted:{data.get('reason')}")
+                return _Outcome.FINISHED, events
+            case "session.execution.failed":
+                error_msg = _error_message(data.get("error"))
+                self._log.error("bridge.session_error", error_msg=error_msg)
+                if not state.emitted_error:
+                    state.emitted_error = True
+                    events.append(
+                        {"type": "error", "error": error_msg, "messageId": state.message_id}
+                    )
+                return _Outcome.FINISHED, events
+        return _Outcome.CONTINUE, events
 
-    def _drain_pending_parts(
-        self, state: _PromptState, oc_msg_id: str, *, is_subtask: bool
+    def _child_events(
+        self, state: _PromptState, child_id: str, event_type: str, data: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        pending = state.pending_parts.pop(oc_msg_id, [])
-        if not pending:
+        """Tool calls, steps and failures from a subagent, marked as subtask activity."""
+        if event_type in {"session.step.ended", "session.step.failed"}:
+            events = [self._step_finish(state, data, failed=event_type.endswith("failed"))]
+        elif event_type.startswith("session.tool."):
+            events = self._tool_events(state, event_type, data)
+        elif event_type == "session.execution.failed":
+            events = [
+                {
+                    "type": "error",
+                    "error": _error_message(data.get("error")),
+                    "messageId": state.message_id,
+                }
+            ]
+        else:
             return []
-        state.pending_parts_total -= len(pending)
-        events: list[dict[str, Any]] = []
-        for entry in pending:
-            events.extend(self._handle_part(state, entry.part, entry.delta, is_subtask=is_subtask))
+        task_call_id = self._root_call(state, child_id)
+        for event in events:
+            event["isSubtask"] = True
+            event["childSessionId"] = child_id
+            if task_call_id:
+                event["taskCallId"] = task_call_id
         return events
 
-    def _log_parent_idle(self, state: _PromptState, log_event: str) -> None:
-        self._log.debug(
-            log_event,
-            elapsed_s=round(time.time() - state.start_time, 1),
-            tracked_msgs=state.attribution.allowed_assistant_count,
+    def _root_call(self, state: _PromptState, child_id: str) -> str | None:
+        """The parent-session ``subagent`` call a (possibly nested) child descends from."""
+        session = child_id
+        while state.children.get(session) not in (None, state.opencode_session_id):
+            session = state.children[session]
+        return state.child_calls.get(session)
+
+    def _tool_events(
+        self, state: _PromptState, event_type: str, data: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        call_id = str(data.get("id", ""))
+        if not call_id:
+            return []
+        if event_type == "session.tool.input.started":
+            state.tools[call_id] = _ToolCall(bridge_tool_name(str(data.get("name", ""))))
+            return []
+        call = state.tools.setdefault(call_id, _ToolCall(""))
+        output = ""
+        match event_type:
+            case "session.tool.called":
+                call.args = bridge_tool_args(call.name, data.get("input"))
+                status = "running"
+            case "session.tool.progress":
+                metadata = data.get("metadata")
+                child_id = metadata.get("sessionID") if isinstance(metadata, dict) else None
+                if call.name == "task" and isinstance(child_id, str) and child_id:
+                    if child_id not in state.child_calls:
+                        state.child_calls[child_id] = call_id
+                        state.children.setdefault(child_id, state.opencode_session_id)
+                        return [self._tool_call(state, call_id, call, "running", "", child_id)]
+                return []
+            case "session.tool.success":
+                status, output = "completed", _content_text(data.get("content"))
+            case _:
+                status = "error"
+                output = _error_message(data.get("error"))
+        if (call_id, status) in state.emitted_tool_states:
+            return []
+        state.emitted_tool_states.add((call_id, status))
+        child_id = next(
+            (child for child, call in state.child_calls.items() if call == call_id), None
         )
-
-    def _tool_call_event(
-        self,
-        part: dict[str, Any],
-        message_id: str,
-    ) -> dict[str, Any] | None:
-        """Build a tool_call event from a tool part.
-
-        Returns None for a pending invocation with no input yet — there is
-        nothing to show until arguments start streaming.
-        """
-        tool_state = part.get("state", {})
-        status = tool_state.get("status", "")
-        tool_input = tool_state.get("input", {})
-
-        self._log.debug(
-            "bridge.tool_part",
-            tool=part.get("tool"),
-            status=status,
-        )
-
-        if status in ("pending", "") and not tool_input:
-            return None
-
-        return {
-            "type": "tool_call",
-            "tool": part.get("tool", ""),
-            "args": tool_input,
-            "callId": part.get("callID", ""),
-            "status": status,
-            "output": tool_state.get("output", ""),
-            "messageId": message_id,
-        }
-
-    def _build_prompt_request_body(
-        self,
-        content: str,
-        model: str | None,
-        opencode_message_id: str | None = None,
-        reasoning_effort: str | None = None,
-        attachments: list[HydratedSessionAttachment] | None = None,
-    ) -> dict[str, Any]:
-        """Build request body for OpenCode prompt requests.
-
-        Args:
-            content: The prompt text content
-            model: Optional model override (e.g., "claude-haiku-4-5" or "anthropic/claude-haiku-4-5")
-            opencode_message_id: OpenCode-compatible ascending message ID (e.g., "msg_...").
-                                 When provided, OpenCode uses this as the user message ID,
-                                 and assistant responses will have parentID pointing to it.
-            reasoning_effort: Optional reasoning effort level (e.g., "high", "max")
-            attachments: Optional list of attachment dicts (type/name/url/content/mimeType)
-                         to forward as OpenCode file parts.
-        """
-        parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
-        parts.extend(
-            dict(part) for part in self._attachment_processor.build_file_parts(attachments)
-        )
-        request_body: dict[str, Any] = {"parts": parts}
-
-        if opencode_message_id:
-            request_body["messageID"] = opencode_message_id
-
-        if model:
-            if "/" in model:
-                provider_id, model_id = model.split("/", 1)
-            else:
-                provider_id, model_id = "anthropic", model
-            model_spec: dict[str, Any] = {
-                "providerID": provider_id,
-                "modelID": model_id,
-            }
-
-            if reasoning_effort and provider_id in VARIANT_REASONING_PROVIDERS:
-                request_body["variant"] = reasoning_effort
-
-            request_body["model"] = model_spec
-
-        return request_body
-
-    def _session_title_event_from_sse(
-        self, state: _PromptState, event_type: object, props: dict[str, Any]
-    ) -> dict[str, str] | None:
-        if event_type != "session.updated":
-            return None
-
-        info = props.get("info")
-        if not isinstance(info, dict):
-            return None
-
-        session_id = props.get("sessionID") or info.get("id")
-        if session_id != state.opencode_session_id:
-            return None
-
-        return self._session_title_event_once(info.get("title"))
-
-    def _session_title_event_once(self, title: object) -> dict[str, str] | None:
-        trimmed = self._normalize_forwardable_session_title(title)
-        if trimmed is None:
-            return None
-        if trimmed == self._last_forwarded_session_title:
-            return None
-
-        self._last_forwarded_session_title = trimmed
-        return {"type": "session_title", "title": trimmed}
+        return [self._tool_call(state, call_id, call, status, output, child_id)]
 
     @staticmethod
-    def _normalize_forwardable_session_title(title: object) -> str | None:
+    def _tool_call(
+        state: _PromptState,
+        call_id: str,
+        call: _ToolCall,
+        status: str,
+        output: str,
+        child_session_id: str | None,
+    ) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "type": "tool_call",
+            "tool": call.name,
+            "args": call.args,
+            "callId": call_id,
+            "status": status,
+            "output": output,
+            "messageId": state.message_id,
+        }
+        if child_session_id:
+            event["childSessionId"] = child_session_id
+        return event
+
+    @staticmethod
+    def _step_finish(state: _PromptState, data: dict[str, Any], *, failed: bool) -> dict[str, Any]:
+        step_id = str(data.get("assistantMessageID", ""))
+        cost = data.get("cost")
+        if isinstance(cost, int | float) and not isinstance(cost, bool):
+            state.step_costs[step_id] = float(cost)
+        event: dict[str, Any] = {
+            "type": "step_finish",
+            "messageId": state.message_id,
+            "stepId": step_id,
+            "messageCostUsd": state.message_cost_usd(),
+        }
+        if data.get("tokens") is not None:
+            event["tokens"] = data["tokens"]
+        reason = "error" if failed else data.get("finish")
+        if reason is not None:
+            event["reason"] = reason
+        if cost is not None:
+            event["cost"] = cost
+        return event
+
+    @staticmethod
+    def _text_key(data: dict[str, Any]) -> str:
+        return f"{data.get('assistantMessageID', '')}:{data.get('ordinal', 0)}"
+
+    @staticmethod
+    def _token(state: _PromptState, key: str) -> list[dict[str, Any]]:
+        text = state.texts.get(key, "")
+        if not text or text == state.sent_texts.get(key):
+            return []
+        state.sent_texts[key] = text
+        return [{"type": "token", "content": text, "messageId": state.message_id, "partId": key}]
+
+    def _session_title_event_once(self, title: object) -> dict[str, str] | None:
         if not isinstance(title, str):
             return None
-
         trimmed = title.strip()
         if not trimmed or OPENCODE_DEFAULT_TITLE_RE.match(trimmed):
             return None
-        return trimmed
+        if trimmed == self._last_forwarded_session_title:
+            return None
+        self._last_forwarded_session_title = trimmed
+        return {"type": "session_title", "title": trimmed}
 
-    @staticmethod
-    def _extract_error_message(error: object) -> str | None:
-        """Extract message from OpenCode NamedError: { "name": "...", "data": { "message": "..." } }."""
-        if isinstance(error, dict):
-            data = error.get("data")
-            if isinstance(data, dict) and "message" in data:
-                return str(data["message"])
-            message = error.get("message") or error.get("name")
-            return str(message) if message else None
-        return str(error) if error else None
+    def _log_finished(self, state: _PromptState, outcome: str) -> None:
+        self._log.debug(
+            "bridge.execution_finished",
+            outcome=outcome,
+            elapsed_s=round(time.time() - state.start_time, 1),
+        )
 
-    async def _fetch_final_message_state(
-        self, state: _PromptState
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Fetch final message state from API to ensure complete text.
+    async def _recover_final_text(self, state: _PromptState) -> list[dict[str, Any]]:
+        """Re-read this prompt's assistant text after the event stream was lost.
 
-        This is called after session.idle (and on the timeout/disconnect
-        paths) to capture any text that may have been missed due to SSE event
-        ordering. It fetches the latest message state and emits any text
-        that's longer than what ``state.cumulative_text`` says we already
-        sent.
-
-        Accepts an assistant message when its parentID matches one of the
-        prompt's user message IDs, when it was already authorized during SSE
-        streaming, or after compaction, which rewrites the message chain.
-        The compaction fallback is limited to messages created after this
-        prompt's user message: the API returns the whole session history, and
-        re-emitting prior turns' text here would overwrite this prompt's
-        final output with stale messages. The compaction summary itself is
-        never accepted: its text is internal context, and its parentID (the
-        compaction user message) matches.
+        This prompt's assistant messages are the ones newer than its user
+        message. Without that message in the session (the prompt was never
+        delivered), nothing is recovered: older replies are not this prompt's.
         """
-        if not state.opencode_session_id:
-            return
-
+        if state.user_message_id is None:
+            return []
         try:
-            messages = await self._client.get_messages(state.opencode_session_id)
-            if messages is None:
-                return
-
-            for msg in messages:
-                info = msg.get("info", {})
-                role = info.get("role", "")
-                msg_id = info.get("id", "")
-                parent_id = info.get("parentID", "")
-
-                if role != "assistant":
-                    continue
-
-                is_compaction_summary = info.get("summary") is True
-                disposition = state.attribution.assistant_disposition(
-                    msg_id,
-                    parent_id,
-                    is_summary=is_compaction_summary,
-                    created_epoch_ms=_message_created_epoch_ms(info),
-                )
-                if disposition is not AssistantMessageDisposition.OUTPUT:
-                    continue
-
-                parts = msg.get("parts", [])
-                for part in parts:
-                    part_type = part.get("type", "")
-                    part_id = part.get("id", "")
-
-                    if part_type == "text":
-                        text = part.get("text", "")
-                        previously_sent = state.cumulative_text.get(part_id, "")
-                        if len(text) > len(previously_sent):
-                            self._log.debug(
-                                "bridge.final_text_update",
-                                prev_len=len(previously_sent),
-                                new_len=len(text),
-                            )
-                            for event in self._handle_part(state, part, None):
-                                yield event
-
-        except Exception as e:
-            self._log.error("bridge.final_state_error", exc=e)
+            messages = await self._client.messages_after(
+                state.opencode_session_id, state.user_message_id
+            )
+        except Exception as error:
+            self._log.error("bridge.final_state_error", exc=error)
+            return []
+        replies = [
+            message
+            for message in messages or []
+            if isinstance(message, dict) and message.get("type") == "assistant"
+        ]
+        events: list[dict[str, Any]] = []
+        for message in reversed(replies):
+            texts = [
+                item
+                for item in message.get("content") or []
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            for ordinal, item in enumerate(texts):
+                key = f"{message.get('id', '')}:{ordinal}"
+                text = str(item.get("text", ""))
+                if len(text) > len(state.sent_texts.get(key, "")):
+                    state.texts[key] = text
+                    events.extend(self._token(state, key))
+        return events
