@@ -260,6 +260,7 @@ describe("GcpSandboxProvider", () => {
       deleteDisk: vi.fn(async () => undefined),
       createDiskSnapshot: vi.fn(async () => undefined),
       deleteSnapshot: vi.fn(async () => undefined),
+      listDisks: vi.fn(async () => []),
       ...overrides,
     } as unknown as GcpComputeClient;
   }
@@ -442,6 +443,41 @@ describe("GcpSandboxProvider", () => {
     );
   });
 
+  it("deletes the boot disk when a running session is archived, even with preserve intent", async () => {
+    const client = createMockGcpClient({
+      getInstance: vi.fn(async () => ({
+        name: "ssess-123",
+        status: "RUNNING",
+        zone: "projects/test-project/zones/us-central1-a",
+      })),
+      getDisk: vi.fn(async () => ({
+        name: "ssess-123",
+        status: "READY",
+        zone: "projects/test-project/zones/us-central1-a",
+      })),
+    });
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+      defaultImageFamily: "sparkfleet",
+    });
+
+    await provider.stopSandbox({
+      providerObjectId: "inst-1",
+      sessionId: "sess-123",
+      reason: "session_archived",
+      intent: "preserve",
+    });
+
+    expect(client.deleteInstance).toHaveBeenCalledTimes(1);
+    expect(client.deleteDisk).toHaveBeenCalledWith(
+      "us-central1-a",
+      "ssess-123",
+      undefined,
+      undefined
+    );
+  });
+
   it("resumes by re-creating VM against kept boot disk or requests fresh spawn if disk is gone", async () => {
     const clientWithDisk = createMockGcpClient({
       getInstance: vi.fn(async () => null),
@@ -551,5 +587,117 @@ describe("gcpZoneForSession", () => {
 
   it("rejects an empty zone list", () => {
     expect(() => gcpZoneForSession("sess-123", [])).toThrow();
+  });
+});
+
+describe("GcpSandboxProvider disk retention purge", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW_MS = Date.parse("2026-11-12T00:00:00Z");
+  const daysAgo = (days: number) => new Date(NOW_MS - days * DAY_MS).toISOString();
+
+  function disk(name: string, fields: Record<string, unknown>) {
+    return { name, zone: "projects/test-project/zones/us-central1-a", ...fields };
+  }
+
+  function createPurgeClient(disks: unknown[]): GcpComputeClient {
+    return {
+      project: "test-project",
+      listDisks: vi.fn(async () => disks),
+      deleteDisk: vi.fn(async () => undefined),
+      getInstance: vi.fn(async () => null),
+      createDisk: vi.fn(async (spec) => ({ name: spec.name, zone: spec.zone })),
+      createInstance: vi.fn(async (spec) => ({
+        name: spec.name,
+        status: "RUNNING",
+        zone: `projects/test-project/zones/${spec.zone}`,
+      })),
+    } as unknown as GcpComputeClient;
+  }
+
+  it("deletes only the two longest-unused detached disks past the cutoff", async () => {
+    const client = createPurgeClient([
+      disk("expired-30d", { creationTimestamp: daysAgo(30) }),
+      disk("expired-20d", { creationTimestamp: daysAgo(40), lastDetachTimestamp: daysAgo(20) }),
+      disk("expired-15d", { creationTimestamp: daysAgo(15) }),
+      disk("old-but-recently-used", {
+        creationTimestamp: daysAgo(60),
+        lastDetachTimestamp: daysAgo(2),
+      }),
+      disk("attached", { creationTimestamp: daysAgo(90), users: ["instances/x"] }),
+      disk("no-timestamps", {}),
+      disk("excluded", { creationTimestamp: daysAgo(100) }),
+    ]);
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    const deleted = await provider.purgeExpiredDisks("excluded", undefined, NOW_MS);
+
+    expect(deleted).toEqual(["expired-30d", "expired-20d"]);
+    expect(client.listDisks).toHaveBeenCalledWith(
+      "us-central1-a",
+      'labels.managed_by="background-agents-gcp"',
+      undefined
+    );
+    expect(client.deleteDisk).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors a custom retention and does nothing when retention is 0", async () => {
+    const disks = [disk("ten-days", { creationTimestamp: daysAgo(10) })];
+
+    const short = createPurgeClient(disks);
+    await expect(
+      new GcpSandboxProvider(short, {
+        project: "test-project",
+        zones: ["us-central1-a"],
+        diskRetentionDays: 7,
+      }).purgeExpiredDisks(undefined, undefined, NOW_MS)
+    ).resolves.toEqual(["ten-days"]);
+
+    const disabled = createPurgeClient(disks);
+    await expect(
+      new GcpSandboxProvider(disabled, {
+        project: "test-project",
+        zones: ["us-central1-a"],
+        diskRetentionDays: 0,
+      }).purgeExpiredDisks(undefined, undefined, NOW_MS)
+    ).resolves.toEqual([]);
+    expect(disabled.listDisks).not.toHaveBeenCalled();
+  });
+
+  it("rejects a negative retention", () => {
+    expect(
+      () =>
+        new GcpSandboxProvider(createPurgeClient([]), {
+          project: "test-project",
+          zones: ["us-central1-a"],
+          diskRetentionDays: -1,
+        })
+    ).toThrow("GCP_DISK_RETENTION_DAYS must be >= 0");
+  });
+
+  it("starts a purge after provisioning without waiting for it or failing on its errors", async () => {
+    let releaseList!: () => void;
+    const client = createPurgeClient([]);
+    client.listDisks = vi.fn(
+      () =>
+        new Promise<never>((_, reject) => {
+          releaseList = () => reject(new Error("list failed"));
+        })
+    );
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+      defaultImageFamily: "sparkfleet",
+    });
+
+    const result = await provider.createSandbox(baseCreateConfig);
+
+    expect(result.providerObjectId).toContain("ssess-123");
+    expect(client.listDisks).toHaveBeenCalled();
+    releaseList();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.deleteDisk).not.toHaveBeenCalled();
   });
 });

@@ -157,6 +157,7 @@ gcp_project                  = "" # GCP project ID where sandbox VMs and disks a
 # gcp_include_startup_script = true
 # gcp_supports_snapshots     = false
 # gcp_supports_restore       = false
+# gcp_disk_retention_days    = 14 # delete detached disks unused this many days; 0 disables
 
 
 # =============================================================================

@@ -858,6 +858,17 @@ variable "gcp_supports_restore" {
   default     = false
 }
 
+variable "gcp_disk_retention_days" {
+  description = "Days a detached GCP sandbox disk is kept before it may be purged; 0 disables purging"
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.gcp_disk_retention_days >= 0
+    error_message = "gcp_disk_retention_days must be >= 0."
+  }
+}
+
 variable "nextauth_secret" {
   description = "Browser authentication secret used by the control plane (legacy Terraform input name; generate with: openssl rand -base64 32)"
   type        = string

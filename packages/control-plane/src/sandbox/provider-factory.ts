@@ -24,6 +24,7 @@ import { createGcpComputeClient } from "./providers/gcp/client";
 import {
   createGcpProvider,
   DEFAULT_GCP_BOOT_DISK_SIZE_GB,
+  DEFAULT_GCP_DISK_RETENTION_DAYS,
   DEFAULT_GCP_ZONES,
   type GcpSandboxProvider,
 } from "./providers/gcp/provider";
@@ -122,6 +123,11 @@ function createGcpProviderFromEnv(env: Env): GcpSandboxProvider {
     ),
     supportsSnapshots: parseBooleanEnv("GCP_SUPPORTS_SNAPSHOTS", env.GCP_SUPPORTS_SNAPSHOTS, false),
     supportsRestore: parseBooleanEnv("GCP_SUPPORTS_RESTORE", env.GCP_SUPPORTS_RESTORE, false),
+    diskRetentionDays: parseNumericEnv(
+      "GCP_DISK_RETENTION_DAYS",
+      env.GCP_DISK_RETENTION_DAYS,
+      DEFAULT_GCP_DISK_RETENTION_DAYS
+    ),
   });
 }
 

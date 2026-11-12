@@ -86,6 +86,16 @@ const gcpDiskSchema = z.object({
   status: z.string().optional(),
   zone: z.string().optional(),
   selfLink: z.string().optional(),
+  creationTimestamp: z.string().optional(),
+  lastAttachTimestamp: z.string().optional(),
+  lastDetachTimestamp: z.string().optional(),
+  /** Instances the disk is attached to; empty or absent when detached. */
+  users: z.array(z.string()).optional(),
+});
+
+const gcpDiskListSchema = z.object({
+  items: z.array(gcpDiskSchema).optional(),
+  nextPageToken: z.string().optional(),
 });
 
 export type GcpDisk = z.infer<typeof gcpDiskSchema>;
@@ -322,6 +332,37 @@ export class GcpComputeClient {
       "getDisk",
       DEFAULT_API_DEADLINE_MS
     );
+  }
+
+  /**
+   * List disks in one zone, optionally narrowed by a Compute Engine filter
+   * expression (e.g. `labels.managed_by="x"`). Follows every page.
+   */
+  async listDisks(
+    zone: string,
+    filter?: string,
+    correlation?: CorrelationContext,
+    signal?: AbortSignal
+  ): Promise<GcpDisk[]> {
+    const disks: GcpDisk[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params = new URLSearchParams();
+      if (filter) params.set("filter", filter);
+      if (pageToken) params.set("pageToken", pageToken);
+      const query = params.toString();
+      const page = await this.requestJson(
+        `/projects/${encodeURIComponent(this.project)}/zones/${encodeURIComponent(zone)}/disks${query ? `?${query}` : ""}`,
+        { method: "GET", signal },
+        gcpDiskListSchema,
+        correlation,
+        "listDisks",
+        DEFAULT_API_DEADLINE_MS
+      );
+      disks.push(...(page.items ?? []));
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return disks;
   }
 
   async createDisk(

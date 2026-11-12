@@ -11,6 +11,14 @@ separate service to deploy for this provider.
 - **Stop** deletes the VM but keeps the boot disk. **Resume** starts the existing VM or creates a
   new VM attached to the kept disk. If the disk is gone, the session spawns fresh.
 - **Destroy** deletes both the VM and the boot disk.
+- **Archiving** a session whose sandbox is running deletes its boot disk too; unarchiving it later
+  starts a fresh sandbox. A session archived while its sandbox is already stopped keeps its disk
+  until the retention purge removes it.
+- **Disk retention**: after each new sandbox is provisioned, a background task deletes up to two
+  detached sandbox disks that have gone unused (no create, attach, or detach) for longer than
+  `gcp_disk_retention_days` (14 days by default), oldest first. Only disks labeled
+  `managed_by=background-agents-gcp` in the configured zones are considered; attached disks are
+  never deleted. Set it to `0` to disable purging. A session whose disk was purged starts fresh.
 - Snapshots and restore use GCE disk snapshots and are off by default (see `gcp_supports_snapshots`
   and `gcp_supports_restore`).
 - Each session is placed in one of `gcp_zones`, picked from a hash of the session ID, so sessions
@@ -77,6 +85,7 @@ compute.instances.setServiceAccount   # when gcp_vm_service_account_email is set
 # Disks
 compute.disks.create
 compute.disks.get
+compute.disks.list                    # disk retention purge
 compute.disks.delete
 compute.disks.use
 compute.disks.setLabels
@@ -143,6 +152,7 @@ control-plane Worker environment variables shown.
 | `gcp_include_startup_script`        | `GCP_INCLUDE_STARTUP_SCRIPT`   | no       | `true`                  | Inject the sandbox runtime startup script into instance metadata            |
 | `gcp_supports_snapshots`            | `GCP_SUPPORTS_SNAPSHOTS`       | no       | `false`                 | Enable GCE disk snapshots                                                   |
 | `gcp_supports_restore`              | `GCP_SUPPORTS_RESTORE`         | no       | `false`                 | Enable restoring sandboxes from disk snapshots                              |
+| `gcp_disk_retention_days`           | `GCP_DISK_RETENTION_DAYS`      | no       | `14`                    | Days a detached disk may go unused before it is purged; `0` disables        |
 | —                                   | `GCP_COMPUTE_API_BASE_URL`     | no       | Google's API            | Overrides the Compute Engine API base URL; for tests only                   |
 
 \* Terraform requires `gcp_project`. When running the control plane outside Terraform, an unset

@@ -35,10 +35,12 @@ import {
   type StopConfig,
   type StopResult,
 } from "../../provider";
+import { createLogger, type CorrelationContext } from "../../../logger";
 import {
   GcpComputeApiError,
   isGcpCapacityError,
   type GcpComputeClient,
+  type GcpDisk,
   type GcpInstance,
 } from "./client";
 import {
@@ -49,6 +51,8 @@ import {
   type GcpBootMetadataConfig,
 } from "./metadata";
 import {
+  GCP_LABEL_MANAGED_BY,
+  GCP_MANAGED_BY_VALUE,
   extractGcpZone,
   gcpDiskSelfLink,
   gcpSandboxLabels,
@@ -66,6 +70,15 @@ export const DEFAULT_GCP_ZONES = [
 export const DEFAULT_GCP_MACHINE_TYPE = "e2-standard-4";
 export const DEFAULT_GCP_BOOT_DISK_SIZE_GB = 80;
 export const DEFAULT_GCP_BOOT_DISK_TYPE = "pd-balanced";
+/** Days a detached sandbox disk is kept before it may be purged; 0 disables purging. */
+export const DEFAULT_GCP_DISK_RETENTION_DAYS = 14;
+/** Expired disks deleted per purge, so each launch does a small, bounded amount of cleanup. */
+const GCP_DISK_PURGE_BATCH_SIZE = 2;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+/** StopConfig.reason the session lifecycle uses when an archive stops a running sandbox. */
+const SESSION_ARCHIVED_STOP_REASON = "session_archived";
+
+const log = createLogger("gcp-provider");
 
 export interface GcpProviderConfig {
   project: string;
@@ -84,6 +97,8 @@ export interface GcpProviderConfig {
   includeStartupScript?: boolean;
   supportsSnapshots?: boolean;
   supportsRestore?: boolean;
+  /** Defaults to DEFAULT_GCP_DISK_RETENTION_DAYS; 0 disables purging. */
+  diskRetentionDays?: number;
 }
 
 export class GcpSandboxProvider implements SandboxProvider {
@@ -101,6 +116,7 @@ export class GcpSandboxProvider implements SandboxProvider {
   private readonly bootDiskType: string;
   private readonly bootMetadataConfig: GcpBootMetadataConfig;
   private readonly includeStartupScript: boolean;
+  private readonly diskRetentionMs: number;
 
   constructor(
     private readonly client: GcpComputeClient,
@@ -120,6 +136,11 @@ export class GcpSandboxProvider implements SandboxProvider {
       throw new Error("GCP_BOOT_DISK_SIZE_GB must be > 0");
     }
     this.bootDiskType = config.bootDiskType?.trim() || DEFAULT_GCP_BOOT_DISK_TYPE;
+    const diskRetentionDays = config.diskRetentionDays ?? DEFAULT_GCP_DISK_RETENTION_DAYS;
+    if (!Number.isFinite(diskRetentionDays) || diskRetentionDays < 0) {
+      throw new Error("GCP_DISK_RETENTION_DAYS must be >= 0");
+    }
+    this.diskRetentionMs = diskRetentionDays * MS_PER_DAY;
     this.bootMetadataConfig = {
       vertexProject: config.vertexProject?.trim() || config.project.trim(),
       vertexLocation: config.vertexLocation?.trim() || DEFAULT_GCP_VERTEX_LOCATION,
@@ -204,6 +225,7 @@ export class GcpSandboxProvider implements SandboxProvider {
         await this.client.deleteDisk(primaryZone, name, config.correlation).catch(() => undefined);
         throw spawnError;
       }
+      this.startExpiredDiskPurge(name, config.correlation);
 
       return {
         sandboxId: config.sandboxId,
@@ -256,6 +278,7 @@ export class GcpSandboxProvider implements SandboxProvider {
         config.correlation,
         primaryZone
       );
+      this.startExpiredDiskPurge(diskName, config.correlation);
 
       return {
         success: true,
@@ -366,7 +389,10 @@ export class GcpSandboxProvider implements SandboxProvider {
         await this.client.deleteInstance(zone, name, config.correlation, signal);
       }
 
-      if (config.intent === "destroy") {
+      // Archiving a session deletes its disk even when the lifecycle asks to
+      // preserve it: an archived session is not expected to resume, and a
+      // later unarchive spawns fresh (resume reports shouldSpawnFresh).
+      if (config.intent === "destroy" || config.reason === SESSION_ARCHIVED_STOP_REASON) {
         const disk = await this.client.getDisk(name, this.zones, config.correlation, signal);
         if (disk) {
           const diskZone = extractGcpZone(disk.zone) || this.zones[0];
@@ -378,6 +404,59 @@ export class GcpSandboxProvider implements SandboxProvider {
     } catch (error) {
       throw this.classifyError("Failed to stop GCP sandbox", error);
     }
+  }
+
+  /**
+   * Purge expired disks in the background. Never awaited by the launch and
+   * never throws: cleanup must not slow or fail provisioning.
+   */
+  private startExpiredDiskPurge(excludeDiskName: string, correlation?: CorrelationContext): void {
+    if (this.diskRetentionMs <= 0) return;
+    void this.purgeExpiredDisks(excludeDiskName, correlation).catch((error) => {
+      log.warn("gcp.disk_purge_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  /**
+   * Deletes up to GCP_DISK_PURGE_BATCH_SIZE of the longest-unused sandbox disks
+   * whose last use is older than the retention cutoff. Only detached disks
+   * created by this provider (managed_by label) are considered.
+   */
+  async purgeExpiredDisks(
+    excludeDiskName?: string,
+    correlation?: CorrelationContext,
+    nowMs: number = Date.now()
+  ): Promise<string[]> {
+    if (this.diskRetentionMs <= 0) return [];
+    const cutoffMs = nowMs - this.diskRetentionMs;
+    const filter = `labels.${GCP_LABEL_MANAGED_BY}="${GCP_MANAGED_BY_VALUE}"`;
+
+    const candidates: Array<{ disk: GcpDisk; zone: string; lastUsedMs: number }> = [];
+    for (const zone of this.zones) {
+      const disks = await this.client.listDisks(zone, filter, correlation);
+      for (const disk of disks) {
+        if (disk.name === excludeDiskName) continue;
+        if (disk.users && disk.users.length > 0) continue;
+        const lastUsedMs = gcpDiskLastUsedMs(disk);
+        if (lastUsedMs === null || lastUsedMs >= cutoffMs) continue;
+        candidates.push({ disk, zone: extractGcpZone(disk.zone) || zone, lastUsedMs });
+      }
+    }
+
+    candidates.sort((a, b) => a.lastUsedMs - b.lastUsedMs);
+    const deleted: string[] = [];
+    for (const { disk, zone, lastUsedMs } of candidates.slice(0, GCP_DISK_PURGE_BATCH_SIZE)) {
+      await this.client.deleteDisk(zone, disk.name, correlation);
+      deleted.push(disk.name);
+      log.info("gcp.disk_purged", {
+        disk_name: disk.name,
+        zone,
+        last_used_at: new Date(lastUsedMs).toISOString(),
+      });
+    }
+    return deleted;
   }
 
   /**
@@ -560,4 +639,15 @@ export function createGcpProvider(
   config: GcpProviderConfig
 ): GcpSandboxProvider {
   return new GcpSandboxProvider(client, config);
+}
+
+/**
+ * Most recent of a disk's creation, attach, and detach times, or null when GCE
+ * reports none (such a disk is never purged).
+ */
+function gcpDiskLastUsedMs(disk: GcpDisk): number | null {
+  const times = [disk.creationTimestamp, disk.lastAttachTimestamp, disk.lastDetachTimestamp]
+    .map((value) => (value ? Date.parse(value) : NaN))
+    .filter((value) => Number.isFinite(value));
+  return times.length > 0 ? Math.max(...times) : null;
 }

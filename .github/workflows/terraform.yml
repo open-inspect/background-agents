@@ -319,6 +319,7 @@ jobs:
           TF_VAR_gcp_include_startup_script: "${{ vars.GCP_INCLUDE_STARTUP_SCRIPT || secrets.GCP_INCLUDE_STARTUP_SCRIPT || 'true' }}"
           TF_VAR_gcp_supports_snapshots: "${{ vars.GCP_SUPPORTS_SNAPSHOTS || secrets.GCP_SUPPORTS_SNAPSHOTS || 'false' }}"
           TF_VAR_gcp_supports_restore: "${{ vars.GCP_SUPPORTS_RESTORE || secrets.GCP_SUPPORTS_RESTORE || 'false' }}"
+          TF_VAR_gcp_disk_retention_days: "${{ vars.GCP_DISK_RETENTION_DAYS || secrets.GCP_DISK_RETENTION_DAYS || '14' }}"
 
       - name: Prepare Plan Comment
         id: prepare_comment
@@ -623,6 +624,7 @@ jobs:
           TF_VAR_gcp_include_startup_script: "${{ vars.GCP_INCLUDE_STARTUP_SCRIPT || secrets.GCP_INCLUDE_STARTUP_SCRIPT || 'true' }}"
           TF_VAR_gcp_supports_snapshots: "${{ vars.GCP_SUPPORTS_SNAPSHOTS || secrets.GCP_SUPPORTS_SNAPSHOTS || 'false' }}"
           TF_VAR_gcp_supports_restore: "${{ vars.GCP_SUPPORTS_RESTORE || secrets.GCP_SUPPORTS_RESTORE || 'false' }}"
+          TF_VAR_gcp_disk_retention_days: "${{ vars.GCP_DISK_RETENTION_DAYS || secrets.GCP_DISK_RETENTION_DAYS || '14' }}"
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 

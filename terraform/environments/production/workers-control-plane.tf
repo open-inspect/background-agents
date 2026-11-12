@@ -185,6 +185,7 @@ module "control_plane_worker" {
         GCP_INCLUDE_STARTUP_SCRIPT = { value = tostring(var.gcp_include_startup_script) }
         GCP_SUPPORTS_SNAPSHOTS     = { value = tostring(var.gcp_supports_snapshots) }
         GCP_SUPPORTS_RESTORE       = { value = tostring(var.gcp_supports_restore) }
+        GCP_DISK_RETENTION_DAYS    = { value = tostring(var.gcp_disk_retention_days) }
       },
       var.gcp_image_family != "" ? { GCP_IMAGE_FAMILY = { value = var.gcp_image_family } } : {},
       var.gcp_image_project != "" ? { GCP_IMAGE_PROJECT = { value = var.gcp_image_project } } : {},

@@ -102,6 +102,7 @@ export interface EnvConfig {
   GCP_INCLUDE_STARTUP_SCRIPT?: string; // "true" to inject startup-script metadata (default: true)
   GCP_SUPPORTS_SNAPSHOTS?: string; // "true" to enable GCE disk snapshots (default: false)
   GCP_SUPPORTS_RESTORE?: string; // "true" to enable restoring sandboxes from GCE disk snapshots (default: false)
+  GCP_DISK_RETENTION_DAYS?: string; // Days a detached sandbox disk is kept before purge; 0 disables (default: DEFAULT_GCP_DISK_RETENTION_DAYS)
   GCP_COMPUTE_API_BASE_URL?: string; // Optional Compute Engine API base URL override for tests
 
   E2B_API_KEY?: string; // E2B REST API key (X-API-Key header + HMAC derivation)
