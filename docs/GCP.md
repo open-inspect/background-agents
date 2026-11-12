@@ -13,8 +13,11 @@ separate service to deploy for this provider.
 - **Destroy** deletes both the VM and the boot disk.
 - Snapshots and restore use GCE disk snapshots and are off by default (see `gcp_supports_snapshots`
   and `gcp_supports_restore`).
-- With `gcp_use_spot = true`, the provider tries Spot VMs across the configured zones before falling
-  back to standard VMs.
+- Each session is placed in one of `gcp_zones`, picked from a hash of the session ID, so sessions
+  spread across zones and a session's disk and VM always share a zone. A resumed session stays in
+  its disk's zone.
+- With `gcp_use_spot = true`, the provider tries a Spot VM first and falls back to a standard VM in
+  the same zone when Spot capacity is unavailable.
 
 ## Required Configuration
 
@@ -124,7 +127,7 @@ control-plane Worker environment variables shown.
 | ----------------------------------- | ------------------------------ | -------- | ----------------------- | --------------------------------------------------------------------------- |
 | `gcp_service_account_json` (secret) | `GCP_SERVICE_ACCOUNT_JSON`     | yes      | —                       | Service account JSON key used to call the Compute Engine API                |
 | `gcp_project`                       | `GCP_PROJECT`                  | yes\*    | key's project           | Project where sandbox VMs and disks are created                             |
-| `gcp_zones`                         | `GCP_ZONES`                    | no       | `us-central1-{a,b,c,f}` | Comma-separated zones to place VMs in                                       |
+| `gcp_zones`                         | `GCP_ZONES`                    | no       | `us-central1-{a,b,c,f}` | Comma-separated zones; each session is placed in one, by session ID hash    |
 | `gcp_image_family`                  | `GCP_IMAGE_FAMILY`             | no       | —                       | Default image family or image when a repo doesn't set its own               |
 | `gcp_image_project`                 | `GCP_IMAGE_PROJECT`            | no       | `gcp_project`           | Project that hosts the sandbox images                                       |
 | `gcp_machine_type`                  | `GCP_MACHINE_TYPE`             | no       | `e2-standard-4`         | VM machine type                                                             |
@@ -136,7 +139,7 @@ control-plane Worker environment variables shown.
 | `gcp_instance_labels`               | `GCP_INSTANCE_LABELS`          | no       | —                       | `key=value,key=value` labels applied to VMs and disks                       |
 | `gcp_vertex_project`                | `GCP_VERTEX_PROJECT`           | no       | `gcp_project`           | Vertex AI project, passed to the VM in instance metadata                    |
 | `gcp_vertex_location`               | `GCP_VERTEX_LOCATION`          | no       | `global`                | Vertex AI location, passed to the VM in instance metadata                   |
-| `gcp_use_spot`                      | `GCP_USE_SPOT`                 | no       | `false`                 | Try Spot VMs across zones before falling back to standard VMs               |
+| `gcp_use_spot`                      | `GCP_USE_SPOT`                 | no       | `false`                 | Try a Spot VM first; fall back to standard in the same zone                 |
 | `gcp_include_startup_script`        | `GCP_INCLUDE_STARTUP_SCRIPT`   | no       | `true`                  | Inject the sandbox runtime startup script into instance metadata            |
 | `gcp_supports_snapshots`            | `GCP_SUPPORTS_SNAPSHOTS`       | no       | `false`                 | Enable GCE disk snapshots                                                   |
 | `gcp_supports_restore`              | `GCP_SUPPORTS_RESTORE`         | no       | `false`                 | Enable restoring sandboxes from disk snapshots                              |

@@ -53,6 +53,7 @@ import {
   gcpDiskSelfLink,
   gcpSandboxLabels,
   gcpSandboxName,
+  gcpZoneForSession,
   gcpSnapshotName,
 } from "./naming";
 
@@ -169,7 +170,7 @@ export class GcpSandboxProvider implements SandboxProvider {
       }
 
       const sourceImage = this.resolveSourceImage(config);
-      const primaryZone = this.zones[0];
+      const primaryZone = gcpZoneForSession(config.sessionId, this.zones);
 
       await this.client.createDisk(
         {
@@ -196,7 +197,8 @@ export class GcpSandboxProvider implements SandboxProvider {
           config.sessionId,
           name,
           metadata,
-          config.correlation
+          config.correlation,
+          primaryZone
         );
       } catch (spawnError) {
         await this.client.deleteDisk(primaryZone, name, config.correlation).catch(() => undefined);
@@ -227,7 +229,7 @@ export class GcpSandboxProvider implements SandboxProvider {
         this.includeStartupScript
       );
       const diskName = gcpSandboxName(config.sessionId);
-      const primaryZone = this.zones[0];
+      const primaryZone = gcpZoneForSession(config.sessionId, this.zones);
 
       await this.client.createDisk(
         {
@@ -251,7 +253,8 @@ export class GcpSandboxProvider implements SandboxProvider {
         config.sessionId,
         diskName,
         metadata,
-        config.correlation
+        config.correlation,
+        primaryZone
       );
 
       return {
@@ -337,7 +340,7 @@ export class GcpSandboxProvider implements SandboxProvider {
         name,
         metadata,
         config.correlation,
-        [diskZone]
+        diskZone
       );
 
       return {
@@ -455,51 +458,44 @@ export class GcpSandboxProvider implements SandboxProvider {
     return (await this.client.getInstance(instance.name, [zone], correlation)) ?? instance;
   }
 
+  /**
+   * Creates the VM in `zone`, the zone of its boot disk (a zonal disk can only
+   * attach to a VM in the same zone). With Spot enabled, a Spot VM is tried
+   * first and a capacity error falls back to a standard VM.
+   */
   private async spawnWithFallback(
     sandboxId: string,
     sessionId: string,
     diskName: string,
     metadata: Record<string, string>,
-    correlation?: CreateSandboxConfig["correlation"],
-    targetZones: readonly string[] = this.zones
+    correlation: CreateSandboxConfig["correlation"],
+    zone: string
   ): Promise<GcpInstance> {
-    let lastError: unknown;
-
     if (this.config.useSpot) {
-      for (const zone of targetZones) {
-        try {
-          return await this.createInstanceInZone(
-            sandboxId,
-            sessionId,
-            diskName,
-            zone,
-            metadata,
-            true,
-            correlation
-          );
-        } catch (error) {
-          lastError = error;
-          if (!isGcpCapacityError(error)) {
-            break;
-          }
-        }
+      try {
+        return await this.createInstanceInZone(
+          sandboxId,
+          sessionId,
+          diskName,
+          zone,
+          metadata,
+          true,
+          correlation
+        );
+      } catch (error) {
+        if (!isGcpCapacityError(error)) throw error;
       }
     }
 
-    const primaryZone = targetZones[0] ?? this.zones[0];
-    try {
-      return await this.createInstanceInZone(
-        sandboxId,
-        sessionId,
-        diskName,
-        primaryZone,
-        metadata,
-        false,
-        correlation
-      );
-    } catch (error) {
-      throw lastError ?? error;
-    }
+    return this.createInstanceInZone(
+      sandboxId,
+      sessionId,
+      diskName,
+      zone,
+      metadata,
+      false,
+      correlation
+    );
   }
 
   private async createInstanceInZone(

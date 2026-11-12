@@ -835,7 +835,7 @@ variable "gcp_vertex_location" {
 }
 
 variable "gcp_use_spot" {
-  description = "Whether to attempt Spot VM provisioning across zones before falling back to standard"
+  description = "Whether to try a Spot VM first, falling back to a standard VM in the same zone"
   type        = bool
   default     = false
 }

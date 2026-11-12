@@ -121,3 +121,21 @@ export function extractGcpZone(zoneLink: string | undefined): string {
   const parts = zoneLink.split("/");
   return parts[parts.length - 1] ?? "";
 }
+
+/**
+ * Zone for a new sandbox's boot disk and VM, chosen from `zones` by an FNV-1a
+ * hash of the session ID. Spreads sessions across zones while keeping the
+ * choice stable for a session, so a retried create targets the same zone as
+ * any disk an earlier attempt left behind.
+ */
+export function gcpZoneForSession(sessionId: string, zones: readonly string[]): string {
+  if (zones.length === 0) {
+    throw new Error("gcpZoneForSession requires at least one zone");
+  }
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < sessionId.length; i++) {
+    hash ^= sessionId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return zones[(hash >>> 0) % zones.length];
+}

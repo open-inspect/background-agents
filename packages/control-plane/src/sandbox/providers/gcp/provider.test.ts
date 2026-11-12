@@ -8,7 +8,13 @@ import {
   buildGcpResumeMetadata,
   buildGcpStartupScript,
 } from "./metadata";
-import { gcpImageSourceUrl, gcpSandboxLabels, gcpSandboxName, gcpSnapshotName } from "./naming";
+import {
+  gcpImageSourceUrl,
+  gcpSandboxLabels,
+  gcpSandboxName,
+  gcpSnapshotName,
+  gcpZoneForSession,
+} from "./naming";
 import { GcpSandboxProvider } from "./provider";
 import type { CreateSandboxConfig, RestoreConfig, ResumeConfig, StopConfig } from "../../provider";
 
@@ -345,7 +351,7 @@ describe("GcpSandboxProvider", () => {
     expect(client.deleteDisk).toHaveBeenCalledWith("us-central1-a", "ssess-123", undefined);
   });
 
-  it("falls back across zones and to standard when Spot capacity is exhausted", async () => {
+  it("creates the disk and VM in the session's zone, falling back from Spot to standard there", async () => {
     const attempts: Array<{ zone: string; spot?: boolean }> = [];
     const client = createMockGcpClient({
       createInstance: vi.fn(async (spec) => {
@@ -362,6 +368,30 @@ describe("GcpSandboxProvider", () => {
       }),
     });
 
+    const zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"];
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones,
+      defaultImageFamily: "sparkfleet",
+      useSpot: true,
+    });
+
+    await provider.createSandbox(baseCreateConfig);
+
+    const zone = gcpZoneForSession(baseCreateConfig.sessionId, zones);
+    expect(client.createDisk).toHaveBeenCalledWith(expect.objectContaining({ zone }), undefined);
+    expect(attempts).toEqual([
+      { zone, spot: true },
+      { zone, spot: false },
+    ]);
+  });
+
+  it("does not try other zones when a Spot create fails for a non-capacity reason", async () => {
+    const client = createMockGcpClient({
+      createInstance: vi.fn(async () => {
+        throw new GcpComputeApiError("permission denied", 403);
+      }),
+    });
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a", "us-central1-b"],
@@ -369,13 +399,8 @@ describe("GcpSandboxProvider", () => {
       useSpot: true,
     });
 
-    await provider.createSandbox(baseCreateConfig);
-
-    expect(attempts).toEqual([
-      { zone: "us-central1-a", spot: true },
-      { zone: "us-central1-b", spot: true },
-      { zone: "us-central1-a", spot: false },
-    ]);
+    await expect(provider.createSandbox(baseCreateConfig)).rejects.toThrow();
+    expect(client.createInstance).toHaveBeenCalledTimes(1);
   });
 
   it("deletes only the VM on preserve stop and deletes both VM and disk on destroy stop", async () => {
@@ -503,5 +528,28 @@ describe("GcpSandboxProvider", () => {
       }),
       undefined
     );
+  });
+});
+
+describe("gcpZoneForSession", () => {
+  const zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"];
+
+  it("is stable for a session", () => {
+    expect(gcpZoneForSession("sess-123", zones)).toBe(gcpZoneForSession("sess-123", zones));
+  });
+
+  it("spreads sessions across every zone", () => {
+    const picked = new Set(
+      Array.from({ length: 200 }, (_, i) => gcpZoneForSession(`session-${i}`, zones))
+    );
+    expect(picked).toEqual(new Set(zones));
+  });
+
+  it("returns the only zone when one is configured", () => {
+    expect(gcpZoneForSession("anything", ["europe-west1-b"])).toBe("europe-west1-b");
+  });
+
+  it("rejects an empty zone list", () => {
+    expect(() => gcpZoneForSession("sess-123", [])).toThrow();
   });
 });
