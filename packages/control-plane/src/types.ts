@@ -60,7 +60,7 @@ export interface EnvConfig {
   ALLOWED_GITHUB_ORGS?: string;
   UNSAFE_ALLOW_ALL_USERS?: string;
   CF_ACCOUNT_ID?: string; // Cloudflare account ID
-  SANDBOX_PROVIDER?: string; // "modal" (default), "modal-vm", "daytona", "vercel", "e2b", or "boat"
+  SANDBOX_PROVIDER?: string; // "modal" (default), "modal-vm", "daytona", "vercel", "e2b", "boat", or "gcp"
   MODAL_WORKSPACE?: string; // Modal workspace name
   MODAL_ENVIRONMENT?: string; // Modal environment name for dashboard URLs
   MODAL_ENVIRONMENT_WEB_SUFFIX?: string; // Modal environment web suffix for endpoint URLs
@@ -82,6 +82,27 @@ export interface EnvConfig {
   VERCEL_RUNTIME?: string; // Vercel sandbox runtime (default: node24)
   VERCEL_SANDBOX_API_BASE_URL?: string; // Override for tests or non-default Vercel API base URL
   VERCEL_SNAPSHOT_EXPIRATION_MS?: string; // Snapshot expiration in ms; 0 means no expiration
+
+  // GCP sandbox provider (when SANDBOX_PROVIDER=gcp)
+  GCP_SERVICE_ACCOUNT_JSON?: string; // GCP Service Account JSON key (secret) for Compute Engine API
+  GCP_PROJECT?: string; // GCP project ID where sandbox VMs and disks are provisioned
+  GCP_ZONES?: string; // Comma-separated GCE zones (default: DEFAULT_GCP_ZONES, us-central1-{a,b,c,f})
+  GCP_IMAGE_FAMILY?: string; // Default GCE image family or image reference when a repo has no override
+  GCP_IMAGE_PROJECT?: string; // Optional GCP project hosting the sandbox images (defaults to GCP_PROJECT)
+  GCP_MACHINE_TYPE?: string; // GCE machine type (default: e2-standard-4)
+  GCP_BOOT_DISK_SIZE_GB?: string; // Boot disk size in GB (default: 80)
+  GCP_BOOT_DISK_TYPE?: string; // Boot disk type (default: pd-balanced)
+  GCP_NETWORK?: string; // Optional VPC network name or self-link
+  GCP_SUBNET?: string; // Optional subnetwork name or self-link
+  GCP_VM_SERVICE_ACCOUNT_EMAIL?: string; // Optional service account email attached to sandbox VMs
+  GCP_INSTANCE_LABELS?: string; // Optional comma-separated key=value labels applied to VMs/disks
+  GCP_VERTEX_PROJECT?: string; // Optional Vertex AI project ID passed in instance metadata (defaults to GCP_PROJECT)
+  GCP_VERTEX_LOCATION?: string; // Optional Vertex AI location passed in instance metadata (default: global)
+  GCP_USE_SPOT?: string; // "true" to try Spot VMs across zones before falling back to standard (default: false)
+  GCP_INCLUDE_STARTUP_SCRIPT?: string; // "true" to inject startup-script metadata (default: true)
+  GCP_SUPPORTS_SNAPSHOTS?: string; // "true" to enable GCE disk snapshots (default: false)
+  GCP_SUPPORTS_RESTORE?: string; // "true" to enable restoring sandboxes from GCE disk snapshots (default: false)
+  GCP_COMPUTE_API_BASE_URL?: string; // Optional Compute Engine API base URL override for tests
 
   E2B_API_KEY?: string; // E2B REST API key (X-API-Key header + HMAC derivation)
   E2B_API_URL?: string; // E2B REST API base URL (default https://api.e2b.app)

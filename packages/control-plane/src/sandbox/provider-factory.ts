@@ -19,6 +19,14 @@ import {
   type E2BSandboxProvider,
 } from "./providers/e2b-provider";
 import { createModalProvider, type ModalSandboxProvider } from "./providers/modal-provider";
+import { GcpServiceAccountTokenProvider, parseGcpServiceAccountKey } from "./providers/gcp/auth";
+import { createGcpComputeClient } from "./providers/gcp/client";
+import {
+  createGcpProvider,
+  DEFAULT_GCP_BOOT_DISK_SIZE_GB,
+  DEFAULT_GCP_ZONES,
+  type GcpSandboxProvider,
+} from "./providers/gcp/provider";
 import { createVercelSandboxClient } from "./providers/vercel/client";
 import { createVercelProvider, type VercelSandboxProvider } from "./providers/vercel/provider";
 import { resolveScmProviderFromEnv } from "../source-control";
@@ -67,6 +75,53 @@ function createVercelProviderFromEnv(env: Env): VercelSandboxProvider {
       0
     ),
     sandboxAccessPasswordSecret: env.VERCEL_TOKEN,
+  });
+}
+
+function createGcpProviderFromEnv(env: Env): GcpSandboxProvider {
+  if (!env.GCP_SERVICE_ACCOUNT_JSON) {
+    throw new Error("GCP_SERVICE_ACCOUNT_JSON is required when SANDBOX_PROVIDER=gcp");
+  }
+  const credentials = parseGcpServiceAccountKey(env.GCP_SERVICE_ACCOUNT_JSON);
+  const project = env.GCP_PROJECT?.trim() || credentials.project_id?.trim() || "";
+  if (!project) {
+    throw new Error("GCP_PROJECT is required when SANDBOX_PROVIDER=gcp");
+  }
+  const configuredZones = splitCsvEnv(env.GCP_ZONES);
+  const zones = configuredZones.length > 0 ? configuredZones : DEFAULT_GCP_ZONES;
+
+  const client = createGcpComputeClient({
+    project,
+    tokenProvider: new GcpServiceAccountTokenProvider(credentials),
+    apiBaseUrl: env.GCP_COMPUTE_API_BASE_URL,
+    imageProject: env.GCP_IMAGE_PROJECT,
+  });
+
+  return createGcpProvider(client, {
+    project,
+    zones,
+    defaultImageFamily: env.GCP_IMAGE_FAMILY,
+    machineType: env.GCP_MACHINE_TYPE,
+    bootDiskSizeGb: parseNumericEnv(
+      "GCP_BOOT_DISK_SIZE_GB",
+      env.GCP_BOOT_DISK_SIZE_GB,
+      DEFAULT_GCP_BOOT_DISK_SIZE_GB
+    ),
+    bootDiskType: env.GCP_BOOT_DISK_TYPE,
+    network: env.GCP_NETWORK,
+    subnet: env.GCP_SUBNET,
+    vmServiceAccountEmail: env.GCP_VM_SERVICE_ACCOUNT_EMAIL,
+    instanceLabels: parseKeyValueCsvEnv(env.GCP_INSTANCE_LABELS),
+    vertexProject: env.GCP_VERTEX_PROJECT,
+    vertexLocation: env.GCP_VERTEX_LOCATION,
+    useSpot: parseBooleanEnv("GCP_USE_SPOT", env.GCP_USE_SPOT, false),
+    includeStartupScript: parseBooleanEnv(
+      "GCP_INCLUDE_STARTUP_SCRIPT",
+      env.GCP_INCLUDE_STARTUP_SCRIPT,
+      true
+    ),
+    supportsSnapshots: parseBooleanEnv("GCP_SUPPORTS_SNAPSHOTS", env.GCP_SUPPORTS_SNAPSHOTS, false),
+    supportsRestore: parseBooleanEnv("GCP_SUPPORTS_RESTORE", env.GCP_SUPPORTS_RESTORE, false),
   });
 }
 
@@ -191,6 +246,7 @@ export function createSandboxProviderFromEnv(
   backend: "modal" | "modal-vm"
 ): ModalSandboxProvider;
 export function createSandboxProviderFromEnv(env: Env, backend: "vercel"): VercelSandboxProvider;
+export function createSandboxProviderFromEnv(env: Env, backend: "gcp"): GcpSandboxProvider;
 export function createSandboxProviderFromEnv(
   env: Env,
   backend?: SandboxBackendName
@@ -208,6 +264,8 @@ export function createSandboxProviderFromEnv(
       return createVercelProviderFromEnv(env);
     case "e2b":
       return createE2BProviderFromEnv(env);
+    case "gcp":
+      return createGcpProviderFromEnv(env);
     case "modal":
     case "modal-vm":
       return createModalProviderFromEnv(env, backend);
@@ -231,4 +289,28 @@ function parseBooleanEnv(name: string, value: string | undefined, defaultValue: 
   if (raw === "true" || raw === "1") return true;
   if (raw === "false" || raw === "0") return false;
   throw new Error(`${name} must be a valid boolean`);
+}
+
+function splitCsvEnv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function parseKeyValueCsvEnv(value: string | undefined): Record<string, string> | undefined {
+  const entries = splitCsvEnv(value);
+  if (entries.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const entry of entries) {
+    const eqIndex = entry.indexOf("=");
+    if (eqIndex <= 0) continue;
+    const key = entry.slice(0, eqIndex).trim();
+    const val = entry.slice(eqIndex + 1).trim();
+    if (key) {
+      out[key] = val;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }

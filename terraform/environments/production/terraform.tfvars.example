@@ -137,6 +137,28 @@ boat_base_snapshot = ""        # e.g., "open-inspect"
 # smallest size that fits it. One of small, default, large, xlarge.
 # boat_sandbox_type = "default"
 
+# GCP Compute Engine sandbox provider
+# Only required when sandbox_provider = "gcp"
+gcp_service_account_json     = "" # JSON service account key with Compute Instance Admin permissions
+gcp_project                  = "" # GCP project ID where sandbox VMs and disks are created
+# gcp_zones                  = "us-central1-a,us-central1-b,us-central1-c,us-central1-f"
+# gcp_image_family           = "" # Optional default image family when a repo does not set one in Sandbox settings
+# gcp_image_project          = "" # Optional project ID hosting sandbox images (defaults to gcp_project)
+# gcp_machine_type           = "e2-standard-4"
+# gcp_boot_disk_size_gb      = 80
+# gcp_boot_disk_type         = "pd-balanced"
+# gcp_network                = ""
+# gcp_subnet                 = ""
+# gcp_vm_service_account_email = ""
+# gcp_instance_labels        = ""
+# gcp_vertex_project         = ""
+# gcp_vertex_location        = "global"
+# gcp_use_spot               = false
+# gcp_include_startup_script = true
+# gcp_supports_snapshots     = false
+# gcp_supports_restore       = false
+
+
 # =============================================================================
 # GitHub App Credentials
 # =============================================================================
@@ -329,6 +351,7 @@ nextauth_secret = ""
 # - "vercel": Vercel Sandbox API with filesystem snapshot restore
 # - "e2b": direct E2B REST API integration with pause/resume
 # - "boat": direct Boat REST API integration with stop/resume (archived snapshot)
+# - "gcp": native Google Cloud Compute Engine VMs and persistent boot disks
 # Select "modal-vm" for Docker-capable VMs (deployment-wide; see docs/MODAL_DOCKER.md).
 sandbox_provider = "modal"
 

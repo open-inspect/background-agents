@@ -1451,4 +1451,71 @@ describe("SandboxSettingsEditor — environment scope", () => {
       );
     });
   });
+
+  it("renders and saves per-repo GCP image family when SANDBOX_PROVIDER=gcp", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SANDBOX_PROVIDER", "gcp");
+    Element.prototype.scrollIntoView = vi.fn();
+    reposMock.repos = [
+      {
+        id: 1,
+        fullName: "bitly/sparkfleet",
+        owner: "bitly",
+        name: "sparkfleet",
+        description: null,
+        private: false,
+        defaultBranch: "main",
+      },
+    ];
+    const repoKey = "/api/integration-settings/sandbox/repos/bitly/sparkfleet";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SWRConfig
+        value={{
+          provider: () => new Map(),
+          fallback: {
+            [SETTINGS_KEY]: {
+              integrationId: "sandbox",
+              settings: { defaults: { imageFamily: "opensuse-sparkfleet-generic" } },
+            },
+            [repoKey]: { integrationId: "sandbox", repo: "bitly/sparkfleet", settings: null },
+          },
+          dedupingInterval: Infinity,
+          revalidateOnFocus: false,
+          revalidateIfStale: false,
+          revalidateOnReconnect: false,
+        }}
+      >
+        <SandboxSettingsPage />
+      </SWRConfig>
+    );
+
+    await user.click(screen.getByText("All Repositories (Global)"));
+    await user.click(screen.getByRole("option", { name: /sparkfleet/ }));
+
+    const input = screen.getByLabelText("GCP Image Family");
+    expect(input).toHaveValue("opensuse-sparkfleet-generic");
+
+    await user.clear(input);
+    await user.type(input, "opensuse-sparkfleet-custom");
+    await user.click(screen.getByText("Save Settings"));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        repoKey,
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({
+            settings: { imageFamily: "opensuse-sparkfleet-custom" },
+          }),
+        })
+      );
+    });
+  });
 });

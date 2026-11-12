@@ -19,6 +19,7 @@ import {
   omitUnsupportedSandboxSettings,
   resolveBuildTimeoutSeconds,
   sandboxSettingCapabilities,
+  supportsConfigurableSandboxImageFamily,
   supportsConfigurableSandboxResources,
   supportsConfigurableSandboxResourceLimits,
   supportsConfigurableSandboxTimeout,
@@ -180,18 +181,38 @@ describe("sandbox resource limit validation", () => {
 
 describe("sandbox provider settings capabilities", () => {
   it.each([
-    { provider: "modal", resources: true, resourceLimits: true, timeout: true },
-    { provider: "modal-vm", resources: true, resourceLimits: true, timeout: true },
-    { provider: "daytona", resources: false, resourceLimits: false, timeout: false },
-    { provider: "vercel", resources: true, resourceLimits: false, timeout: true },
-    { provider: "e2b", resources: false, resourceLimits: false, timeout: true },
-    { provider: "boat", resources: true, resourceLimits: false, timeout: true },
+    { provider: "modal", resources: true, resourceLimits: true, timeout: true, imageFamily: false },
+    {
+      provider: "modal-vm",
+      resources: true,
+      resourceLimits: true,
+      timeout: true,
+      imageFamily: false,
+    },
+    {
+      provider: "daytona",
+      resources: false,
+      resourceLimits: false,
+      timeout: false,
+      imageFamily: false,
+    },
+    {
+      provider: "vercel",
+      resources: true,
+      resourceLimits: false,
+      timeout: true,
+      imageFamily: false,
+    },
+    { provider: "e2b", resources: false, resourceLimits: false, timeout: true, imageFamily: false },
+    { provider: "boat", resources: true, resourceLimits: false, timeout: true, imageFamily: false },
+    { provider: "gcp", resources: false, resourceLimits: false, timeout: true, imageFamily: true },
   ])("resolves canonical capabilities for $provider", ({ provider, ...capabilities }) => {
     expect(sandboxSettingCapabilities(provider)).toEqual(capabilities);
     expect(sandboxSettingCapabilities(` ${provider.toUpperCase()} `)).toEqual(capabilities);
     expect(supportsConfigurableSandboxResources(provider)).toBe(capabilities.resources);
     expect(supportsConfigurableSandboxResourceLimits(provider)).toBe(capabilities.resourceLimits);
     expect(supportsConfigurableSandboxTimeout(provider)).toBe(capabilities.timeout);
+    expect(supportsConfigurableSandboxImageFamily(provider)).toBe(capabilities.imageFamily);
   });
 
   it.each(["modal", "modal-vm"])("preserves resource caps for %s", (provider) => {
@@ -200,7 +221,7 @@ describe("sandbox provider settings capabilities", () => {
     expect(omitUnsupportedSandboxSettings(settings, provider)).toEqual(settings);
   });
 
-  it.each(["vercel", "daytona", "e2b", "boat", "test-provider"])(
+  it.each(["vercel", "daytona", "e2b", "boat", "gcp", "test-provider"])(
     "ignores resource caps for %s",
     (provider) => {
       expect(supportsConfigurableSandboxResourceLimits(provider)).toBe(false);
@@ -216,8 +237,25 @@ describe("sandbox provider settings capabilities", () => {
     expect(supportsConfigurableSandboxResources(provider)).toBe(true);
   });
 
-  it.each(["daytona", "e2b"])("does not expose resource overrides for %s", (provider) => {
+  it.each(["daytona", "e2b", "gcp"])("does not expose resource overrides for %s", (provider) => {
     expect(supportsConfigurableSandboxResources(provider)).toBe(false);
+  });
+
+  it("exposes imageFamily overrides only for GCP", () => {
+    expect(supportsConfigurableSandboxImageFamily("gcp")).toBe(true);
+    expect(supportsConfigurableSandboxImageFamily("modal")).toBe(false);
+    expect(
+      omitUnsupportedSandboxSettings(
+        { imageFamily: "opensuse-sparkfleet", terminalEnabled: true },
+        "gcp"
+      )
+    ).toEqual({ imageFamily: "opensuse-sparkfleet", terminalEnabled: true });
+    expect(
+      omitUnsupportedSandboxSettings(
+        { imageFamily: "opensuse-sparkfleet", terminalEnabled: true },
+        "modal"
+      )
+    ).toEqual({ terminalEnabled: true });
   });
 
   it("does not expose session timeout overrides for Daytona", () => {
@@ -230,10 +268,12 @@ describe("sandbox provider settings capabilities", () => {
       resources: true,
       resourceLimits: false,
       timeout: true,
+      imageFamily: false,
     });
     expect(supportsConfigurableSandboxResources("test-provider")).toBe(true);
     expect(supportsConfigurableSandboxResourceLimits("test-provider")).toBe(false);
     expect(supportsConfigurableSandboxTimeout("test-provider")).toBe(true);
+    expect(supportsConfigurableSandboxImageFamily("test-provider")).toBe(false);
   });
 
   it("drops unsupported Daytona settings while preserving supported settings", () => {

@@ -148,6 +148,7 @@ export function SandboxSettingsEditor({
     resources: configurableResources,
     resourceLimits: configurableLimits,
     timeout: configurableTimeout,
+    imageFamily: configurableImageFamily,
   } = sandboxSettingCapabilities(sandboxProvider);
   const isGlobal = scope === "global";
   const canManage = hasPermission(
@@ -602,6 +603,43 @@ export function SandboxSettingsEditor({
         <p className="text-xs text-muted-foreground">
           Per-session timeout overrides are unavailable for {sandboxProvider}.
         </p>
+      )}
+
+      {configurableImageFamily && (
+        <div>
+          <label
+            htmlFor="sandbox-image-family"
+            className="block text-sm font-medium text-foreground mb-1.5"
+          >
+            GCP Image Family
+          </label>
+          <p className="text-xs text-muted-foreground mb-2">
+            GCE image family or image reference to boot for this repository (for example,{" "}
+            <code>opensuse-sparkfleet-generic</code> or{" "}
+            <code>projects/my-proj/global/images/family/my-family</code>). Leave blank to use the
+            deployment default, or choose Inherit to follow the parent setting.
+          </p>
+          <div className="max-w-sm">
+            <Input
+              id="sandbox-image-family"
+              type="text"
+              value={values.imageFamily}
+              onChange={(e) => updateField("imageFamily", e.target.value)}
+              placeholder="deployment default"
+            />
+            {!isGlobal && (
+              <Button
+                type="button"
+                variant="subtle"
+                size="xs"
+                aria-label="Inherit GCP image family"
+                onClick={() => updateField("imageFamily", INHERIT_SANDBOX_SETTING)}
+              >
+                Inherit
+              </Button>
+            )}
+          </div>
+        </div>
       )}
 
       <div>

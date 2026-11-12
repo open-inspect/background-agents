@@ -735,6 +735,129 @@ variable "boat_sandbox_type" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# GCP sandbox (only required when sandbox_provider = "gcp")
+# -----------------------------------------------------------------------------
+
+variable "gcp_service_account_json" {
+  description = "GCP Service Account JSON key for provisioning Compute Engine sandboxes"
+  type        = string
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = var.sandbox_provider != "gcp" || length(trimspace(var.gcp_service_account_json)) > 0
+    error_message = "gcp_service_account_json must be set when sandbox_provider = 'gcp'."
+  }
+}
+
+variable "gcp_project" {
+  description = "GCP project ID where sandbox VMs and disks are provisioned"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.sandbox_provider != "gcp" || length(trimspace(var.gcp_project)) > 0
+    error_message = "gcp_project must be set when sandbox_provider = 'gcp'."
+  }
+}
+
+variable "gcp_zones" {
+  description = "Comma-separated list of GCE zones for sandbox VMs"
+  type        = string
+  default     = "us-central1-a,us-central1-b,us-central1-c,us-central1-f"
+}
+
+variable "gcp_image_family" {
+  description = "Default GCE image family or image reference when a repository does not specify an override"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_image_project" {
+  description = "Optional GCP project ID hosting sandbox VM images (defaults to gcp_project)"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_machine_type" {
+  description = "GCE machine type for sandbox VMs"
+  type        = string
+  default     = "e2-standard-4"
+}
+
+variable "gcp_boot_disk_size_gb" {
+  description = "Boot disk size in GB for sandbox VMs"
+  type        = number
+  default     = 80
+}
+
+variable "gcp_boot_disk_type" {
+  description = "Boot disk type for sandbox VMs"
+  type        = string
+  default     = "pd-balanced"
+}
+
+variable "gcp_network" {
+  description = "Optional VPC network name or self-link for sandbox VMs"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_subnet" {
+  description = "Optional subnetwork name or self-link for sandbox VMs"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_vm_service_account_email" {
+  description = "Optional service account email attached to sandbox VMs"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_instance_labels" {
+  description = "Optional comma-separated key=value labels applied to sandbox VMs and disks"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_vertex_project" {
+  description = "Optional Vertex AI project ID injected into VM metadata (defaults to gcp_project)"
+  type        = string
+  default     = ""
+}
+
+variable "gcp_vertex_location" {
+  description = "Vertex AI location injected into VM metadata"
+  type        = string
+  default     = "global"
+}
+
+variable "gcp_use_spot" {
+  description = "Whether to attempt Spot VM provisioning across zones before falling back to standard"
+  type        = bool
+  default     = false
+}
+
+variable "gcp_include_startup_script" {
+  description = "Whether to inject the sandbox runtime startup-script into GCE instance metadata"
+  type        = bool
+  default     = true
+}
+
+variable "gcp_supports_snapshots" {
+  description = "Whether the GCP sandbox provider creates GCE disk snapshots"
+  type        = bool
+  default     = false
+}
+
+variable "gcp_supports_restore" {
+  description = "Whether the GCP sandbox provider restores sandboxes from GCE disk snapshots"
+  type        = bool
+  default     = false
+}
+
 variable "nextauth_secret" {
   description = "Browser authentication secret used by the control plane (legacy Terraform input name; generate with: openssl rand -base64 32)"
   type        = string
@@ -751,13 +874,13 @@ variable "nextauth_secret" {
 # =============================================================================
 
 variable "sandbox_provider" {
-  description = "Sandbox backend for session execution: 'modal', 'modal-vm', 'daytona', 'vercel', 'e2b', or 'boat'"
+  description = "Sandbox backend for session execution: 'modal', 'modal-vm', 'daytona', 'vercel', 'e2b', 'boat', or 'gcp'"
   type        = string
   default     = "modal"
 
   validation {
-    condition     = contains(["modal", "modal-vm", "daytona", "vercel", "e2b", "boat"], var.sandbox_provider)
-    error_message = "sandbox_provider must be 'modal', 'modal-vm', 'daytona', 'vercel', 'e2b', or 'boat'."
+    condition     = contains(["modal", "modal-vm", "daytona", "vercel", "e2b", "boat", "gcp"], var.sandbox_provider)
+    error_message = "sandbox_provider must be 'modal', 'modal-vm', 'daytona', 'vercel', 'e2b', 'boat', or 'gcp'."
   }
 }
 
