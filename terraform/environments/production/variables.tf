@@ -769,7 +769,7 @@ variable "gcp_zones" {
 }
 
 variable "gcp_image_family" {
-  description = "Default GCE image family or image reference when a repository does not specify an override"
+  description = "Default GCE image family or image when a repository does not specify an override; empty uses the open-inspect-sandbox family that packages/gcp-infra builds"
   type        = string
   default     = ""
 }

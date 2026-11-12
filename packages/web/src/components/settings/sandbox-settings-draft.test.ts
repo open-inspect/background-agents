@@ -286,16 +286,16 @@ describe("sandbox resource limit drafts", () => {
     const globalResolved = resolveSandboxSettingsDraft({
       isGlobal: true,
       provider: "gcp",
-      draft: { imageFamily: "  opensuse-sparkfleet-generic  " },
+      draft: { imageFamily: "  sandbox-image-family  " },
     });
     expect(globalResolved.result.settings).toMatchObject({
-      imageFamily: "opensuse-sparkfleet-generic",
+      imageFamily: "sandbox-image-family",
     });
 
     const repoOverride = resolveSandboxSettingsDraft({
       isGlobal: false,
       provider: "gcp",
-      baseDefaults: { imageFamily: "opensuse-sparkfleet-generic" },
+      baseDefaults: { imageFamily: "sandbox-image-family" },
       draft: { imageFamily: "custom-repo-family" },
     });
     expect(repoOverride.result).toEqual({
@@ -305,7 +305,7 @@ describe("sandbox resource limit drafts", () => {
     const repoResetToDefault = resolveSandboxSettingsDraft({
       isGlobal: false,
       provider: "gcp",
-      baseDefaults: { imageFamily: "opensuse-sparkfleet-generic" },
+      baseDefaults: { imageFamily: "sandbox-image-family" },
       ownSettings: { imageFamily: "custom-repo-family" },
       draft: { imageFamily: "" },
     });
@@ -316,13 +316,13 @@ describe("sandbox resource limit drafts", () => {
     const repoInherit = resolveSandboxSettingsDraft({
       isGlobal: false,
       provider: "gcp",
-      baseDefaults: { imageFamily: "opensuse-sparkfleet-generic" },
+      baseDefaults: { imageFamily: "sandbox-image-family" },
       ownSettings: { imageFamily: "custom-repo-family" },
       draft: { imageFamily: INHERIT_SANDBOX_SETTING },
     });
     expect(repoInherit.result).toEqual({
       settings: {},
     });
-    expect(repoInherit.values.imageFamily).toBe("opensuse-sparkfleet-generic");
+    expect(repoInherit.values.imageFamily).toBe("sandbox-image-family");
   });
 });

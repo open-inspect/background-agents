@@ -139,7 +139,7 @@ describe("createSandboxProviderFromEnv", () => {
         GCP_SERVICE_ACCOUNT_JSON: saKey,
         GCP_PROJECT: "test-proj",
         GCP_ZONES: "us-central1-a, us-central1-b",
-        GCP_IMAGE_FAMILY: "opensuse-sparkfleet-generic",
+        GCP_IMAGE_FAMILY: "sandbox-image-family",
       }),
       "gcp"
     );

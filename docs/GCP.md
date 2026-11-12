@@ -16,9 +16,10 @@ separate service to deploy for this provider.
   until the retention purge removes it.
 - **Disk retention**: after each new sandbox is provisioned, a background task deletes up to two
   detached sandbox disks that have gone unused (no create, attach, or detach) for longer than
-  `gcp_disk_retention_days` (14 days by default), oldest first. Only disks labeled
-  `managed_by=background-agents-gcp` in the configured zones are considered; attached disks are
-  never deleted. Set it to `0` to disable purging. A session whose disk was purged starts fresh.
+  `gcp_disk_retention_days` (14 days by default), oldest first. Set it to `0` to disable purging. A
+  session whose disk was purged starts fresh. See
+  [Multiple deployments in one project](#multiple-deployments-in-one-project) for which disks are
+  eligible.
 - Snapshots and restore use GCE disk snapshots and are off by default (see `gcp_supports_snapshots`
   and `gcp_supports_restore`).
 - Each session is placed in one of `gcp_zones`, picked from a hash of the session ID, so sessions
@@ -26,6 +27,49 @@ separate service to deploy for this provider.
   its disk's zone.
 - With `gcp_use_spot = true`, the provider tries a Spot VM first and falls back to a standard VM in
   the same zone when Spot capacity is unavailable.
+
+## Multiple Deployments in One Project
+
+Several deployments can share a GCP project. Every VM, disk, and snapshot is labeled with
+`managed_by=background-agents-gcp` and `deployment=<deployment_name>` (lowercased, with characters
+other than letters, digits, and `-` replaced by `-`). Operator labels from `gcp_instance_labels`
+cannot override these two.
+
+The disk retention purge only deletes disks that are detached, in the configured zones, and carry
+**both** labels with this deployment's name. Give each deployment sharing a project a distinct
+`deployment_name`; two deployments whose names normalize to the same label value would purge each
+other's disks.
+
+Disks created before the `deployment` label was introduced have no deployment label, so their owner
+can't be determined and the purge never deletes them. Remove them manually once they're no longer
+needed:
+
+```bash
+gcloud compute disks list --project=PROJECT \
+  --filter='labels.managed_by=background-agents-gcp AND -labels.deployment:* AND -users:*'
+gcloud compute disks delete DISK_NAME --zone=ZONE --project=PROJECT
+```
+
+## Sandbox Image
+
+Sandbox VMs boot from an image that has the shared sandbox toolchain and runtime installed. Build it
+with [`packages/gcp-infra`](../packages/gcp-infra/README.md), which installs the same bundle the
+other providers use onto the public Ubuntu 24.04 image family
+(`ubuntu-os-cloud/ubuntu-2404-lts-amd64`) and adds the result to the `open-inspect-sandbox` image
+family:
+
+```bash
+GCP_PROJECT=my-project npm run sandbox:images -- build --provider gcp
+```
+
+The control plane boots the newest image in `gcp_image_family`, which defaults to
+`open-inspect-sandbox`, so a new build applies to new sessions without a deploy. A VM booted from an
+image without the runtime stops at startup with a message pointing here, in the VM's serial console
+output.
+
+The builder needs the same Compute Engine permissions as the control plane, plus
+`compute.images.create` and SSH access to its VMs. Run it with your own credentials or a separate
+build service account, not the control plane's.
 
 ## Required Configuration
 
@@ -36,7 +80,6 @@ sandbox_provider = "gcp"
 
 gcp_service_account_json     = "{...}"                       # control-plane service account key
 gcp_project                  = "my-project"                  # where VMs and disks are created
-gcp_image_family             = "my-sandbox-image-family"     # default image (or set per repo)
 gcp_vm_service_account_email = "sandbox-vm@my-project.iam.gserviceaccount.com" # identity of the VMs
 ```
 
@@ -137,7 +180,7 @@ control-plane Worker environment variables shown.
 | `gcp_service_account_json` (secret) | `GCP_SERVICE_ACCOUNT_JSON`     | yes      | —                       | Service account JSON key used to call the Compute Engine API                |
 | `gcp_project`                       | `GCP_PROJECT`                  | yes\*    | key's project           | Project where sandbox VMs and disks are created                             |
 | `gcp_zones`                         | `GCP_ZONES`                    | no       | `us-central1-{a,b,c,f}` | Comma-separated zones; each session is placed in one, by session ID hash    |
-| `gcp_image_family`                  | `GCP_IMAGE_FAMILY`             | no       | —                       | Default image family or image when a repo doesn't set its own               |
+| `gcp_image_family`                  | `GCP_IMAGE_FAMILY`             | no       | `open-inspect-sandbox`  | Default image family or image when a repo doesn't set its own               |
 | `gcp_image_project`                 | `GCP_IMAGE_PROJECT`            | no       | `gcp_project`           | Project that hosts the sandbox images                                       |
 | `gcp_machine_type`                  | `GCP_MACHINE_TYPE`             | no       | `e2-standard-4`         | VM machine type                                                             |
 | `gcp_boot_disk_size_gb`             | `GCP_BOOT_DISK_SIZE_GB`        | no       | `80`                    | Boot disk size in GB                                                        |
@@ -180,4 +223,4 @@ For a fresh sandbox, the boot image is the first of these that is set:
 1. The repository's `imageFamily` sandbox setting
 2. A `REPO_IMAGE` repository secret (legacy override, treated as an image rather than a family)
 3. A prebuilt image ID, if one exists for the repository
-4. `gcp_image_family`
+4. `gcp_image_family`, or the `open-inspect-sandbox` family if unset

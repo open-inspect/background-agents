@@ -615,7 +615,7 @@ export function SandboxSettingsEditor({
           </label>
           <p className="text-xs text-muted-foreground mb-2">
             GCE image family or image reference to boot for this repository (for example,{" "}
-            <code>opensuse-sparkfleet-generic</code> or{" "}
+            <code>my-sandbox-image</code> or{" "}
             <code>projects/my-proj/global/images/family/my-family</code>). Leave blank to use the
             deployment default, or choose Inherit to follow the parent setting.
           </p>

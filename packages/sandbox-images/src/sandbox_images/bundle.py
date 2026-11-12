@@ -16,7 +16,7 @@ from .configuration import IMAGE_PACKAGE, RUNTIME_PACKAGE, read_json, runtime_en
 from .locks import export_requirements, update_locks
 
 DOCKER_PACKAGES = ("engine", "cli", "containerd", "buildx", "compose")
-PROVIDERS = ("modal", "daytona", "e2b", "vercel", "boat")
+PROVIDERS = ("modal", "daytona", "e2b", "vercel", "boat", "gcp")
 EXCLUDED = {
     ".terraform",
     ".git",
@@ -38,6 +38,7 @@ PAYLOAD_ROOTS = (
     RUNTIME_PACKAGE / "uv.lock",
     *(IMAGE_PACKAGE / part for part in ("install", "verify", "locks", "toolchain.json")),
 )
+# Terraform modules that build or deploy a provider's image; GCP images are built manually.
 INFRA_MODULES = {
     "modal": "modal-app",
     "daytona": "daytona-infra",
@@ -159,7 +160,11 @@ def plan_image(root: Path, provider: str) -> ImagePlan:
         IMAGE_PACKAGE / "uv.lock",
         IMAGE_PACKAGE / "targets.json",
         Path(f"packages/{provider}-infra"),
-        Path(f"terraform/modules/{INFRA_MODULES[provider]}"),
+        *(
+            (Path(f"terraform/modules/{INFRA_MODULES[provider]}"),)
+            if provider in INFRA_MODULES
+            else ()
+        ),
     )
     if provider == "vercel":
         paths += (

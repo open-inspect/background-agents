@@ -1,14 +1,13 @@
 /**
  * GCE instance metadata and startup-script assembly for GCP sandbox VMs.
  *
- * Mirrors provisioner/metadata.go from background_agents_gcp_sandbox and the
- * sparkfleet boot unit (/workspace/bitly/infrastructure/install_scripts/bootstrap_suse_sparkfleet.sh
- * + infrastructure/packer/google/sparkfleet/sandbox-runtime-start.sh).
- *
- * The startup-script installs /usr/local/bin/oi-sandbox-runtime and
- * /etc/systemd/system/sandbox-runtime.service if the image does not already bake
- * them in, and ensures sandbox-runtime.service is enabled and started (non-blocking)
- * so both pre-baked sparkfleet images and custom runtime images boot identically.
+ * Session configuration reaches the VM as instance metadata attributes. VMs
+ * boot from an image built by packages/gcp-infra, which installs the shared
+ * sandbox toolchain and runtime (packages/sandbox-images) on public Ubuntu and
+ * bakes in the launcher and systemd unit below. The startup-script installs
+ * the launcher and unit if the image lacks them, fails clearly if the image
+ * has no runtime, and ensures sandbox-runtime.service is started
+ * (non-blocking).
  */
 
 import type { CreateSandboxConfig, RestoreConfig, ResumeConfig } from "../../provider";
@@ -16,14 +15,16 @@ import { toRepositoryConfigPayload } from "../../sandbox-env";
 
 export const DEFAULT_GCP_VERTEX_LOCATION = "global";
 
+/** Interpreter the shared image installer provides; the runtime is installed into it. */
+export const GCP_SANDBOX_RUNTIME_PYTHON = "/opt/openinspect/python/bin/python";
+
 export interface GcpBootMetadataConfig {
   vertexProject: string;
   vertexLocation: string;
 }
 
 /**
- * The runtime launcher script installed at /usr/local/bin/oi-sandbox-runtime
- * (matches sparkfleet's sandbox-runtime-start.sh).
+ * The runtime launcher script installed at /usr/local/bin/oi-sandbox-runtime.
  */
 export const GCP_SANDBOX_RUNTIME_START_SCRIPT = `#!/bin/bash
 
@@ -34,8 +35,9 @@ export const GCP_SANDBOX_RUNTIME_START_SCRIPT = `#!/bin/bash
 set -euo pipefail
 
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+# Kept on the boot disk, which survives stop/resume; /tmp does not survive a reboot.
 STATE=/var/lib/oi
-install -d -m 0700 "\${STATE}/metadata"
+install -d -m 0700 "\${STATE}/metadata" "\${STATE}/state"
 
 function meta() {
   local value
@@ -125,14 +127,17 @@ vertex_location="\${vertex_location:-global}"
 export GOOGLE_CLOUD_PROJECT="$vertex_project" GOOGLE_CLOUD_LOCATION="$vertex_location" VERTEX_LOCATION="$vertex_location"
 export CLAUDE_CODE_USE_VERTEX=1 CLOUD_ML_REGION="$vertex_location" ANTHROPIC_VERTEX_PROJECT_ID="$vertex_project"
 
-boot_id="$(cat /proc/sys/kernel/random/boot_id)"
-[ -f "\${STATE}/first-boot-id" ] || echo "$boot_id" > "\${STATE}/first-boot-id"
-if [ -n "$(meta snapshot_image_id)" ] || [ "$(cat "\${STATE}/first-boot-id")" != "$boot_id" ]; then
+# The runtime writes the boot-complete marker once a boot has synced the checkout,
+# run setup.sh and started the harness; a later boot of this disk then keeps the
+# checkout and skips setup.sh. An interrupted first boot leaves no marker.
+export OPENINSPECT_STATE_DIR="\${STATE}/state"
+export OI_BOOT_COMPLETE_MARKER="\${STATE}/boot-complete"
+if [ -n "$(meta snapshot_image_id)" ] || [ -e "$OI_BOOT_COMPLETE_MARKER" ]; then
   export RESTORED_FROM_SNAPSHOT=true
 fi
 
 cd /workspace
-exec /opt/openinspect/python/bin/python -m sandbox_runtime.entrypoint
+exec ${GCP_SANDBOX_RUNTIME_PYTHON} -m sandbox_runtime.entrypoint
 `;
 
 export const GCP_SANDBOX_RUNTIME_SERVICE_UNIT = `[Unit]
@@ -153,12 +158,16 @@ WantedBy=multi-user.target
 
 /**
  * GCE startup-script that provisions the runtime systemd unit if not already
- * baked into the image (as in bootstrap_suse_sparkfleet.sh) and ensures the
- * service is running.
+ * baked into the image and ensures the service is running.
  */
 export function buildGcpStartupScript(): string {
   return `#!/bin/bash
 set -euo pipefail
+
+if [ ! -x ${GCP_SANDBOX_RUNTIME_PYTHON} ]; then
+  echo "openinspect: ${GCP_SANDBOX_RUNTIME_PYTHON} not found; boot an image built by packages/gcp-infra (see docs/GCP.md)" >&2
+  exit 1
+fi
 
 if [ ! -x /usr/local/bin/oi-sandbox-runtime ]; then
   cat << 'OI_RUNTIME_EOF' > /usr/local/bin/oi-sandbox-runtime

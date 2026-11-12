@@ -246,13 +246,13 @@ describe("sandbox provider settings capabilities", () => {
     expect(supportsConfigurableSandboxImageFamily("modal")).toBe(false);
     expect(
       omitUnsupportedSandboxSettings(
-        { imageFamily: "opensuse-sparkfleet", terminalEnabled: true },
+        { imageFamily: "sandbox-image-family", terminalEnabled: true },
         "gcp"
       )
-    ).toEqual({ imageFamily: "opensuse-sparkfleet", terminalEnabled: true });
+    ).toEqual({ imageFamily: "sandbox-image-family", terminalEnabled: true });
     expect(
       omitUnsupportedSandboxSettings(
-        { imageFamily: "opensuse-sparkfleet", terminalEnabled: true },
+        { imageFamily: "sandbox-image-family", terminalEnabled: true },
         "modal"
       )
     ).toEqual({ terminalEnabled: true });

@@ -1,13 +1,13 @@
 /**
  * Naming, labeling, and resource URL conventions for GCP Compute Engine sandboxes.
- *
- * Mirrors the conventions from background_agents_gcp_sandbox/gcp/naming.go.
  */
 
 export const GCP_LABEL_MANAGED_BY = "managed_by";
 export const GCP_LABEL_SANDBOX_ID = "sandbox_id";
 export const GCP_LABEL_SESSION_ID = "session_id";
 export const GCP_LABEL_PROVISIONED = "provisioned";
+/** Deployment that owns the resource, so deployments sharing a project never touch each other's. */
+export const GCP_LABEL_DEPLOYMENT = "deployment";
 
 export const GCP_MANAGED_BY_VALUE = "background-agents-gcp";
 
@@ -53,15 +53,23 @@ export function gcpSandboxLabels(
   sandboxId: string,
   sessionId: string,
   provisioning: string,
-  extra?: Record<string, string>
+  extra?: Record<string, string>,
+  deploymentName?: string
 ): Record<string, string> {
+  // Ownership labels come last so operator-supplied labels cannot override them.
   return {
-    [GCP_LABEL_MANAGED_BY]: GCP_MANAGED_BY_VALUE,
+    ...extra,
     [GCP_LABEL_SANDBOX_ID]: labelSafe(sandboxId),
     [GCP_LABEL_SESSION_ID]: labelSafe(sessionId),
     [GCP_LABEL_PROVISIONED]: labelSafe(provisioning),
-    ...extra,
+    [GCP_LABEL_MANAGED_BY]: GCP_MANAGED_BY_VALUE,
+    ...(deploymentName ? { [GCP_LABEL_DEPLOYMENT]: gcpDeploymentLabelValue(deploymentName) } : {}),
   };
+}
+
+/** Label-safe form of a deployment name, as stored in the deployment label. */
+export function gcpDeploymentLabelValue(deploymentName: string): string {
+  return labelSafe(deploymentName);
 }
 
 export function gcpMachineTypeUrl(zone: string, machineType: string): string {

@@ -1,9 +1,9 @@
 /**
  * Worker-compatible Google Compute Engine REST client for GCP sandboxes.
  *
- * Implements the GCE operations used by background_agents_gcp_sandbox:
+ * Implements the GCE operations the GCP sandbox provider uses:
  * - Zonal instances: get, insert, start, delete, setMetadata
- * - Zonal persistent disks: get, insert, delete, createSnapshot
+ * - Zonal persistent disks: get, list, insert, delete, createSnapshot
  * - Global snapshots: delete
  * - Long-running operation waiting (/zonalOperations/.../wait, /globalOperations/.../wait)
  */
@@ -89,6 +89,7 @@ const gcpDiskSchema = z.object({
   creationTimestamp: z.string().optional(),
   lastAttachTimestamp: z.string().optional(),
   lastDetachTimestamp: z.string().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
   /** Instances the disk is attached to; empty or absent when detached. */
   users: z.array(z.string()).optional(),
 });

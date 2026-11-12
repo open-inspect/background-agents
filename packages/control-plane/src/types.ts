@@ -87,7 +87,7 @@ export interface EnvConfig {
   GCP_SERVICE_ACCOUNT_JSON?: string; // GCP Service Account JSON key (secret) for Compute Engine API
   GCP_PROJECT?: string; // GCP project ID where sandbox VMs and disks are provisioned
   GCP_ZONES?: string; // Comma-separated GCE zones (default: DEFAULT_GCP_ZONES, us-central1-{a,b,c,f})
-  GCP_IMAGE_FAMILY?: string; // Default GCE image family or image reference when a repo has no override
+  GCP_IMAGE_FAMILY?: string; // Default GCE image family or image when a repo has no override (default: DEFAULT_GCP_IMAGE_FAMILY, built by packages/gcp-infra)
   GCP_IMAGE_PROJECT?: string; // Optional GCP project hosting the sandbox images (defaults to GCP_PROJECT)
   GCP_MACHINE_TYPE?: string; // GCE machine type (default: e2-standard-4)
   GCP_BOOT_DISK_SIZE_GB?: string; // Boot disk size in GB (default: 80)

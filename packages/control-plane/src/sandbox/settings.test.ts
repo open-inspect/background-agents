@@ -348,8 +348,8 @@ describe("normalizeSandboxSettings", () => {
   });
 
   it("normalizes and validates imageFamily overrides", () => {
-    expect(normalizeSandboxSettings({ imageFamily: "  opensuse-sparkfleet-generic  " })).toEqual({
-      imageFamily: "opensuse-sparkfleet-generic",
+    expect(normalizeSandboxSettings({ imageFamily: "  sandbox-image-family  " })).toEqual({
+      imageFamily: "sandbox-image-family",
     });
     expect(normalizeSandboxSettings({ imageFamily: null })).toEqual({
       imageFamily: null,

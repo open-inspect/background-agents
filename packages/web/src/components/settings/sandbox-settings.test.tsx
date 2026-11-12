@@ -1458,15 +1458,15 @@ describe("SandboxSettingsEditor — environment scope", () => {
     reposMock.repos = [
       {
         id: 1,
-        fullName: "bitly/sparkfleet",
-        owner: "bitly",
-        name: "sparkfleet",
+        fullName: "acme/example-repo",
+        owner: "acme",
+        name: "example-repo",
         description: null,
         private: false,
         defaultBranch: "main",
       },
     ];
-    const repoKey = "/api/integration-settings/sandbox/repos/bitly/sparkfleet";
+    const repoKey = "/api/integration-settings/sandbox/repos/acme/example-repo";
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return new Response(JSON.stringify({}), { status: 200 });
@@ -1482,9 +1482,9 @@ describe("SandboxSettingsEditor — environment scope", () => {
           fallback: {
             [SETTINGS_KEY]: {
               integrationId: "sandbox",
-              settings: { defaults: { imageFamily: "opensuse-sparkfleet-generic" } },
+              settings: { defaults: { imageFamily: "sandbox-image-family" } },
             },
-            [repoKey]: { integrationId: "sandbox", repo: "bitly/sparkfleet", settings: null },
+            [repoKey]: { integrationId: "sandbox", repo: "acme/example-repo", settings: null },
           },
           dedupingInterval: Infinity,
           revalidateOnFocus: false,
@@ -1497,13 +1497,13 @@ describe("SandboxSettingsEditor — environment scope", () => {
     );
 
     await user.click(screen.getByText("All Repositories (Global)"));
-    await user.click(screen.getByRole("option", { name: /sparkfleet/ }));
+    await user.click(screen.getByRole("option", { name: /example-repo/ }));
 
     const input = screen.getByLabelText("GCP Image Family");
-    expect(input).toHaveValue("opensuse-sparkfleet-generic");
+    expect(input).toHaveValue("sandbox-image-family");
 
     await user.clear(input);
-    await user.type(input, "opensuse-sparkfleet-custom");
+    await user.type(input, "sandbox-image-custom");
     await user.click(screen.getByText("Save Settings"));
 
     await waitFor(() => {
@@ -1512,7 +1512,7 @@ describe("SandboxSettingsEditor — environment scope", () => {
         expect.objectContaining({
           method: "PUT",
           body: JSON.stringify({
-            settings: { imageFamily: "opensuse-sparkfleet-custom" },
+            settings: { imageFamily: "sandbox-image-custom" },
           }),
         })
       );

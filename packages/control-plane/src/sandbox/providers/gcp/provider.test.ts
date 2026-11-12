@@ -37,8 +37,8 @@ async function generateTestPrivateKeyPem(): Promise<string> {
 const baseCreateConfig: CreateSandboxConfig = {
   sessionId: "sess-123",
   sandboxId: "sbx-123",
-  repoOwner: "bitly",
-  repoName: "sparkfleet",
+  repoOwner: "acme",
+  repoName: "example-repo",
   controlPlaneUrl: "https://cp.example.com",
   sandboxAuthToken: "secret-auth-token",
   harness: "claude",
@@ -58,23 +58,23 @@ describe("GCP naming and image URL resolution", () => {
 
   it("normalizes image family and image self-link references", () => {
     expect(
-      gcpImageSourceUrl("my-proj", "opensuse-sparkfleet-generic", {
+      gcpImageSourceUrl("my-proj", "sandbox-image-family", {
         treatBareAsFamily: true,
       })
-    ).toBe("projects/my-proj/global/images/family/opensuse-sparkfleet-generic");
+    ).toBe("projects/my-proj/global/images/family/sandbox-image-family");
 
     expect(
-      gcpImageSourceUrl("my-proj", "opensuse-sparkfleet-generic", {
+      gcpImageSourceUrl("my-proj", "sandbox-image-family", {
         imageProject: "shared-images",
         treatBareAsFamily: true,
       })
-    ).toBe("projects/shared-images/global/images/family/opensuse-sparkfleet-generic");
+    ).toBe("projects/shared-images/global/images/family/sandbox-image-family");
 
     expect(
-      gcpImageSourceUrl("my-proj", "family/opensuse-sparkfleet", {
+      gcpImageSourceUrl("my-proj", "family/sandbox-image-family", {
         imageProject: "shared-images",
       })
-    ).toBe("projects/shared-images/global/images/family/opensuse-sparkfleet");
+    ).toBe("projects/shared-images/global/images/family/sandbox-image-family");
 
     expect(
       gcpImageSourceUrl("my-proj", "projects/other/global/images/custom-img-1", {
@@ -98,12 +98,30 @@ describe("GCP naming and image URL resolution", () => {
       env: "prod",
     });
   });
+
+  it("adds a label-safe deployment label that operator labels cannot override", () => {
+    expect(
+      gcpSandboxLabels(
+        "sbx-1",
+        "sess-1",
+        "standard",
+        { managed_by: "spoofed", deployment: "other" },
+        "Acme_Prod"
+      )
+    ).toEqual({
+      managed_by: "background-agents-gcp",
+      deployment: "acme-prod",
+      sandbox_id: "sbx-1",
+      session_id: "sess-1",
+      provisioned: "standard",
+    });
+  });
 });
 
 describe("GCP metadata and startup-script", () => {
   const bootConfig = { vertexProject: "vertex-proj", vertexLocation: "global" };
 
-  it("builds create metadata matching the sparkfleet boot unit contract", () => {
+  it("builds create metadata matching the startup-script contract", () => {
     const metadata = buildGcpCreateMetadata(
       {
         ...baseCreateConfig,
@@ -113,8 +131,8 @@ describe("GCP metadata and startup-script", () => {
         timeoutSeconds: 3600,
         repositories: [
           {
-            repoOwner: "bitly",
-            repoName: "sparkfleet",
+            repoOwner: "acme",
+            repoName: "example-repo",
             baseBranch: "main",
             baseSha: "0123456789abcdef0123456789abcdef01234567",
           },
@@ -131,8 +149,8 @@ describe("GCP metadata and startup-script", () => {
       sandbox_id: "sbx-123",
       control_plane_url: "https://cp.example.com",
       sandbox_auth_token: "secret-auth-token",
-      repo_owner: "bitly",
-      repo_name: "sparkfleet",
+      repo_owner: "acme",
+      repo_name: "example-repo",
       branch: "main",
       agent_session_id: "agent-1",
       harness: "claude",
@@ -148,8 +166,8 @@ describe("GCP metadata and startup-script", () => {
     });
     expect(JSON.parse(metadata.repositories)).toEqual([
       {
-        repo_owner: "bitly",
-        repo_name: "sparkfleet",
+        repo_owner: "acme",
+        repo_name: "example-repo",
         branch: "main",
         base_sha: "0123456789abcdef0123456789abcdef01234567",
       },
@@ -194,6 +212,19 @@ describe("GCP metadata and startup-script", () => {
     expect(script).toContain("python -m sandbox_runtime.entrypoint");
     expect(script).toContain("RESTORED_FROM_SNAPSHOT=true");
     expect(script).toContain("systemctl start --no-block sandbox-runtime.service");
+  });
+
+  it("refuses to start without the image's runtime and keeps runtime state on the boot disk", () => {
+    const script = buildGcpStartupScript();
+    const runtimeCheck = script.indexOf("if [ ! -x /opt/openinspect/python/bin/python ]");
+    expect(runtimeCheck).toBeGreaterThan(-1);
+    expect(runtimeCheck).toBeLessThan(script.indexOf("systemctl"));
+    expect(script).toContain('export OPENINSPECT_STATE_DIR="${STATE}/state"');
+    expect(script).toContain('export OI_BOOT_COMPLETE_MARKER="${STATE}/boot-complete"');
+    expect(script).toContain(
+      "exec /opt/openinspect/python/bin/python -m sandbox_runtime.entrypoint"
+    );
+    expect(script).not.toContain("first-boot-id");
   });
 });
 
@@ -302,36 +333,41 @@ describe("GcpSandboxProvider", () => {
     expect(result.providerObjectId).toContain("/instances/ssess-123");
   });
 
-  it("falls back to defaultImageFamily when repo imageFamily is not set", async () => {
+  it("boots the gcp-infra image family when no image is configured", async () => {
     const client = createMockGcpClient();
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "opensuse-sparkfleet-generic",
     });
 
     await provider.createSandbox(baseCreateConfig);
 
     expect(client.createDisk).toHaveBeenCalledWith(
       expect.objectContaining({
-        sourceImage: "opensuse-sparkfleet-generic",
+        sourceImage: "open-inspect-sandbox",
         treatBareImageAsFamily: true,
       }),
       undefined
     );
   });
 
-  it("throws a permanent error when no image family or image is configured anywhere", async () => {
+  it("falls back to defaultImageFamily when repo imageFamily is not set", async () => {
     const client = createMockGcpClient();
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
+      defaultImageFamily: "sandbox-image-family",
     });
 
-    await expect(provider.createSandbox(baseCreateConfig)).rejects.toMatchObject({
-      name: "SandboxProviderError",
-      errorType: "permanent",
-    });
+    await provider.createSandbox(baseCreateConfig);
+
+    expect(client.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceImage: "sandbox-image-family",
+        treatBareImageAsFamily: true,
+      }),
+      undefined
+    );
   });
 
   it("cleans up boot disk when VM creation fails", async () => {
@@ -343,7 +379,7 @@ describe("GcpSandboxProvider", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
     });
 
     await expect(provider.createSandbox(baseCreateConfig)).rejects.toMatchObject({
@@ -373,7 +409,7 @@ describe("GcpSandboxProvider", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones,
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
       useSpot: true,
     });
 
@@ -396,7 +432,7 @@ describe("GcpSandboxProvider", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a", "us-central1-b"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
       useSpot: true,
     });
 
@@ -420,7 +456,7 @@ describe("GcpSandboxProvider", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
     });
 
     const preserveStop: StopConfig = {
@@ -459,7 +495,7 @@ describe("GcpSandboxProvider", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
     });
 
     await provider.stopSandbox({
@@ -490,7 +526,7 @@ describe("GcpSandboxProvider", () => {
     const provider1 = new GcpSandboxProvider(clientWithDisk, {
       project: "test-project",
       zones: ["us-central1-a", "us-central1-b"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
     });
 
     const resumed = await provider1.resumeSandbox({
@@ -514,7 +550,7 @@ describe("GcpSandboxProvider", () => {
     const provider2 = new GcpSandboxProvider(clientWithoutDisk, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
     });
 
     const missing = await provider2.resumeSandbox({
@@ -540,7 +576,7 @@ describe("GcpSandboxProvider", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
       supportsSnapshots: true,
       supportsRestore: true,
     });
@@ -595,8 +631,15 @@ describe("GcpSandboxProvider disk retention purge", () => {
   const NOW_MS = Date.parse("2026-11-12T00:00:00Z");
   const daysAgo = (days: number) => new Date(NOW_MS - days * DAY_MS).toISOString();
 
+  const OWN_LABELS = { managed_by: "background-agents-gcp", deployment: "acme" };
+
   function disk(name: string, fields: Record<string, unknown>) {
-    return { name, zone: "projects/test-project/zones/us-central1-a", ...fields };
+    return {
+      name,
+      zone: "projects/test-project/zones/us-central1-a",
+      labels: OWN_LABELS,
+      ...fields,
+    };
   }
 
   function createPurgeClient(disks: unknown[]): GcpComputeClient {
@@ -630,6 +673,7 @@ describe("GcpSandboxProvider disk retention purge", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
+      deploymentName: "acme",
     });
 
     const deleted = await provider.purgeExpiredDisks("excluded", undefined, NOW_MS);
@@ -637,7 +681,7 @@ describe("GcpSandboxProvider disk retention purge", () => {
     expect(deleted).toEqual(["expired-30d", "expired-20d"]);
     expect(client.listDisks).toHaveBeenCalledWith(
       "us-central1-a",
-      'labels.managed_by="background-agents-gcp"',
+      '(labels.managed_by = "background-agents-gcp") AND (labels.deployment = "acme")',
       undefined
     );
     expect(client.deleteDisk).toHaveBeenCalledTimes(2);
@@ -651,6 +695,7 @@ describe("GcpSandboxProvider disk retention purge", () => {
       new GcpSandboxProvider(short, {
         project: "test-project",
         zones: ["us-central1-a"],
+        deploymentName: "acme",
         diskRetentionDays: 7,
       }).purgeExpiredDisks(undefined, undefined, NOW_MS)
     ).resolves.toEqual(["ten-days"]);
@@ -660,10 +705,68 @@ describe("GcpSandboxProvider disk retention purge", () => {
       new GcpSandboxProvider(disabled, {
         project: "test-project",
         zones: ["us-central1-a"],
+        deploymentName: "acme",
         diskRetentionDays: 0,
       }).purgeExpiredDisks(undefined, undefined, NOW_MS)
     ).resolves.toEqual([]);
     expect(disabled.listDisks).not.toHaveBeenCalled();
+  });
+
+  it("never purges another deployment's disks or unlabeled legacy disks", async () => {
+    const client = createPurgeClient([
+      disk("other-deployment", {
+        creationTimestamp: daysAgo(90),
+        labels: { managed_by: "background-agents-gcp", deployment: "someone-else" },
+      }),
+      disk("legacy-no-deployment", {
+        creationTimestamp: daysAgo(90),
+        labels: { managed_by: "background-agents-gcp" },
+      }),
+      disk("not-managed", { creationTimestamp: daysAgo(90), labels: { deployment: "acme" } }),
+      disk("own", { creationTimestamp: daysAgo(30) }),
+    ]);
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+      deploymentName: "acme",
+    });
+
+    await expect(provider.purgeExpiredDisks(undefined, undefined, NOW_MS)).resolves.toEqual([
+      "own",
+    ]);
+  });
+
+  it("does not purge at all without a deployment name", async () => {
+    const client = createPurgeClient([disk("own", { creationTimestamp: daysAgo(30) })]);
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    await expect(provider.purgeExpiredDisks(undefined, undefined, NOW_MS)).resolves.toEqual([]);
+    expect(client.listDisks).not.toHaveBeenCalled();
+  });
+
+  it("labels new disks and VMs with the deployment", async () => {
+    const client = createPurgeClient([]);
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+      defaultImageFamily: "sandbox-image-family",
+      deploymentName: "acme",
+    });
+
+    await provider.createSandbox(baseCreateConfig);
+
+    const deploymentLabel = expect.objectContaining({ deployment: "acme" });
+    expect(client.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: deploymentLabel }),
+      undefined
+    );
+    expect(client.createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: deploymentLabel }),
+      undefined
+    );
   });
 
   it("rejects a negative retention", () => {
@@ -689,7 +792,8 @@ describe("GcpSandboxProvider disk retention purge", () => {
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
-      defaultImageFamily: "sparkfleet",
+      defaultImageFamily: "sandbox-image-family",
+      deploymentName: "acme",
     });
 
     const result = await provider.createSandbox(baseCreateConfig);

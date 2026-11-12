@@ -123,6 +123,7 @@ function createGcpProviderFromEnv(env: Env): GcpSandboxProvider {
     ),
     supportsSnapshots: parseBooleanEnv("GCP_SUPPORTS_SNAPSHOTS", env.GCP_SUPPORTS_SNAPSHOTS, false),
     supportsRestore: parseBooleanEnv("GCP_SUPPORTS_RESTORE", env.GCP_SUPPORTS_RESTORE, false),
+    deploymentName: env.DEPLOYMENT_NAME,
     diskRetentionDays: parseNumericEnv(
       "GCP_DISK_RETENTION_DAYS",
       env.GCP_DISK_RETENTION_DAYS,

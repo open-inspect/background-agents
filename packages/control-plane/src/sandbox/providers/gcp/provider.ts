@@ -1,8 +1,8 @@
 /**
  * Native Google Cloud Platform (GCE) sandbox provider.
  *
- * Implements the GCE provisioning and disk lifecycle from background_agents_gcp_sandbox
- * directly in the control plane:
+ * Implements GCE provisioning and the boot disk lifecycle directly in the
+ * control plane:
  * - Single persistent boot disk (`autoDelete: false`) named after the session ID.
  * - `createSandbox` resolves the image family/image from `sandboxSettings.imageFamily`
  *   (or `userEnvVars.REPO_IMAGE`, `prebuiltImageId`, `defaultImageFamily`), creates
@@ -51,9 +51,11 @@ import {
   type GcpBootMetadataConfig,
 } from "./metadata";
 import {
+  GCP_LABEL_DEPLOYMENT,
   GCP_LABEL_MANAGED_BY,
   GCP_MANAGED_BY_VALUE,
   extractGcpZone,
+  gcpDeploymentLabelValue,
   gcpDiskSelfLink,
   gcpSandboxLabels,
   gcpSandboxName,
@@ -67,6 +69,8 @@ export const DEFAULT_GCP_ZONES = [
   "us-central1-c",
   "us-central1-f",
 ];
+/** Image family packages/gcp-infra builds into; also its GCP_IMAGE_FAMILY default. */
+export const DEFAULT_GCP_IMAGE_FAMILY = "open-inspect-sandbox";
 export const DEFAULT_GCP_MACHINE_TYPE = "e2-standard-4";
 export const DEFAULT_GCP_BOOT_DISK_SIZE_GB = 80;
 export const DEFAULT_GCP_BOOT_DISK_TYPE = "pd-balanced";
@@ -97,6 +101,13 @@ export interface GcpProviderConfig {
   includeStartupScript?: boolean;
   supportsSnapshots?: boolean;
   supportsRestore?: boolean;
+  /**
+   * Deployment that owns the VMs, disks, and snapshots this provider creates
+   * (DEPLOYMENT_NAME), written to the deployment label. The retention purge
+   * only ever deletes disks carrying this deployment's label, and is disabled
+   * when this is unset.
+   */
+  deploymentName?: string;
   /** Defaults to DEFAULT_GCP_DISK_RETENTION_DAYS; 0 disables purging. */
   diskRetentionDays?: number;
 }
@@ -205,7 +216,8 @@ export class GcpSandboxProvider implements SandboxProvider {
             config.sandboxId,
             config.sessionId,
             "pending",
-            this.config.instanceLabels
+            this.config.instanceLabels,
+            this.config.deploymentName
           ),
         },
         config.correlation
@@ -264,7 +276,8 @@ export class GcpSandboxProvider implements SandboxProvider {
             config.sandboxId,
             config.sessionId,
             "restored",
-            this.config.instanceLabels
+            this.config.instanceLabels,
+            this.config.deploymentName
           ),
         },
         config.correlation
@@ -312,7 +325,8 @@ export class GcpSandboxProvider implements SandboxProvider {
           config.providerObjectId,
           config.sessionId,
           "snapshot",
-          this.config.instanceLabels
+          this.config.instanceLabels,
+          this.config.deploymentName
         ),
         config.correlation,
         signal
@@ -411,7 +425,7 @@ export class GcpSandboxProvider implements SandboxProvider {
    * never throws: cleanup must not slow or fail provisioning.
    */
   private startExpiredDiskPurge(excludeDiskName: string, correlation?: CorrelationContext): void {
-    if (this.diskRetentionMs <= 0) return;
+    if (this.diskRetentionMs <= 0 || !this.config.deploymentName) return;
     void this.purgeExpiredDisks(excludeDiskName, correlation).catch((error) => {
       log.warn("gcp.disk_purge_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -422,22 +436,31 @@ export class GcpSandboxProvider implements SandboxProvider {
   /**
    * Deletes up to GCP_DISK_PURGE_BATCH_SIZE of the longest-unused sandbox disks
    * whose last use is older than the retention cutoff. Only detached disks
-   * created by this provider (managed_by label) are considered.
+   * labeled as created by this provider for this deployment are considered;
+   * disks without a deployment label (created before it existed) are never
+   * purged, since their owner cannot be determined.
    */
   async purgeExpiredDisks(
     excludeDiskName?: string,
     correlation?: CorrelationContext,
     nowMs: number = Date.now()
   ): Promise<string[]> {
-    if (this.diskRetentionMs <= 0) return [];
+    const deploymentName = this.config.deploymentName;
+    if (this.diskRetentionMs <= 0 || !deploymentName) return [];
     const cutoffMs = nowMs - this.diskRetentionMs;
-    const filter = `labels.${GCP_LABEL_MANAGED_BY}="${GCP_MANAGED_BY_VALUE}"`;
+    const deployment = gcpDeploymentLabelValue(deploymentName);
+    const filter =
+      `(labels.${GCP_LABEL_MANAGED_BY} = "${GCP_MANAGED_BY_VALUE}") AND ` +
+      `(labels.${GCP_LABEL_DEPLOYMENT} = "${deployment}")`;
 
     const candidates: Array<{ disk: GcpDisk; zone: string; lastUsedMs: number }> = [];
     for (const zone of this.zones) {
       const disks = await this.client.listDisks(zone, filter, correlation);
       for (const disk of disks) {
         if (disk.name === excludeDiskName) continue;
+        // Re-check ownership locally rather than trusting the server-side filter alone.
+        if (disk.labels?.[GCP_LABEL_MANAGED_BY] !== GCP_MANAGED_BY_VALUE) continue;
+        if (disk.labels?.[GCP_LABEL_DEPLOYMENT] !== deployment) continue;
         if (disk.users && disk.users.length > 0) continue;
         const lastUsedMs = gcpDiskLastUsedMs(disk);
         if (lastUsedMs === null || lastUsedMs >= cutoffMs) continue;
@@ -466,7 +489,7 @@ export class GcpSandboxProvider implements SandboxProvider {
    * 1. `sandboxSettings.imageFamily` (configured per-repo or globally in the UX)
    * 2. `userEnvVars.REPO_IMAGE` (legacy per-repo secret override)
    * 3. `prebuiltImageId`
-   * 4. `config.defaultImageFamily` (`GCP_IMAGE_FAMILY` / `GCP_AGENT_IMAGE`)
+   * 4. `config.defaultImageFamily` (`GCP_IMAGE_FAMILY`), else DEFAULT_GCP_IMAGE_FAMILY
    */
   private resolveSourceImage(config: CreateSandboxConfig): { image: string; isFamily: boolean } {
     const settingsFamily = config.sandboxSettings?.imageFamily?.trim();
@@ -484,15 +507,8 @@ export class GcpSandboxProvider implements SandboxProvider {
       return { image: prebuilt, isFamily: false };
     }
 
-    const defaultFamily = this.config.defaultImageFamily?.trim();
-    if (defaultFamily) {
-      return { image: defaultFamily, isFamily: true };
-    }
-
-    throw new SandboxProviderError(
-      "No GCP sandbox image configured: set an image family for the repository in Sandbox settings or configure GCP_IMAGE_FAMILY",
-      "permanent"
-    );
+    const defaultFamily = this.config.defaultImageFamily?.trim() || DEFAULT_GCP_IMAGE_FAMILY;
+    return { image: defaultFamily, isFamily: true };
   }
 
   private async ensureStarted(
@@ -595,7 +611,13 @@ export class GcpSandboxProvider implements SandboxProvider {
         bootDiskSelfLink: gcpDiskSelfLink(this.client.project, zone, diskName),
         network: this.config.network,
         subnet: this.config.subnet,
-        labels: gcpSandboxLabels(sandboxId, sessionId, provisioning, this.config.instanceLabels),
+        labels: gcpSandboxLabels(
+          sandboxId,
+          sessionId,
+          provisioning,
+          this.config.instanceLabels,
+          this.config.deploymentName
+        ),
         metadata,
         serviceAccountEmail: this.config.vmServiceAccountEmail,
         spot,
