@@ -187,7 +187,11 @@ module "control_plane_worker" {
         GCP_SUPPORTS_RESTORE       = { value = tostring(var.gcp_supports_restore) }
         GCP_DISK_RETENTION_DAYS    = { value = tostring(var.gcp_disk_retention_days) }
       },
-      var.gcp_image_family != "" ? { GCP_IMAGE_FAMILY = { value = var.gcp_image_family } } : {},
+      # A Terraform-built image pins the Worker to that exact verified image;
+      # otherwise sessions follow gcp_image_family (or the provider default).
+      local.build_gcp_image ? { GCP_IMAGE_FAMILY = { value = module.gcp_infra[0].image_reference } } : (
+        var.gcp_image_family != "" ? { GCP_IMAGE_FAMILY = { value = var.gcp_image_family } } : {}
+      ),
       var.gcp_image_project != "" ? { GCP_IMAGE_PROJECT = { value = var.gcp_image_project } } : {},
       var.gcp_network != "" ? { GCP_NETWORK = { value = var.gcp_network } } : {},
       var.gcp_subnet != "" ? { GCP_SUBNET = { value = var.gcp_subnet } } : {},

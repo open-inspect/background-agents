@@ -869,6 +869,25 @@ variable "gcp_disk_retention_days" {
   }
 }
 
+variable "gcp_build_image" {
+  description = "Build and verify the GCP sandbox image with Terraform (needs gcloud and uv where Terraform runs) and pin the Worker to it; false uses gcp_image_family"
+  type        = bool
+  default     = true
+}
+
+variable "gcp_image_build_service_account_json" {
+  description = "Service account JSON key for the image build (create VMs and images, SSH); empty uses gcloud's existing credentials"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "gcp_image_build_use_iap" {
+  description = "Give image build VMs no external IP and SSH to them through IAP"
+  type        = bool
+  default     = false
+}
+
 variable "nextauth_secret" {
   description = "Browser authentication secret used by the control plane (legacy Terraform input name; generate with: openssl rand -base64 32)"
   type        = string

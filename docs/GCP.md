@@ -52,24 +52,34 @@ gcloud compute disks delete DISK_NAME --zone=ZONE --project=PROJECT
 
 ## Sandbox Image
 
-Sandbox VMs boot from an image that has the shared sandbox toolchain and runtime installed. Build it
-with [`packages/gcp-infra`](../packages/gcp-infra/README.md), which installs the same bundle the
+Sandbox VMs boot from an image that has the shared sandbox toolchain and runtime installed.
+[`packages/gcp-infra`](../packages/gcp-infra/README.md) builds it by installing the same bundle the
 other providers use onto the public Ubuntu 24.04 image family
-(`ubuntu-os-cloud/ubuntu-2404-lts-amd64`) and adds the result to the `open-inspect-sandbox` image
-family:
+(`ubuntu-os-cloud/ubuntu-2404-lts-amd64`). The new image stays deprecated, so its family skips it,
+until a VM booted from it passes the image verification.
+
+**Built by Terraform (default).** With `gcp_build_image = true`, `terraform apply` builds a new
+image whenever the runtime, the image package, or the builder changes, named
+`open-inspect-sandbox-<hash>`, and pins the control plane to that exact image only after it is
+verified. `gcloud` and `uv` must be installed where Terraform runs; GitHub-hosted runners have both.
+Authenticate the build with `gcp_image_build_service_account_json`, or leave it empty to use
+gcloud's existing credentials.
+
+**Built by hand.** With `gcp_build_image = false`, build images yourself and the control plane boots
+the newest one in `gcp_image_family` (default `open-inspect-sandbox`), so a new build applies to new
+sessions without a deploy:
 
 ```bash
 GCP_PROJECT=my-project npm run sandbox:images -- build --provider gcp
 ```
 
-The control plane boots the newest image in `gcp_image_family`, which defaults to
-`open-inspect-sandbox`, so a new build applies to new sessions without a deploy. A VM booted from an
-image without the runtime stops at startup with a message pointing here, in the VM's serial console
-output.
+A VM booted from an image without the runtime stops at startup with a message pointing here, in the
+VM's serial console output.
 
-The builder needs the same Compute Engine permissions as the control plane, plus
-`compute.images.create` and SSH access to its VMs. Run it with your own credentials or a separate
-build service account, not the control plane's.
+The build credentials need the same Compute Engine permissions as the control plane, plus
+`compute.images.create`, `compute.images.deprecate`, and SSH access to the build VMs (instance
+metadata SSH keys, or OS Login with `roles/compute.osAdminLogin`). Use a separate build service
+account rather than the control plane's.
 
 ## Required Configuration
 
@@ -175,28 +185,31 @@ network without Cloud NAT, VMs boot but never connect, and the launch fails at t
 Every setting below applies only when `sandbox_provider = "gcp"`. Terraform variables map to the
 control-plane Worker environment variables shown.
 
-| Terraform variable                  | Env var                        | Required | Default                 | Purpose                                                                     |
-| ----------------------------------- | ------------------------------ | -------- | ----------------------- | --------------------------------------------------------------------------- |
-| `gcp_service_account_json` (secret) | `GCP_SERVICE_ACCOUNT_JSON`     | yes      | —                       | Service account JSON key used to call the Compute Engine API                |
-| `gcp_project`                       | `GCP_PROJECT`                  | yes\*    | key's project           | Project where sandbox VMs and disks are created                             |
-| `gcp_zones`                         | `GCP_ZONES`                    | no       | `us-central1-{a,b,c,f}` | Comma-separated zones; each session is placed in one, by session ID hash    |
-| `gcp_image_family`                  | `GCP_IMAGE_FAMILY`             | no       | `open-inspect-sandbox`  | Default image family or image when a repo doesn't set its own               |
-| `gcp_image_project`                 | `GCP_IMAGE_PROJECT`            | no       | `gcp_project`           | Project that hosts the sandbox images                                       |
-| `gcp_machine_type`                  | `GCP_MACHINE_TYPE`             | no       | `e2-standard-4`         | VM machine type                                                             |
-| `gcp_boot_disk_size_gb`             | `GCP_BOOT_DISK_SIZE_GB`        | no       | `80`                    | Boot disk size in GB                                                        |
-| `gcp_boot_disk_type`                | `GCP_BOOT_DISK_TYPE`           | no       | `pd-balanced`           | Boot disk type                                                              |
-| `gcp_network`                       | `GCP_NETWORK`                  | no       | —                       | VPC network name or self-link                                               |
-| `gcp_subnet`                        | `GCP_SUBNET`                   | no       | —                       | Subnetwork name or self-link                                                |
-| `gcp_vm_service_account_email`      | `GCP_VM_SERVICE_ACCOUNT_EMAIL` | no       | —                       | Service account attached to sandbox VMs; unset means **no** service account |
-| `gcp_instance_labels`               | `GCP_INSTANCE_LABELS`          | no       | —                       | `key=value,key=value` labels applied to VMs and disks                       |
-| `gcp_vertex_project`                | `GCP_VERTEX_PROJECT`           | no       | `gcp_project`           | Vertex AI project, passed to the VM in instance metadata                    |
-| `gcp_vertex_location`               | `GCP_VERTEX_LOCATION`          | no       | `global`                | Vertex AI location, passed to the VM in instance metadata                   |
-| `gcp_use_spot`                      | `GCP_USE_SPOT`                 | no       | `false`                 | Try a Spot VM first; fall back to standard in the same zone                 |
-| `gcp_include_startup_script`        | `GCP_INCLUDE_STARTUP_SCRIPT`   | no       | `true`                  | Inject the sandbox runtime startup script into instance metadata            |
-| `gcp_supports_snapshots`            | `GCP_SUPPORTS_SNAPSHOTS`       | no       | `false`                 | Enable GCE disk snapshots                                                   |
-| `gcp_supports_restore`              | `GCP_SUPPORTS_RESTORE`         | no       | `false`                 | Enable restoring sandboxes from disk snapshots                              |
-| `gcp_disk_retention_days`           | `GCP_DISK_RETENTION_DAYS`      | no       | `14`                    | Days a detached disk may go unused before it is purged; `0` disables        |
-| —                                   | `GCP_COMPUTE_API_BASE_URL`     | no       | Google's API            | Overrides the Compute Engine API base URL; for tests only                   |
+| Terraform variable                              | Env var                        | Required | Default                 | Purpose                                                                     |
+| ----------------------------------------------- | ------------------------------ | -------- | ----------------------- | --------------------------------------------------------------------------- |
+| `gcp_service_account_json` (secret)             | `GCP_SERVICE_ACCOUNT_JSON`     | yes      | —                       | Service account JSON key used to call the Compute Engine API                |
+| `gcp_project`                                   | `GCP_PROJECT`                  | yes\*    | key's project           | Project where sandbox VMs and disks are created                             |
+| `gcp_zones`                                     | `GCP_ZONES`                    | no       | `us-central1-{a,b,c,f}` | Comma-separated zones; each session is placed in one, by session ID hash    |
+| `gcp_image_family`                              | `GCP_IMAGE_FAMILY`             | no       | `open-inspect-sandbox`  | Default image family or image when a repo doesn't set its own               |
+| `gcp_image_project`                             | `GCP_IMAGE_PROJECT`            | no       | `gcp_project`           | Project that hosts the sandbox images                                       |
+| `gcp_machine_type`                              | `GCP_MACHINE_TYPE`             | no       | `e2-standard-4`         | VM machine type                                                             |
+| `gcp_boot_disk_size_gb`                         | `GCP_BOOT_DISK_SIZE_GB`        | no       | `80`                    | Boot disk size in GB                                                        |
+| `gcp_boot_disk_type`                            | `GCP_BOOT_DISK_TYPE`           | no       | `pd-balanced`           | Boot disk type                                                              |
+| `gcp_network`                                   | `GCP_NETWORK`                  | no       | —                       | VPC network name or self-link                                               |
+| `gcp_subnet`                                    | `GCP_SUBNET`                   | no       | —                       | Subnetwork name or self-link                                                |
+| `gcp_vm_service_account_email`                  | `GCP_VM_SERVICE_ACCOUNT_EMAIL` | no       | —                       | Service account attached to sandbox VMs; unset means **no** service account |
+| `gcp_instance_labels`                           | `GCP_INSTANCE_LABELS`          | no       | —                       | `key=value,key=value` labels applied to VMs and disks                       |
+| `gcp_vertex_project`                            | `GCP_VERTEX_PROJECT`           | no       | `gcp_project`           | Vertex AI project, passed to the VM in instance metadata                    |
+| `gcp_vertex_location`                           | `GCP_VERTEX_LOCATION`          | no       | `global`                | Vertex AI location, passed to the VM in instance metadata                   |
+| `gcp_use_spot`                                  | `GCP_USE_SPOT`                 | no       | `false`                 | Try a Spot VM first; fall back to standard in the same zone                 |
+| `gcp_include_startup_script`                    | `GCP_INCLUDE_STARTUP_SCRIPT`   | no       | `true`                  | Inject the sandbox runtime startup script into instance metadata            |
+| `gcp_supports_snapshots`                        | `GCP_SUPPORTS_SNAPSHOTS`       | no       | `false`                 | Enable GCE disk snapshots                                                   |
+| `gcp_supports_restore`                          | `GCP_SUPPORTS_RESTORE`         | no       | `false`                 | Enable restoring sandboxes from disk snapshots                              |
+| `gcp_disk_retention_days`                       | `GCP_DISK_RETENTION_DAYS`      | no       | `14`                    | Days a detached disk may go unused before it is purged; `0` disables        |
+| `gcp_build_image`                               | `GCP_IMAGE_FAMILY` (pinned)    | no       | `true`                  | Build and verify the image with Terraform and pin the control plane to it   |
+| `gcp_image_build_service_account_json` (secret) | —                              | no       | gcloud's credentials    | Credentials for the image build                                             |
+| `gcp_image_build_use_iap`                       | —                              | no       | `false`                 | Build VMs get no external IP; SSH through IAP                               |
+| —                                               | `GCP_COMPUTE_API_BASE_URL`     | no       | Google's API            | Overrides the Compute Engine API base URL; for tests only                   |
 
 \* Terraform requires `gcp_project`. When running the control plane outside Terraform, an unset
 `GCP_PROJECT` falls back to the service account key's `project_id`.

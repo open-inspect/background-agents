@@ -158,6 +158,12 @@ gcp_project                  = "" # GCP project ID where sandbox VMs and disks a
 # gcp_supports_snapshots     = false
 # gcp_supports_restore       = false
 # gcp_disk_retention_days    = 14 # delete detached disks unused this many days; 0 disables
+# Image build: Terraform builds the sandbox image with packages/gcp-infra (gcloud and uv
+# required where Terraform runs) and pins the Worker to it. Set false to manage images
+# yourself through gcp_image_family.
+# gcp_build_image                      = true
+# gcp_image_build_service_account_json = "" # build credentials; empty uses gcloud's own
+# gcp_image_build_use_iap              = false
 
 
 # =============================================================================

@@ -38,13 +38,13 @@ PAYLOAD_ROOTS = (
     RUNTIME_PACKAGE / "uv.lock",
     *(IMAGE_PACKAGE / part for part in ("install", "verify", "locks", "toolchain.json")),
 )
-# Terraform modules that build or deploy a provider's image; GCP images are built manually.
 INFRA_MODULES = {
     "modal": "modal-app",
     "daytona": "daytona-infra",
     "e2b": "e2b-infra",
     "vercel": "vercel-sandbox-infra",
     "boat": "boat-infra",
+    "gcp": "gcp-infra",
 }
 
 
@@ -160,11 +160,7 @@ def plan_image(root: Path, provider: str) -> ImagePlan:
         IMAGE_PACKAGE / "uv.lock",
         IMAGE_PACKAGE / "targets.json",
         Path(f"packages/{provider}-infra"),
-        *(
-            (Path(f"terraform/modules/{INFRA_MODULES[provider]}"),)
-            if provider in INFRA_MODULES
-            else ()
-        ),
+        Path(f"terraform/modules/{INFRA_MODULES[provider]}"),
     )
     if provider == "vercel":
         paths += (

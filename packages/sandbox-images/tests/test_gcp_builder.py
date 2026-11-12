@@ -77,6 +77,37 @@ def test_builds_from_public_ubuntu_saves_to_the_family_and_verifies(builder):
     assert results == ["projects/test-proj/global/images/open-inspect-sandbox-abc-1"]
 
 
+def test_image_stays_out_of_the_family_until_verified(builder):
+    gcloud = FakeGcloud()
+    namespace, _ = builder(gcloud)
+
+    namespace["main"]()
+
+    order = [
+        call[2]
+        if call[1] == "images"
+        else f"ssh:{'verify' if 'smoke_test.py verify' in str(call) else ''}"
+        for call in gcloud.calls
+        if call[1] == "images" or (call[1] == "ssh" and "smoke_test.py verify" in str(call))
+    ]
+    assert order == ["describe", "create", "deprecate", "ssh:verify", "deprecate"]
+    deprecations = gcloud.commands("compute", "images", "deprecate")
+    assert "--state=DEPRECATED" in deprecations[0]
+    assert "--state=ACTIVE" in deprecations[1]
+
+
+def test_failed_verification_leaves_the_image_deprecated(builder):
+    gcloud = FakeGcloud(fail_on="smoke_test.py")
+    namespace, results = builder(gcloud)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        namespace["main"]()
+
+    (deprecation,) = gcloud.commands("compute", "images", "deprecate")
+    assert "--state=DEPRECATED" in deprecation
+    assert results == []
+
+
 def test_retry_reverifies_a_ready_image_without_rebuilding(builder):
     gcloud = FakeGcloud(image_status="READY")
     namespace, results = builder(gcloud)

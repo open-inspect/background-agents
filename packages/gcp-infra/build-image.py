@@ -4,10 +4,12 @@
 A throwaway build VM boots from a public Ubuntu image family, the shared
 installation bundle is copied to it and installed, the launcher and systemd
 unit the control plane expects are left to the session's startup-script, and
-the VM's boot disk is saved as an image in the configured image family. A
-second VM then boots from that image and runs the image verification, exactly
-as a session VM will. Every VM this build creates is deleted, including on
-failure; a failed image is left for investigation.
+the VM's boot disk is saved as an image in the configured image family. The
+image is marked DEPRECATED, which a family lookup skips, until a second VM
+boots from it and passes the image verification exactly as a session VM will;
+only then is it made ACTIVE, so sessions following the family never boot an
+unverified image. Every VM this build creates is deleted, including on
+failure; a failed image stays DEPRECATED for investigation.
 
 Drives the `gcloud` CLI, which owns authentication (user credentials, a
 service account, or workload identity) and SSH key setup.
@@ -172,8 +174,13 @@ class Builder:
                 f"--labels={MANAGED_BY_LABEL}",
                 "--guest-os-features=UEFI_COMPATIBLE,VIRTIO_SCSI_MULTIQUEUE,GVNIC",
             )
+            # Hide it from family lookups until verification passes.
+            self.set_image_state(name, "DEPRECATED")
         finally:
             self.delete_vm(vm)
+
+    def set_image_state(self, name: str, state: str) -> None:
+        gcloud("compute", "images", "deprecate", name, *self.scope(), f"--state={state}")
 
     def verify(self, name: str) -> None:
         vm = f"{name[:49]}-verify"
@@ -260,6 +267,7 @@ def main() -> None:
     else:
         raise RuntimeError(f"GCE image {name} exists with status {status!r}; delete it first")
     builder.verify(name)
+    builder.set_image_state(name, "ACTIVE")
     write_build_result(f"projects/{builder.project}/global/images/{name}")
 
 
