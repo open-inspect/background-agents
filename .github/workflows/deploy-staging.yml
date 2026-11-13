@@ -1,0 +1,51 @@
+name: Deploy Staging
+
+# Deploys Worker code to the staging Cloudflare environment with Wrangler
+# (scripts/cloudflare-deploy/deploy.mjs). Runs on pushes to DEPLOY_PATHS in
+# scripts/cloudflare-deploy/changes.mjs, and after every completed
+# "Terraform Staging" run on main, so infrastructure a push adds or
+# rebuilds always exists before the code that uses it.
+#
+# Opt-in with the repository variable CLOUDFLARE_STAGING_ENABLED=true.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".nvmrc"
+      - "package-lock.json"
+      - "package.json"
+      - "packages/control-plane/**"
+      - "packages/github-bot/**"
+      - "packages/linear-bot/**"
+      - "packages/shared/**"
+      - "packages/slack-bot/**"
+      - "packages/web/**"
+      - "scripts/cloudflare-deploy/**"
+      - "scripts/d1-migrate.sh"
+      - "terraform/d1/migrations/**"
+      - ".github/workflows/deploy-cloudflare.yml"
+      - ".github/workflows/deploy-production.yml"
+      - ".github/workflows/deploy-staging.yml"
+  workflow_run:
+    workflows: ["Terraform Staging"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One deploy per environment at a time, never cancelled mid-upload.
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy
+    if: vars.CLOUDFLARE_STAGING_ENABLED == 'true'
+    uses: ./.github/workflows/deploy-cloudflare.yml
+    with:
+      environment: staging
+    secrets: inherit

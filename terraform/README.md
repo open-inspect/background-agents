@@ -1,7 +1,14 @@
 # Terraform Infrastructure
 
-This directory contains Infrastructure as Code (IaC) for deploying the Open-Inspect system using
-Terraform.
+This directory contains Infrastructure as Code (IaC) for provisioning the Open-Inspect system using
+Terraform. Terraform provisions; it does not build or upload Worker code. Cloudflare Worker code and
+configuration are deployed by [`scripts/cloudflare-deploy`](../scripts/cloudflare-deploy/deploy.mjs)
+with Wrangler, as Cloudflare
+[recommends for Workers with Durable Objects](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/#considerations-with-durable-objects).
+
+| Terraform (provisioning)                                                                                                                                                     | Cloudflare deploy (code)                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1 database, KV namespaces, R2 bucket, Queues, Worker scripts (no code), Vercel projects, sandbox artifacts (Modal, Daytona, E2B, Boat, Vercel snapshots), generated secrets | Worker versions and deployments, bindings, vars and secrets, crons, queue consumers, Durable Object and D1 migrations, the Cloudflare web Worker and its custom domain, Boat base pruning |
 
 ## Architecture Overview
 
@@ -22,18 +29,25 @@ terraform/
 ├── d1/
 │   └── migrations/              # D1 migrations (applied via d1-migrate.sh)
 ├── modules/                     # Reusable modules with input/output definitions
+├── modules/
+│   └── cloudflare-environment/  # One Cloudflare environment (split by concern)
 ├── environments/
-│   ├── production/              # Cloudflare-based deployment (split by concern)
+│   ├── production/              # Cloudflare production root (state: production/terraform.tfstate)
+│   ├── staging/                 # Cloudflare staging root (state: staging/terraform.tfstate)
 │   ├── aws-staging/             # AWS staging root module
 │   └── aws-production/          # AWS production root module
 └── README.md                    # This file
 ```
 
-The [production root module](environments/production/) is split across `.tf` files loaded together;
-there is no special entrypoint file. See [variables.tf](environments/production/variables.tf) for
-inputs, [outputs.tf](environments/production/outputs.tf) for outputs, and
-[terraform.tfvars.example](environments/production/terraform.tfvars.example) for configuration. For
-AWS deployment instructions, see [AWS staging](environments/aws-staging/) and
+Both Cloudflare roots call the shared
+[cloudflare-environment module](modules/cloudflare-environment/), which is split across `.tf` files
+loaded together. The roots only fix the state location, configure providers and pass their inputs
+through, so their `variables.tf` files are identical to the module's (a contract test enforces
+this). See [variables.tf](environments/production/variables.tf) for inputs,
+[outputs.tf](environments/production/outputs.tf) for outputs,
+[terraform.tfvars.example](environments/production/terraform.tfvars.example) for Terraform
+configuration, and [deploy.env.example](../scripts/cloudflare-deploy/deploy.env.example) for Worker
+configuration. For AWS deployment instructions, see [AWS staging](environments/aws-staging/) and
 [AWS production](environments/aws-production/).
 
 ## Prerequisites
@@ -47,7 +61,7 @@ brew install terraform
 # Modal CLI (for Modal deployments)
 pip install modal
 
-# Node.js >= 24 (for building workers). node@24 is keg-only, so put it on PATH
+# Node.js >= 24 (for building and deploying workers). node@24 is keg-only, so put it on PATH
 # (add the export to your shell profile to keep it across sessions).
 brew install node@24
 export PATH="$(brew --prefix node@24)/bin:$PATH"
@@ -176,23 +190,59 @@ terraform plan
 terraform apply
 ```
 
+### 5. Deploy the Workers
+
+Terraform created the Worker scripts without code. Fill in the Worker settings and deploy them:
+
+```bash
+cd ../../..   # repository root
+cp scripts/cloudflare-deploy/deploy.env.example deploy.env   # gitignored; never commit it
+
+# Copy the Terraform-generated secrets into deploy.env:
+terraform -chdir=terraform/environments/production output -json generated_worker_secrets
+
+export CLOUDFLARE_API_TOKEN=...
+node --env-file=deploy.env scripts/cloudflare-deploy/deploy.mjs --dry-run   # validate
+node --env-file=deploy.env scripts/cloudflare-deploy/deploy.mjs
+```
+
+On the very first deploy set `ENABLE_SERVICE_BINDINGS=false`, because the control plane and the bots
+bind each other and a binding's target must already be deployed; then set it back to `true` and
+deploy again. Durable Object migrations need no such step: Wrangler applies a migration and its
+binding in one upload.
+
 ## CI/CD Pipeline
 
-The GitHub Actions workflow (`.github/workflows/terraform.yml`) automates:
+Four workflows automate each Cloudflare environment:
 
-| Trigger       | Action                           |
-| ------------- | -------------------------------- |
-| Pull Request  | `terraform plan` with PR comment |
-| Merge to main | `terraform apply` (auto-approve) |
+| Workflow                                             | Trigger                                                                                                                                           | Action                                                        |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `terraform-production.yml` / `terraform-staging.yml` | PR or push to `main` touching `terraform/**` (not D1 migrations) or the sandbox packages                                                          | `terraform plan` with PR comment; `terraform apply` on `main` |
+| `deploy-production.yml` / `deploy-staging.yml`       | Push to `main` touching the Worker, web or shared packages, D1 migrations or the deploy script; and after every completed Terraform run on `main` | `scripts/cloudflare-deploy/deploy.mjs`                        |
+
+A push that also triggers Terraform is deployed after the apply finishes, so a new queue, KV
+namespace or sandbox snapshot always exists before the code that uses it. The path lists live in
+[`scripts/cloudflare-deploy/changes.mjs`](../scripts/cloudflare-deploy/changes.mjs). A Vercel
+sandbox snapshot also hashes the control-plane and shared sources and `package-lock.json`, so those
+trigger the Terraform workflow too; when the repository-level `SANDBOX_PROVIDER` variable names
+another provider, it skips plan and apply for them and the deploy follows straight away.
+
+Production applies and deploys in the `production` GitHub Environment, and PR plans use
+repository-level settings, as before. Staging is opt-in: set the repository variable
+`CLOUDFLARE_STAGING_ENABLED=true` and create a `staging` GitHub Environment holding the staging
+values, including its own `DEPLOYMENT_NAME`. Staging plans, applies and deploys all read that
+Environment.
 
 ### GitHub Actions Secrets and Variables
 
-Keep credentials in Actions **Secrets**. Non-secret configuration (account/application IDs, provider
-settings, feature flags, allowlists, and branding) can use Actions **Variables** instead. The
-workflows prefer a non-empty variable, then the same-named secret, then the existing default where
-one exists. Existing secret-only deployments continue to work; an empty variable falls back to the
-secret rather than clearing it. `CLASSIFICATION_MODEL` and `CLASSIFICATION_REASONING_EFFORT` remain
-variable-only.
+The Terraform and deploy workflows read the same settings under the same names; the deploy reads the
+Worker settings Terraform no longer takes (see
+[deploy.env.example](../scripts/cloudflare-deploy/deploy.env.example)). Keep credentials in Actions
+**Secrets**. Non-secret configuration (account/application IDs, provider settings, feature flags,
+allowlists, and branding) can use Actions **Variables** instead. The workflows prefer a non-empty
+variable, then the same-named secret, then the existing default where one exists. Existing
+secret-only deployments continue to work; an empty variable falls back to the secret rather than
+clearing it. `CLASSIFICATION_MODEL` and `CLASSIFICATION_REASONING_EFFORT` remain variable-only.
 
 See [the CI/CD setup guide](../docs/GETTING_STARTED.md#set-up-cicd-optional) for the complete
 variable list and bulk upload examples using `gh variable set` and `gh secret set`.
@@ -307,9 +357,18 @@ ALLOWED_USERS
 ALLOWED_EMAIL_DOMAINS
 UNSAFE_ALLOW_ALL_USERS # Optional; defaults to false
 
-# Two-phase first deployment (see "Durable Objects" below)
-ENABLE_DURABLE_OBJECT_BINDINGS # Optional; defaults to true
+# Terraform-generated secrets for the deploy (see "Generated secrets" below)
+SERVICE_AUTH_SECRET_WEB
+SERVICE_AUTH_SECRET_SLACK_BOT
+SERVICE_AUTH_SECRET_GITHUB_BOT
+SERVICE_AUTH_SECRET_LINEAR_BOT
+IMAGE_CALLBACK_TOKEN_PEPPER
+
+# First deploy only (see "Durable Objects" below)
 ENABLE_SERVICE_BINDINGS # Optional; defaults to true
+
+# Staging (repository variable)
+CLOUDFLARE_STAGING_ENABLED # Optional; "true" enables the staging workflows
 
 # Branding
 APP_NAME # Optional; defaults to Open-Inspect
@@ -318,10 +377,9 @@ APP_ICON_URL
 
 ### Sandbox Inactivity
 
-Set `sandbox_inactivity_timeout_ms` and `sandbox_unattended_inactivity_timeout_ms` in
-`terraform.tfvars`, or use the corresponding uppercase Actions settings above for CI deployments.
-Terraform passes them to the control-plane Worker as `SANDBOX_INACTIVITY_TIMEOUT_MS` and
-`SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS`. See
+Set `SANDBOX_INACTIVITY_TIMEOUT_MS` and `SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS` in the deploy
+settings (`deploy.env` locally, Actions settings in CI). The deploy binds them to the control-plane
+Worker under the same names. See
 [the CI/CD setup guide](../docs/GETTING_STARTED.md#set-up-cicd-optional) for which sessions use each
 timeout and what extends them.
 
@@ -334,25 +392,24 @@ requests also reach a session Durable Object, which reads and writes D1. Browser
 sandbox agent connections reach that object through the Worker; sandboxes run in their provider's
 locations, independently of the web functions and session objects.
 
-Two production Terraform inputs let you reduce distance along this path without changing the
-defaults:
+Two settings let you reduce distance along this path without changing the defaults:
 
-| Terraform input            | Actions repository variable | Default | Scope                                       |
-| -------------------------- | --------------------------- | ------- | ------------------------------------------- |
-| `web_serverless_region`    | `WEB_SERVERLESS_REGION`     | `iad1`  | Vercel web project functions only, not docs |
-| `session_do_location_hint` | `SESSION_DO_LOCATION_HINT`  | `""`    | New session Durable Objects                 |
+| Setting                                                  | Actions repository variable | Default | Scope                                       |
+| -------------------------------------------------------- | --------------------------- | ------- | ------------------------------------------- |
+| Terraform input `web_serverless_region`                  | `WEB_SERVERLESS_REGION`     | `iad1`  | Vercel web project functions only, not docs |
+| Deploy setting `SESSION_DO_LOCATION_HINT` (`deploy.env`) | `SESSION_DO_LOCATION_HINT`  | `""`    | New session Durable Objects                 |
 
-Set these in `terraform.tfvars`, or use the Actions repository variables for CI deployments. Choose
-a supported Vercel region near your users and D1's primary, balancing distance to each. The web
-region must match `^[a-z]{3}[0-9]$`; it has no effect when `web_platform = "cloudflare"`. Choose the
-session hint for D1's region: `wnam`, `enam`, `sam`, `weur`, `eeur`, `apac`, `apac-ne`, `apac-se`,
-`oc`, `afr`, or `me`. Prefer `apac` for general Asia-Pacific placement; use `apac-ne` or `apac-se`
-for the northeast or southeast subregion. See
+Set these in `terraform.tfvars` and `deploy.env`, or use the Actions repository variables for CI
+deployments. Choose a supported Vercel region near your users and D1's primary, balancing distance
+to each. The web region must match `^[a-z]{3}[0-9]$`; it has no effect when
+`web_platform = "cloudflare"`. Choose the session hint for D1's region: `wnam`, `enam`, `sam`,
+`weur`, `eeur`, `apac`, `apac-ne`, `apac-se`, `oc`, `afr`, or `me`. Prefer `apac` for general
+Asia-Pacific placement; use `apac-ne` or `apac-se` for the northeast or southeast subregion. See
 [Cloudflare's location hints](https://developers.cloudflare.com/durable-objects/reference/data-location/#provide-a-location-hint).
-An empty hint preserves automatic placement. Terraform rejects invalid values; if an invalid hint
-reaches the Worker outside Terraform, it logs a warning and ignores it rather than failing the
-request. Consider the Worker's Smart Placement separately after measuring these changes; neither
-input enables it.
+An empty hint preserves automatic placement. Terraform and the deploy reject invalid values; if an
+invalid hint reaches the Worker outside Terraform, it logs a warning and ignores it rather than
+failing the request. Consider the Worker's Smart Placement separately after measuring these changes;
+neither input enables it.
 
 Apply and measure one setting at a time. A web region change takes effect only after a web redeploy
 following Terraform apply: Deploy Web pulls the updated project settings before building. A session
@@ -374,8 +431,8 @@ Check actual placement rather than assuming the settings were honored:
 - **Session Durable Objects:** query GraphQL `durableObjectsPeriodicGroups`, grouped by `coloCode`;
   filter by `objectId` to check a newly created session rather than an older one.
 
-To roll back, unset the relevant Actions repository variable or remove the Terraform override,
-re-apply, and redeploy the web app if its region changed. This restores the default web region
+To roll back, unset the relevant Actions repository variable or remove the override, re-apply or
+redeploy, and redeploy the web app if its region changed. This restores the default web region
 and/or removes the hint for future objects. Objects created with a hint remain where they are. These
 settings do not move D1, enable read replication, or select a sandbox-provider region.
 
@@ -386,38 +443,45 @@ inputs, types, defaults, and validation; `outputs.tf` defines its returned value
 
 Use the maintained deployment configurations as integration examples:
 
-- [Cloudflare KV namespaces](environments/production/kv.tf)
-- [Control-plane Worker and bindings](environments/production/workers-control-plane.tf)
-- [Vercel web project](environments/production/web-vercel.tf)
-- [Modal deployment](environments/production/modal.tf)
+- [Cloudflare KV namespaces](modules/cloudflare-environment/kv.tf)
+- [Worker scripts and queues](modules/cloudflare-environment/workers.tf); their bindings are in
+  [scripts/cloudflare-deploy/config.mjs](../scripts/cloudflare-deploy/config.mjs)
+- [Vercel web project](modules/cloudflare-environment/web-vercel.tf)
+- [Modal deployment](modules/cloudflare-environment/modal.tf)
 
-The other sandbox providers are wired in the same [production directory](environments/production/).
+The other sandbox providers are wired in the same
+[module directory](modules/cloudflare-environment/).
 
 ## Important Notes
 
 ### Durable Objects
 
-Durable Object migrations are applied with deployments. This means you can't bind to a Durable
-Object in a Version if a deployment doesn't exist (i.e., migrations haven't been applied).
+The deploy applies Durable Object migrations with `wrangler deploy`, which uploads a migration and
+the bindings it enables together and skips migrations whose tags are already applied. Fresh
+deployments start at tag `v1`; a control plane still at `v2` retires `SchedulerDO` with `v3` on its
+next deploy. `ENABLE_DURABLE_OBJECT_BINDINGS` and the `control_plane_migration_*` variables are no
+longer used.
 
-**First-time deployment with Durable Objects and service bindings:**
+Service bindings still need a target that is already deployed, and the control plane and the Slack
+and Linear bots bind each other. For the first deploy of a new environment set
+`ENABLE_SERVICE_BINDINGS=false`, deploy, then set it to `true` and deploy again.
 
-Use the built-in two-phase flags instead of editing Terraform modules:
+### Generated secrets
 
-1. Set `enable_durable_object_bindings = false` and `enable_service_bindings = false`.
-2. Run `terraform apply` to create the initial workers and migrations.
-3. Set both values back to `true`.
-4. Run `terraform apply` again to attach the Durable Object and service bindings.
+Terraform generates the per-service signing secrets, the image-callback pepper and (unless you
+supply one) the provider-account encryption key, and keeps them in state; the Vercel web project
+receives its signing secret from Terraform directly. The deploy reads them from the GitHub
+Environment as `SERVICE_AUTH_SECRET_WEB`, `SERVICE_AUTH_SECRET_SLACK_BOT`,
+`SERVICE_AUTH_SECRET_GITHUB_BOT`, `SERVICE_AUTH_SECRET_LINEAR_BOT`, `IMAGE_CALLBACK_TOKEN_PEPPER`
+and `PROVIDER_ACCOUNTS_ENCRYPTION_KEY`. Copy them once after an environment's first apply:
 
-Class removal does not disable surviving bindings. Remove the retired binding, set a new migration
-tag and previous tag, list the class in `control_plane_deleted_classes`, and apply with
-`enable_durable_object_bindings = true`. The migration and surviving bindings are emitted together.
-The production workflow stages the `SchedulerDO` v2-to-v3 deletion only when Terraform state still
-reports v2, so the release-specific migration is not a permanent default for fresh deployments.
+```bash
+terraform -chdir=terraform/environments/production init -backend-config=backend.tfvars
+node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment production
+```
 
-See
-[Cloudflare's documentation](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/)
-for details.
+A Worker keeps the secrets already bound to it when a setting is empty, so an upgraded deployment
+keeps working before you copy them; the deploy refuses to upload a Worker that would have none.
 
 ### State Management
 
@@ -446,7 +510,7 @@ revoked immediately.
 After deployment, verify with:
 
 ```bash
-# Get verification commands from Terraform output
+# Get verification commands from Terraform output (after the Cloudflare deploy)
 terraform output verification_commands
 
 # Or manually:
@@ -491,9 +555,15 @@ variables.
 
 ### Worker deployment fails
 
-1. Build workers first: `npm run build -w @open-inspect/control-plane`
-2. Check script exists: `ls packages/control-plane/dist/index.js`
-3. Verify Cloudflare API token permissions:
+Workers are deployed by `scripts/cloudflare-deploy/deploy.mjs`, not Terraform.
+
+1. Validate the settings without uploading:
+   `node --env-file=deploy.env scripts/cloudflare-deploy/deploy.mjs --dry-run`
+2. "KV namespaces not found" or "D1 database ... was not found": run the environment's
+   `terraform apply` first, with the same `DEPLOYMENT_NAME`.
+3. "Terraform-generated secrets are not in the environment": see
+   [Generated secrets](#generated-secrets).
+4. Verify Cloudflare API token permissions:
    - `Workers Scripts: Edit`
    - `Workers KV Storage: Edit`
    - `Workers R2 Storage: Edit`
@@ -501,25 +571,36 @@ variables.
    - `Queues: Edit`
    - `Workers Routes: Edit` if you manage routes/custom domains through Terraform
 
-## Adding New Environments
+## Staging
 
-To add a staging environment:
+[environments/staging](environments/staging/) is the same module with its own state
+(`staging/terraform.tfstate`). Give it its own `deployment_name` (and `DEPLOYMENT_NAME` for the
+deploy) so every resource name differs from production's, then initialize, apply and deploy it as in
+the quick start. In CI, see [CI/CD Pipeline](#cicd-pipeline).
 
-```bash
-# Copy production config
-cp -r environments/production environments/staging
+## Upgrading from a single Terraform apply
 
-# Update backend key in staging/backend.tf
-# key = "staging/terraform.tfstate"
+Earlier releases built and uploaded every Worker from one `terraform apply` of
+`environments/production`. Upgrading keeps everything running:
 
-# Update environment variable in staging/terraform.tfvars
-# environment = "staging"
-
-# Initialize and apply
-cd environments/staging
-terraform init -backend-config="access_key=..." -backend-config="secret_key=..."
-terraform apply
-```
+- **State.** The production root keeps its state key (`production/terraform.tfstate`).
+  [moved.tf](environments/production/moved.tf) maps every resource into `module.environment`, and
+  `removed` blocks with `destroy = false` (in [removed.tf](environments/production/removed.tf) and
+  [modules/cloudflare-worker](modules/cloudflare-worker/main.tf)) forget Worker versions,
+  deployments, crons, queue consumers, the web custom domain and build steps without deleting
+  anything. The first plan reports those as "will no longer be managed" and destroys nothing; the
+  running Workers keep serving until the next deploy replaces their versions in place.
+- **CI settings.** `terraform.yml` became `terraform-production.yml` plus `deploy-production.yml`.
+  Both read the existing `production` GitHub Environment and repository settings under the same
+  names, so no variable or secret needs renaming. Copy the Terraform-generated secrets once (see
+  [Generated secrets](#generated-secrets)); until then the Workers keep the values they have.
+- **Local `terraform.tfvars`.** Worker settings (sign-in providers, allowlists, bot credentials,
+  classifier, encryption keys, timeouts, custom domain) are no longer Terraform variables. Leaving
+  them in `terraform.tfvars` only produces "undeclared variable" warnings; move them to `deploy.env`
+  under the names in [deploy.env.example](../scripts/cloudflare-deploy/deploy.env.example), and run
+  the deploy after each apply.
+- **Outputs.** `terraform output` names are unchanged. For `web_platform = "cloudflare"`,
+  `web_app_url` reports the workers.dev URL; the deploy serves `CLOUDFLARE_CUSTOM_DOMAIN` when set.
 
 ## Security Considerations
 
