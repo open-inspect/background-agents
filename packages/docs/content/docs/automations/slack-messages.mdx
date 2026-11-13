@@ -73,6 +73,17 @@ A Slack automation must have a **Slack Channel** condition; the form blocks savi
 
 Without a **Message Text** condition, every message in the watched channels starts a run. The bot-mention token is stripped before matching.
 
+## Reaction triggers
+
+Set the event type to **Reaction added** to start a run when someone reacts to a message in a watched channel, instead of when a message is posted. Add a **Reaction emoji** condition listing the emoji names that count, for example `ticket`; saving is refused without one. Colons and skin tones are ignored.
+
+- The reacted-to message is the one the agent sees, and the conditions match it: **Message Text** checks its text, **Slack User** checks the person who reacted.
+- Replies under the message, up to when the reaction was added, are passed as thread context.
+- Each message starts at most one run per automation, however many people react or how often.
+- The OpenInspect bot's own reactions never trigger, and a reaction never continues a session that a message started.
+
+The Slack app also needs the `reactions:read` scope and the `reaction_added` event subscription.
+
 ## Text-only ingestion
 
 Only the message text reaches the agent (up to 8 KB). Attachments are not forwarded: a `file_share` message is matched on its text like any other, and an image-only message with no text triggers nothing. Use an @mention or DM when the agent needs image input.

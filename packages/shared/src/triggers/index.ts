@@ -101,6 +101,8 @@ export {
   normalizeSlackChannelConditions,
   parseSlackChannelCondition,
   normalizeSlackEvent,
+  normalizeSlackReaction,
+  slackEmojiName,
   buildSlackContextBlock,
   slackChannelLabel,
   SLACK_TEXT_MAX_LENGTH,
@@ -111,5 +113,6 @@ export type {
   SlackMessageAuthor,
   SlackMessageInput,
   SlackChannelMeta,
+  SlackReactionInput,
   SlackChannelConditionParseResult,
 } from "./slack";

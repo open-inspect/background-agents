@@ -162,6 +162,23 @@ describe("Slack event ownership", () => {
     expect(deps.slack.getSessionInstructions).toHaveBeenCalledTimes(2);
   });
 
+  it("routes a reaction only to reaction automations, never steering message sessions", async () => {
+    const deps = slackHarness();
+    deps.channels.getSlackAutomationsForChannel.mockResolvedValue([
+      { ...automation, id: "messages", trigger_type: "slack_event", event_type: "message.posted" },
+      { ...automation, id: "reactions", trigger_type: "slack_event", event_type: "reaction.added" },
+    ]);
+    const handler = new SlackEventHandler(deps);
+    await handler.handle({
+      ...slackEvent,
+      eventType: "reaction.added",
+      reaction: { name: "ticket", eventTs: "3" },
+    });
+    expect(deps.continuity.continueSession).toHaveBeenCalledTimes(1);
+    expect(deps.continuity.continueSession.mock.calls[0]![0].id).toBe("reactions");
+    expect(deps.invocations.start).toHaveBeenCalledTimes(1);
+  });
+
   it("shares actor lookup within a delivery while checking continuation separately for every target", async () => {
     const deps = slackHarness();
     const handler = new SlackEventHandler(deps);
@@ -171,8 +188,8 @@ describe("Slack event ownership", () => {
     });
     // Invalid conditions must not prevent a reply from continuing its session.
     deps.channels.getSlackAutomationsForChannel.mockResolvedValue([
-      { ...automation, id: "auto-1", trigger_config: "invalid" },
-      { ...automation, id: "auto-2", trigger_config: "invalid" },
+      { ...automation, id: "auto-1", event_type: "message.posted", trigger_config: "invalid" },
+      { ...automation, id: "auto-2", event_type: "message.posted", trigger_config: "invalid" },
     ]);
     await expect(handler.handle(slackEvent)).resolves.toEqual({
       triggered: 0,

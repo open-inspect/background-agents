@@ -1,5 +1,5 @@
 import { publishAppHome } from "../app-home";
-import { handleChannelTrigger } from "../channel-trigger";
+import { handleChannelTrigger, handleReactionTrigger } from "../channel-trigger";
 import { isDmDispatchable } from "../dm-utils";
 import type { BackgroundTaskScheduler, Env } from "../types";
 import {
@@ -28,6 +28,10 @@ export async function handleSlackEvent(
     // may still trigger an automation that opted in to bot messages; the channel
     // trigger excludes this bot's own posts.
     if (event.type === "message") await handleChannelTrigger(event, env, traceId);
+    return;
+  }
+  if (event.type === "reaction_added") {
+    await handleReactionTrigger(event, env, traceId);
     return;
   }
   if (event.type === "app_home_opened" && event.tab === "home" && event.user) {

@@ -5,6 +5,7 @@ import {
   completeExternalUpload,
   getExternalUploadUrl,
   getChannelInfo,
+  getMessage,
   getMessageDetails,
   getPermalink,
   getThreadMessages,
@@ -1011,5 +1012,43 @@ describe("getMessageDetails", () => {
       ok: false,
       error: "missing_scope",
     });
+  });
+});
+
+describe("getMessage", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns a top-level message from conversations.history", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ ok: true, messages: [{ ts: "1.0", text: "hi", user: "U1" }] })
+    );
+
+    const result = await getMessage("xoxb-token", "C123", "1.0");
+
+    expect(result).toEqual({ ok: true, message: { ts: "1.0", text: "hi", user: "U1" } });
+  });
+
+  it("falls back to conversations.replies for a thread reply", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ ok: true, messages: [{ ts: "0.9" }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ok: true,
+          messages: [{ ts: "1.0" }, { ts: "1.5", text: "reply", thread_ts: "1.0" }],
+        })
+      );
+
+    const result = await getMessage("xoxb-token", "C123", "1.5");
+
+    expect(result).toEqual({
+      ok: true,
+      message: { ts: "1.5", text: "reply", thread_ts: "1.0" },
+    });
+    expect(fetchSpy.mock.calls[1]![0]).toBe(
+      "https://slack.com/api/conversations.replies?channel=C123&ts=1.5&oldest=1.5&inclusive=true&limit=2"
+    );
   });
 });

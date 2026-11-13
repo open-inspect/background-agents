@@ -51,12 +51,21 @@ export function buildSlackContextBlock(params: {
   permalink?: string;
   text: string;
   threadContext?: string;
+  reaction?: SlackAutomationEvent["reaction"];
 }): string {
   // A bot is named by its bot id, which every bot message carries.
   const author = params.botId ? `bot ${params.botId}` : `user ${params.actorUserId}`;
-  const lines = [`A message was posted in Slack channel ${params.channelLabel} by ${author}.`];
+  const messageAuthor = params.reaction?.messageUserId
+    ? `user ${params.reaction.messageUserId}`
+    : "an app or bot";
+  const lines = [
+    params.reaction
+      ? `In Slack channel ${params.channelLabel}, ${author} reacted with :${params.reaction.name}: to a message by ${messageAuthor}.`
+      : `A message was posted in Slack channel ${params.channelLabel} by ${author}.`,
+  ];
   if (params.permalink) lines.push(`Permalink: ${params.permalink}`);
   if (params.threadContext) lines.push("", params.threadContext);
+  if (params.reaction) lines.push("", "The message they reacted to:");
   lines.push("", "<user_content>", params.text, "</user_content>");
   return lines.join("\n");
 }
@@ -110,6 +119,71 @@ export function normalizeSlackEvent(
       channelId: input.channel,
       ts: input.ts,
       threadTs: input.thread_ts,
+      permalink: channelMeta?.permalink,
+    },
+  };
+}
+
+/** The Slack `reaction_added` fields plus the reacted-to message. */
+export interface SlackReactionInput {
+  channel: string;
+  /** The person who reacted. */
+  user: string;
+  reaction: string;
+  eventTs: string;
+  message: { ts: string; thread_ts?: string; text: string; user?: string };
+}
+
+/** `thumbsup::skin-tone-2` → `thumbsup`. */
+export function slackEmojiName(reaction: string): string {
+  return reaction.split("::")[0]!;
+}
+
+/**
+ * Normalize a reaction on a channel message into a `reaction.added`
+ * event. The reacted-to message is the event's message, so replies under it
+ * become thread context. Returns null when the message has no text.
+ */
+export function normalizeSlackReaction(
+  input: SlackReactionInput,
+  channelMeta?: SlackChannelMeta
+): SlackAutomationEvent | null {
+  const text = input.message.text.trim().slice(0, SLACK_TEXT_MAX_LENGTH);
+  if (!text) return null;
+
+  const { channel, message } = input;
+  const reaction = {
+    name: slackEmojiName(input.reaction),
+    eventTs: input.eventTs,
+    messageUserId: message.user,
+  };
+  // A parent message's own thread_ts equals its ts, which still loads its replies.
+  const threadTs = message.thread_ts;
+  return {
+    source: "slack",
+    eventType: "reaction.added",
+    // One firing per message per automation, whoever reacts and however often.
+    triggerKey: `slack:reaction:${channel}:${message.ts}`,
+    concurrencyKey: `slack:${channel}:${threadTs ?? message.ts}`,
+    channelId: channel,
+    channelName: channelMeta?.channelName,
+    permalink: channelMeta?.permalink,
+    threadTs,
+    ts: message.ts,
+    actorUserId: input.user,
+    text,
+    reaction,
+    contextBlock: buildSlackContextBlock({
+      channelLabel: slackChannelLabel(channel, channelMeta?.channelName),
+      actorUserId: input.user,
+      permalink: channelMeta?.permalink,
+      text,
+      reaction,
+    }),
+    meta: {
+      channelId: channel,
+      ts: message.ts,
+      threadTs,
       permalink: channelMeta?.permalink,
     },
   };

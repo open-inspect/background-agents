@@ -1032,6 +1032,7 @@ the worker's `/events` and `/interactions` endpoints.
    - `im:history`
    - `files:read` (lets the bot read images attached to messages and forward them to sessions)
    - `files:write`
+   - `reactions:read` (only for automations that trigger on emoji reactions)
    - `reactions:write`
    - `users:read`
    - `users:read.email` (required: the bot links each new Slack user to an account by profile email
@@ -1121,6 +1122,7 @@ writable Messages tab lets users start direct-message sessions.
    - `message.channels` (optional - if you want the bot to see all channel messages)
    - `message.groups` (optional - if you want automations in private channels)
    - `message.im` (enables direct message support)
+   - `reaction_added` (optional - for automations that trigger on emoji reactions)
 6. Click **Save Changes**
 
 #### Configure Interactivity

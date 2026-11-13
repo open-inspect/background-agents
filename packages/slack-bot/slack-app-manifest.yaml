@@ -26,6 +26,7 @@ oauth_config:
       - groups:history
       - groups:read
       - im:history
+      - reactions:read
       - reactions:write
       - users:read
       - users:read.email
@@ -39,6 +40,7 @@ settings:
       - message.channels
       - message.groups
       - message.im
+      - reaction_added
   interactivity:
     is_enabled: true
     request_url: SLACK_INTERACTIONS_URL
