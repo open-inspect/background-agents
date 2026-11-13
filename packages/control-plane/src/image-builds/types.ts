@@ -33,6 +33,11 @@ export type ImageBuildCloneAuth =
  */
 export interface ImageBuildPlan {
   resources?: SandboxResources;
+  /**
+   * The scope's own boot image family (sandbox settings), for providers whose
+   * sessions boot one; null or absent means the deployment default.
+   */
+  imageFamily?: string | null;
   buildId: string;
   scope: ImageBuildScope;
   repositories: ImageBuildRepository[];

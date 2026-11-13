@@ -431,10 +431,15 @@ are deleted by the same reaper as on every other provider.
 
 Things to know:
 
-- **Images follow the deployment default.** Builds boot the deployment's sandbox image
-  (`gcp_image_family`, or the Terraform-pinned image). A repository with its own image family in
-  Sandbox settings boots that family and ignores its prebuilt image, so leave prebuilds off for such
-  repositories.
+- **Builds boot what the scope's sessions boot.** A build VM boots the repository's own image family
+  from Sandbox settings, or else the deployment's sandbox image, and the prebuilt image records
+  which (a `source_image` label). A session uses the prebuilt image only in place of that same
+  image: after a repository's image family changes, its sessions boot the new family until the next
+  build. A session's boot disk is sized to fit the prebuilt image if it is larger than
+  `gcp_boot_disk_size_gb`.
+- **Current launcher on every boot.** The runtime launcher is not part of the image; each VM's
+  startup-script installs the one the current control plane ships, so an older prebuilt image never
+  runs an outdated launcher.
 - **Nothing of the build reaches the image.** The build's env (repository set, clone token, scope
   secrets, callback contract) is instance metadata, which belongs to the VM, not its disk. The
   launcher exports it without writing it anywhere and keeps the build's runtime state in `/run`,
@@ -456,11 +461,11 @@ Things to know:
   (`roles/compute.storageAdmin` covers the image permissions). See
   [docs/GCP.md](GCP.md#service-accounts-and-iam).
 
-| Symptom                                               | What it means                                                    | What to do                                                                                                       |
-| ----------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Callback accepted, build stays `building` for minutes | The build VM is still stopping, or the image is still `PENDING`. | Nothing; finalization re-polls. It fails the build only past the image's fixed deadline, then reclaims the name. |
-| `image_build.operation_unresolved` naming `oi-img-*`  | A reserved image never settled and maintenance keeps asking.     | Check the image in the console; a `FAILED` or `READY` image under it is deleted on the next pass.                |
-| Session doesn't use the prebuilt image                | The repository has its own image family in Sandbox settings.     | Clear the repository's image family, or turn prebuilds off for it.                                               |
+| Symptom                                               | What it means                                                                                                    | What to do                                                                                                       |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Callback accepted, build stays `building` for minutes | The build VM is still stopping, or the image is still `PENDING`.                                                 | Nothing; finalization re-polls. It fails the build only past the image's fixed deadline, then reclaims the name. |
+| `image_build.operation_unresolved` naming `oi-img-*`  | A reserved image never settled and maintenance keeps asking.                                                     | Check the image in the console; a `FAILED` or `READY` image under it is deleted on the next pass.                |
+| Session doesn't use the prebuilt image                | The image was built from a different image than the session boots (the repository's image family changed since). | Nothing; the next build catches up. Rebuild from Settings > Images to do it now.                                 |
 
 ---
 

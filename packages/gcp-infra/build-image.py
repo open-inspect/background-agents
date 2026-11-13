@@ -107,6 +107,10 @@ class Builder:
             *image_args,
             f"--boot-disk-size={self.disk_size_gb}GB",
             "--boot-disk-type=pd-balanced",
+            # Build VMs need no identity; without this gcloud attaches the
+            # project's default Compute Engine account, which usually holds Editor.
+            "--no-service-account",
+            "--no-scopes",
             f"--labels={MANAGED_BY_LABEL},purpose=image-build",
             *network,
             *(["--no-address"] if self.use_iap else []),

@@ -4,6 +4,57 @@ Open-Inspect can run coding sessions on Google Compute Engine VMs. The control p
 to the Compute Engine REST API from Cloudflare Workers using a service account key; there is no
 separate service to deploy for this provider.
 
+## Project Setup
+
+**Use a GCP project dedicated to one Open-Inspect deployment.** Projects are free, and a dedicated
+project keeps the sandboxes' blast radius, IAM, quotas, billing and network to themselves: the
+provider and the setup below assume nothing else runs there.
+
+Run the one-time setup script with `gcloud` authenticated as a project owner:
+
+```bash
+packages/gcp-infra/setup-project.sh --project my-project --regions us-central1
+```
+
+It is idempotent (safe to re-run; it only fills in what is missing, and never deletes) and sets up:
+
+- the Compute Engine, IAM, Cloud DNS, Logging, IAP and Vertex AI APIs
+- the network: a new custom-mode VPC named `open-inspect` with a `/20` subnet per region and flow
+  logs, or, with `--network default`, the project's existing `default` network
+- Private Google Access on the subnet, so VMs reach Vertex AI without external IPs
+- a Cloud Router and **Cloud NAT** per region, with NAT logging
+- Cloud DNS query logging on the network
+- firewall rules: deny traffic between VMs on the network, allow SSH from IAP (image builds)
+- three service accounts and their roles (see [Service Accounts and IAM](#service-accounts-and-iam))
+
+With `--create-keys DIR` it also writes JSON keys for the control-plane and image-build accounts
+(some organization policies block key creation). It ends by printing the Terraform settings to use.
+
+**Cloud NAT is required.** Sandbox VMs are created **without external IP addresses**, so every
+connection out (to the control plane, GitHub, package registries, model APIs) goes through Cloud
+NAT. On a network without NAT, VMs boot but never connect, and every launch fails at the connect
+watchdog. The setup script creates NAT on either network; a project whose `default` network already
+has Cloud NAT needs only the service accounts. See [Networking](#networking).
+
+### Sharing a project
+
+Sharing a project between deployments is possible but not recommended. Every VM, disk, snapshot and
+image is labeled `managed_by=background-agents-gcp` and `deployment=<deployment_name>` (lowercased,
+with characters other than letters, digits and `-` replaced by `-`; `gcp_instance_labels` cannot
+override these), and the disk retention purge only deletes this deployment's disks. Give each
+deployment a distinct `deployment_name`: two whose names normalize to the same label would purge
+each other's disks. They still share the control-plane service account's project-wide reach, the
+network and the quotas.
+
+Disks created before the `deployment` label existed have no deployment label and are never purged.
+Remove them by hand once they're no longer needed:
+
+```bash
+gcloud compute disks list --project=PROJECT \
+  --filter='labels.managed_by=background-agents-gcp AND -labels.deployment:* AND -users:*'
+gcloud compute disks delete DISK_NAME --zone=ZONE --project=PROJECT
+```
+
 ## How It Works
 
 - Each session gets a single persistent boot disk (`autoDelete: false`) named after the session ID,
@@ -17,9 +68,8 @@ separate service to deploy for this provider.
 - **Disk retention**: after each new sandbox is provisioned, a background task deletes up to two
   detached sandbox disks that have gone unused (no create, attach, or detach) for longer than
   `gcp_disk_retention_days` (14 days by default), oldest first. Set it to `0` to disable purging. A
-  session whose disk was purged starts fresh. See
-  [Multiple deployments in one project](#multiple-deployments-in-one-project) for which disks are
-  eligible.
+  session whose disk was purged starts fresh. Only disks labeled with this deployment are considered
+  (see [Sharing a project](#sharing-a-project)).
 - Snapshots and restore use GCE disk snapshots and are off by default (see `gcp_supports_snapshots`
   and `gcp_supports_restore`).
 - Each session is placed in one of `gcp_zones`, picked from a hash of the session ID, so sessions
@@ -27,28 +77,6 @@ separate service to deploy for this provider.
   its disk's zone.
 - With `gcp_use_spot = true`, the provider tries a Spot VM first and falls back to a standard VM in
   the same zone when Spot capacity is unavailable.
-
-## Multiple Deployments in One Project
-
-Several deployments can share a GCP project. Every VM, disk, and snapshot is labeled with
-`managed_by=background-agents-gcp` and `deployment=<deployment_name>` (lowercased, with characters
-other than letters, digits, and `-` replaced by `-`). Operator labels from `gcp_instance_labels`
-cannot override these two.
-
-The disk retention purge only deletes disks that are detached, in the configured zones, and carry
-**both** labels with this deployment's name. Give each deployment sharing a project a distinct
-`deployment_name`; two deployments whose names normalize to the same label value would purge each
-other's disks.
-
-Disks created before the `deployment` label was introduced have no deployment label, so their owner
-can't be determined and the purge never deletes them. Remove them manually once they're no longer
-needed:
-
-```bash
-gcloud compute disks list --project=PROJECT \
-  --filter='labels.managed_by=background-agents-gcp AND -labels.deployment:* AND -users:*'
-gcloud compute disks delete DISK_NAME --zone=ZONE --project=PROJECT
-```
 
 ## Sandbox Image
 
@@ -76,10 +104,14 @@ GCP_PROJECT=my-project npm run sandbox:images -- build --provider gcp
 A VM booted from an image without the runtime stops at startup with a message pointing here, in the
 VM's serial console output.
 
-The build credentials need the same Compute Engine permissions as the control plane, plus
-`compute.images.create`, `compute.images.deprecate`, and SSH access to the build VMs (instance
-metadata SSH keys, or OS Login with `roles/compute.osAdminLogin`). Use a separate build service
-account rather than the control plane's.
+The build credentials need `roles/compute.instanceAdmin.v1` (create VMs, SSH keys in instance
+metadata), `roles/compute.storageAdmin` (create and deprecate images) and, with
+`gcp_image_build_use_iap`, `roles/iap.tunnelResourceAccessor`. Build VMs run with no service
+account. The setup script creates this account; don't reuse the control plane's.
+
+The image holds the toolchain and runtime only. The runtime launcher and its systemd unit are not
+part of any image: each VM's startup-script installs the versions the current control plane ships on
+every boot, so prebuilt images and resumed disks never run an outdated launcher.
 
 ## Required Configuration
 
@@ -90,23 +122,44 @@ sandbox_provider = "gcp"
 
 gcp_service_account_json     = "{...}"                       # control-plane service account key
 gcp_project                  = "my-project"                  # where VMs and disks are created
-gcp_vm_service_account_email = "sandbox-vm@my-project.iam.gserviceaccount.com" # identity of the VMs
+gcp_network                  = "open-inspect"                # a network with Cloud NAT
+gcp_vm_service_account_email = "open-inspect-sandbox-vm@my-project.iam.gserviceaccount.com"
 ```
+
+`setup-project.sh` prints these values for your project.
 
 ## Service Accounts and IAM
 
-The provider uses two separate service accounts:
+The provider uses three separate service accounts; `setup-project.sh` creates all three as
+`open-inspect-control-plane`, `open-inspect-sandbox-vm` and `open-inspect-image-build`:
 
 1. **Control-plane service account** (`gcp_service_account_json`): the Cloudflare Worker uses its
-   key to call the Compute Engine API. It creates and deletes the VMs and disks.
+   key to call the Compute Engine API. It creates and deletes the VMs, disks, snapshots and prebuilt
+   images.
 2. **VM service account** (`gcp_vm_service_account_email`): the identity attached to each sandbox
    VM, with the `cloud-platform` scope. Code in the sandbox gets credentials for it from the
    metadata server, for example to call Vertex AI. If this is unset, **VMs run with no service
    account**: the Compute Engine API does not fall back to the project's default Compute Engine
-   service account the way the Console and `gcloud` do.
+   service account the way the Console and `gcloud` do, and Vertex AI models won't work.
+3. **Image-build service account** (`gcp_image_build_service_account_json`): builds the sandbox
+   image. See [Sandbox Image](#sandbox-image).
 
-Use a dedicated VM service account with only the roles the sandbox needs. Sandboxes run untrusted,
-agent-written code, so anything this account can do, the agent can do.
+**Sandboxes run untrusted, agent-written code as root, so anything the VM service account can do,
+the agent can do.** Give it only `roles/aiplatform.user` (and `roles/logging.logWriter`), and
+**never use the control-plane account as the VM account**: the control plane holds project-wide
+`compute.instanceAdmin.v1`, so an agent holding it could read every other session's instance
+metadata (tokens and secrets), and start, stop or delete any VM.
+
+### What a sandbox can read
+
+Everything a session's runtime needs reaches the VM as instance metadata: the sandbox auth token,
+the control-plane URL, and the session's repository secrets. Code in the VM can read all of it from
+the metadata server; on an image build VM that includes the build's clone token and callback token.
+A resumed VM gets only the session's ids again, so the launcher keeps the session's metadata on the
+boot disk (`/var/lib/oi/metadata`, root-only) to boot it again after a stop. That disk lives until
+the session is destroyed or archived, or the [retention purge](#how-it-works) removes it, and disk
+snapshots (when enabled) copy it. Image build VMs keep nothing on disk: their env and state stay in
+memory-backed `/run`, so prebuilt images never contain them.
 
 ### Control-plane service account permissions
 
@@ -181,10 +234,26 @@ Grant only what the sandbox needs. For Vertex AI models, that is `roles/aiplatfo
 
 ## Networking
 
-VMs are created **without an external IP address**. They still need outbound access to the control
-plane, GitHub, package registries, and model APIs, so the chosen network or subnet must have
-[Cloud NAT](https://cloud.google.com/nat/docs/overview) or another egress path. On the `default`
-network without Cloud NAT, VMs boot but never connect, and the launch fails at the connect watchdog.
+Sandbox VMs get **no external IP address and accept no inbound connections**: the runtime dials out
+to the control plane over a WebSocket, so no ingress firewall rule is needed. Everything they reach
+goes out through the network:
+
+- **Cloud NAT** (required) on a Cloud Router in every region of `gcp_zones`, for the control plane,
+  GitHub, package registries and model APIs. Enable NAT logging (`--log-filter=ALL`) for an audit
+  trail of every translation.
+- **Private Google Access** on the subnet, so Vertex AI and other Google APIs are reached on
+  Google's network rather than through NAT.
+- **DNS query logging** (a Cloud DNS policy with logging on the network) records every lookup the
+  VMs make.
+- **Subnet flow logs** record connections.
+- **Firewall**: deny ingress between VMs on the network, so one session can't reach another (the
+  `default` network's `default-allow-internal` rule otherwise allows it), and allow TCP 22 from
+  IAP's range (`35.235.240.0/20`) for the Terraform image build (`gcp_image_build_use_iap = true`).
+  Without IAP, the build VMs need an external IP and `default-allow-ssh`.
+
+The `default` network plus Cloud NAT works; a dedicated custom-mode VPC is cleaner, since it starts
+with no permissive rules. `setup-project.sh` configures either. Set `gcp_network` (and `gcp_subnet`
+when a region has more than one subnet) to match.
 
 ## All Deployment Settings
 
@@ -208,7 +277,6 @@ control-plane Worker environment variables shown.
 | `gcp_vertex_project`                            | `GCP_VERTEX_PROJECT`           | no       | `gcp_project`           | Vertex AI project, passed to the VM in instance metadata                    |
 | `gcp_vertex_location`                           | `GCP_VERTEX_LOCATION`          | no       | `global`                | Vertex AI location, passed to the VM in instance metadata                   |
 | `gcp_use_spot`                                  | `GCP_USE_SPOT`                 | no       | `false`                 | Try a Spot VM first; fall back to standard in the same zone                 |
-| `gcp_include_startup_script`                    | `GCP_INCLUDE_STARTUP_SCRIPT`   | no       | `true`                  | Inject the sandbox runtime startup script into instance metadata            |
 | `gcp_supports_snapshots`                        | `GCP_SUPPORTS_SNAPSHOTS`       | no       | `false`                 | Enable GCE disk snapshots                                                   |
 | `gcp_supports_restore`                          | `GCP_SUPPORTS_RESTORE`         | no       | `false`                 | Enable restoring sandboxes from disk snapshots                              |
 | `gcp_disk_retention_days`                       | `GCP_DISK_RETENTION_DAYS`      | no       | `14`                    | Days a detached disk may go unused before it is purged; `0` disables        |
@@ -241,10 +309,14 @@ settings API):
 
 ### Image Resolution Order
 
-For a fresh sandbox, the boot image is the first of these that is set:
+For a fresh sandbox, the base image is the first of these that is set:
 
 1. The repository's `imageFamily` sandbox setting
 2. A `REPO_IMAGE` repository secret (legacy override, treated as an image rather than a family)
-3. The scope's [prebuilt image](IMAGE_PREBUILD.md#gcp-prebuilds), when prebuilds are on and one is
-   ready (a repository whose own `imageFamily` is set skips it)
-4. `gcp_image_family`, or the `open-inspect-sandbox` family if unset
+3. `gcp_image_family`, or the `open-inspect-sandbox` family if unset
+
+The scope's [prebuilt image](IMAGE_PREBUILD.md#gcp-prebuilds) is used instead of that image when
+prebuilds are on, one is ready, and it was built from that same image (a prebuild records the image
+its build booted). After a repository's image family changes, its sessions boot the new family until
+the next build catches up. The boot disk is sized to fit the prebuilt image if it is larger than
+`gcp_boot_disk_size_gb`.

@@ -17,6 +17,7 @@ import {
   gcpSandboxLabels,
   gcpSandboxName,
   gcpSnapshotName,
+  gcpSourceImageLabelValue,
   gcpZoneForSession,
 } from "./naming";
 import { GcpSandboxProvider } from "./provider";
@@ -144,8 +145,7 @@ describe("GCP metadata and startup-script", () => {
         userEnvVars: { FOO: "bar" },
         sandboxSettings: { tunnelPorts: [3000, 8080] },
       },
-      bootConfig,
-      true
+      bootConfig
     );
 
     expect(metadata).toMatchObject({
@@ -180,9 +180,9 @@ describe("GCP metadata and startup-script", () => {
     expect(metadata["startup-script"]).toContain("sandbox-runtime.service");
   });
 
-  it("omits startup-script when disabled and prunes empty fields", () => {
-    const metadata = buildGcpCreateMetadata(baseCreateConfig, bootConfig, false);
-    expect(metadata["startup-script"]).toBeUndefined();
+  it("always includes the startup-script and prunes empty fields", () => {
+    const metadata = buildGcpCreateMetadata(baseCreateConfig, bootConfig);
+    expect(metadata["startup-script"]).toContain("/usr/local/bin/oi-sandbox-runtime");
     expect(metadata.branch).toBeUndefined();
     expect(metadata.agent_session_id).toBeUndefined();
     expect(metadata.agent_slack_notify_enabled).toBeUndefined();
@@ -193,7 +193,7 @@ describe("GCP metadata and startup-script", () => {
       ...baseCreateConfig,
       snapshotImageId: "snap-1",
     };
-    const restoreMeta = buildGcpRestoreMetadata(restoreConfig, bootConfig, false);
+    const restoreMeta = buildGcpRestoreMetadata(restoreConfig, bootConfig);
     expect(restoreMeta.snapshot_image_id).toBe("snap-1");
     expect(restoreMeta.harness).toBe("claude");
 
@@ -202,13 +202,14 @@ describe("GCP metadata and startup-script", () => {
       sessionId: "sess-123",
       sandboxId: "sbx-123",
     };
-    const resumeMeta = buildGcpResumeMetadata(resumeConfig, bootConfig, false);
+    const resumeMeta = buildGcpResumeMetadata(resumeConfig, bootConfig);
     expect(resumeMeta).toEqual({
       session_id: "sess-123",
       sandbox_id: "sbx-123",
       vertex_project: "vertex-proj",
       vertex_location: "global",
       sandbox_version: SANDBOX_RUNTIME_VERSION,
+      "startup-script": buildGcpStartupScript(),
     });
   });
 
@@ -237,7 +238,7 @@ describe("GCP metadata and startup-script", () => {
     expect(buildBranch).not.toContain("/var/lib/oi");
     expect(script.indexOf("image_build_mode")).toBeLessThan(script.indexOf("STATE=/var/lib/oi"));
 
-    expect(buildGcpImageBuildMetadata({ IMAGE_BUILD_MODE: "true", A: "b" }, false)).toEqual({
+    expect(buildGcpImageBuildMetadata({ IMAGE_BUILD_MODE: "true", A: "b" })).toMatchObject({
       image_build_mode: "true",
       image_build_env: JSON.stringify({ IMAGE_BUILD_MODE: "true", A: "b" }),
     });
@@ -328,6 +329,7 @@ describe("GcpSandboxProvider", () => {
       createDiskSnapshot: vi.fn(async () => undefined),
       deleteSnapshot: vi.fn(async () => undefined),
       listDisks: vi.fn(async () => []),
+      getImage: vi.fn(async () => null),
       ...overrides,
     } as unknown as GcpComputeClient;
   }
@@ -338,7 +340,6 @@ describe("GcpSandboxProvider", () => {
       project: "test-project",
       zones: ["us-central1-a", "us-central1-b"],
       defaultImageFamily: "default-family",
-      includeStartupScript: true,
     });
 
     const result = await provider.createSandbox({
@@ -369,8 +370,21 @@ describe("GcpSandboxProvider", () => {
     expect(result.providerObjectId).toContain("/instances/ssess-123");
   });
 
-  it("boots a prebuilt image and tells the runtime it already ran setup", async () => {
-    const client = createMockGcpClient();
+  const PREBUILT_REF = "projects/test-project/global/images/oi-img-abc";
+
+  function prebuiltImage(sourceImage: string, diskSizeGb = "80") {
+    return {
+      name: "oi-img-abc",
+      status: "READY",
+      diskSizeGb,
+      labels: { source_image: gcpSourceImageLabelValue(sourceImage) },
+    };
+  }
+
+  it("boots a prebuilt image, sized to fit it, and tells the runtime it already ran setup", async () => {
+    const client = createMockGcpClient({
+      getImage: vi.fn(async () => prebuiltImage("open-inspect-sandbox", "120")),
+    });
     const provider = new GcpSandboxProvider(client, {
       project: "test-project",
       zones: ["us-central1-a"],
@@ -378,14 +392,16 @@ describe("GcpSandboxProvider", () => {
 
     await provider.createSandbox({
       ...baseCreateConfig,
-      prebuiltImageId: "projects/test-project/global/images/oi-img-abc",
+      prebuiltImageId: PREBUILT_REF,
       prebuiltImageSha: "deadbeef",
     });
 
+    expect(client.getImage).toHaveBeenCalledWith("oi-img-abc", undefined);
     expect(client.createDisk).toHaveBeenCalledWith(
       expect.objectContaining({
-        sourceImage: "projects/test-project/global/images/oi-img-abc",
+        sourceImage: PREBUILT_REF,
         treatBareImageAsFamily: false,
+        sizeGb: 120,
       }),
       undefined
     );
@@ -397,47 +413,69 @@ describe("GcpSandboxProvider", () => {
     );
   });
 
-  it("ignores the prebuilt image, and says so, for a repository with its own image family", async () => {
-    const client = createMockGcpClient();
-    const provider = new GcpSandboxProvider(client, {
+  it("uses a repository's prebuilt image only when it was built from that repository's family", async () => {
+    const matching = createMockGcpClient({
+      getImage: vi.fn(async () => prebuiltImage("repo-family")),
+    });
+    await new GcpSandboxProvider(matching, {
       project: "test-project",
       zones: ["us-central1-a"],
-    });
-
-    await provider.createSandbox({
+    }).createSandbox({
       ...baseCreateConfig,
       sandboxSettings: { imageFamily: "repo-family" },
-      prebuiltImageId: "projects/test-project/global/images/oi-img-abc",
-      prebuiltImageSha: "deadbeef",
+      prebuiltImageId: PREBUILT_REF,
     });
-
-    expect(client.createDisk).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceImage: "repo-family" }),
+    expect(matching.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceImage: PREBUILT_REF }),
       undefined
     );
-    const metadata = vi.mocked(client.createInstance).mock.calls[0][0].metadata ?? {};
+
+    // Built before the repository switched families: boot the new family, unflagged.
+    const stale = createMockGcpClient({
+      getImage: vi.fn(async () => prebuiltImage("open-inspect-sandbox")),
+    });
+    await new GcpSandboxProvider(stale, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    }).createSandbox({
+      ...baseCreateConfig,
+      sandboxSettings: { imageFamily: "repo-family" },
+      prebuiltImageId: PREBUILT_REF,
+      prebuiltImageSha: "deadbeef",
+    });
+    expect(stale.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceImage: "repo-family", treatBareImageAsFamily: true }),
+      undefined
+    );
+    const metadata = vi.mocked(stale.createInstance).mock.calls[0][0].metadata ?? {};
     expect(metadata.from_repo_image).toBeUndefined();
     expect(metadata.repo_image_sha).toBeUndefined();
   });
 
-  it("retires a prebuilt image GCE reports missing so the session falls back", async () => {
-    const client = createMockGcpClient({
+  it("retires a prebuilt image that is gone so the session falls back", async () => {
+    const missing = createMockGcpClient();
+    await expect(
+      new GcpSandboxProvider(missing, {
+        project: "test-project",
+        zones: ["us-central1-a"],
+      }).createSandbox({ ...baseCreateConfig, prebuiltImageId: PREBUILT_REF })
+    ).rejects.toBeInstanceOf(PrebuiltImageUnavailableError);
+    expect(missing.createDisk).not.toHaveBeenCalled();
+
+    // Deleted between the lookup and the disk create.
+    const raced = createMockGcpClient({
+      getImage: vi.fn(async () => prebuiltImage("open-inspect-sandbox")),
       createDisk: vi.fn(async () => {
         throw new GcpComputeApiError("image not found", 404);
       }),
     });
-    const provider = new GcpSandboxProvider(client, {
-      project: "test-project",
-      zones: ["us-central1-a"],
-    });
-
     await expect(
-      provider.createSandbox({
-        ...baseCreateConfig,
-        prebuiltImageId: "projects/test-project/global/images/oi-img-gone",
-      })
+      new GcpSandboxProvider(raced, {
+        project: "test-project",
+        zones: ["us-central1-a"],
+      }).createSandbox({ ...baseCreateConfig, prebuiltImageId: PREBUILT_REF })
     ).rejects.toBeInstanceOf(PrebuiltImageUnavailableError);
-    expect(client.createInstance).not.toHaveBeenCalled();
+    expect(raced.createInstance).not.toHaveBeenCalled();
   });
 
   it("boots the gcp-infra image family when no image is configured", async () => {
@@ -619,6 +657,76 @@ describe("GcpSandboxProvider", () => {
       undefined,
       undefined
     );
+  });
+
+  it("refreshes a stopped VM's metadata, keeping its session fields, before starting it", async () => {
+    const client = createMockGcpClient({
+      getInstance: vi.fn(async () => ({
+        name: "ssess-123",
+        status: "TERMINATED",
+        zone: "projects/test-project/zones/us-central1-a",
+        metadata: {
+          fingerprint: "fp-1",
+          items: [
+            { key: "sandbox_auth_token", value: "token-1" },
+            { key: "startup-script", value: "old launcher" },
+          ],
+        },
+      })),
+    });
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    await provider.resumeSandbox({
+      providerObjectId: "inst-1",
+      sessionId: "sess-123",
+      sandboxId: "sbx-123",
+    });
+
+    expect(client.setInstanceMetadata).toHaveBeenCalledWith(
+      "us-central1-a",
+      "ssess-123",
+      "fp-1",
+      expect.objectContaining({
+        sandbox_auth_token: "token-1",
+        sandbox_id: "sbx-123",
+        "startup-script": buildGcpStartupScript(),
+      }),
+      undefined
+    );
+    expect(vi.mocked(client.setInstanceMetadata).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(client.startInstance).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("spawns fresh when the disk disappears between the lookup and the VM create", async () => {
+    const getDisk = vi
+      .fn()
+      .mockResolvedValueOnce({
+        name: "ssess-123",
+        zone: "projects/test-project/zones/us-central1-a",
+      })
+      .mockResolvedValue(null);
+    const client = createMockGcpClient({
+      getDisk,
+      createInstance: vi.fn(async () => {
+        throw new GcpComputeApiError("disk not found", 404);
+      }),
+    });
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    await expect(
+      provider.resumeSandbox({
+        providerObjectId: "inst-1",
+        sessionId: "sess-123",
+        sandboxId: "sbx-123",
+      })
+    ).resolves.toMatchObject({ success: false, shouldSpawnFresh: true });
   });
 
   it("resumes by re-creating VM against kept boot disk or requests fresh spawn if disk is gone", async () => {

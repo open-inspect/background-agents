@@ -840,12 +840,6 @@ variable "gcp_use_spot" {
   default     = false
 }
 
-variable "gcp_include_startup_script" {
-  description = "Whether to inject the sandbox runtime startup-script into GCE instance metadata"
-  type        = bool
-  default     = true
-}
-
 variable "gcp_supports_snapshots" {
   description = "Whether the GCP sandbox provider creates GCE disk snapshots"
   type        = bool

@@ -54,10 +54,12 @@ import {
 } from "./metadata";
 import {
   GCP_LABEL_DEPLOYMENT,
+  GCP_LABEL_SOURCE_IMAGE,
   GCP_LABEL_MANAGED_BY,
   GCP_MANAGED_BY_VALUE,
   extractGcpZone,
   gcpDeploymentLabelValue,
+  gcpSourceImageLabelValue,
   gcpDiskSelfLink,
   gcpSandboxLabels,
   gcpSandboxName,
@@ -91,6 +93,8 @@ interface GcpSourceImage {
   isFamily: boolean;
   /** Whether this is the scope's prebuilt image (its setup.sh already ran). */
   prebuilt: boolean;
+  /** Boot disk size when it must differ from the configured size. */
+  sizeGb?: number;
 }
 
 export interface GcpProviderConfig {
@@ -107,7 +111,6 @@ export interface GcpProviderConfig {
   vertexProject?: string;
   vertexLocation?: string;
   useSpot?: boolean;
-  includeStartupScript?: boolean;
   supportsSnapshots?: boolean;
   supportsRestore?: boolean;
   /**
@@ -135,7 +138,6 @@ export class GcpSandboxProvider implements SandboxProvider {
   private readonly bootDiskSizeGb: number;
   private readonly bootDiskType: string;
   private readonly bootMetadataConfig: GcpBootMetadataConfig;
-  private readonly includeStartupScript: boolean;
   private readonly diskRetentionMs: number;
 
   constructor(
@@ -165,7 +167,6 @@ export class GcpSandboxProvider implements SandboxProvider {
       vertexProject: config.vertexProject?.trim() || config.project.trim(),
       vertexLocation: config.vertexLocation?.trim() || DEFAULT_GCP_VERTEX_LOCATION,
     };
-    this.includeStartupScript = config.includeStartupScript ?? false;
 
     this.capabilities = {
       supportsSandboxTimeout: supportsConfigurableSandboxTimeout(this.name),
@@ -190,7 +191,7 @@ export class GcpSandboxProvider implements SandboxProvider {
     const timeoutSeconds = config.timeoutSeconds ?? DEFAULT_SANDBOX_TIMEOUT_SECONDS;
 
     try {
-      const sourceImage = this.resolveSourceImage(config);
+      const sourceImage = await this.resolveSourceImage(config);
       // FROM_REPO_IMAGE follows the image actually booted: a repository with
       // its own image family ignores the prebuilt image, which then never
       // ran its setup.sh.
@@ -201,8 +202,7 @@ export class GcpSandboxProvider implements SandboxProvider {
           prebuiltImageId: sourceImage.prebuilt ? config.prebuiltImageId : null,
           prebuiltImageSha: sourceImage.prebuilt ? config.prebuiltImageSha : null,
         },
-        this.bootMetadataConfig,
-        this.includeStartupScript
+        this.bootMetadataConfig
       );
 
       const name = gcpSandboxName(config.sessionId);
@@ -226,7 +226,7 @@ export class GcpSandboxProvider implements SandboxProvider {
           {
             name,
             zone: primaryZone,
-            sizeGb: this.bootDiskSizeGb,
+            sizeGb: sourceImage.sizeGb ?? this.bootDiskSizeGb,
             type: this.bootDiskType,
             sourceImage: sourceImage.image,
             treatBareImageAsFamily: sourceImage.isFamily,
@@ -278,8 +278,7 @@ export class GcpSandboxProvider implements SandboxProvider {
     try {
       const metadata = buildGcpRestoreMetadata(
         { ...config, timeoutSeconds },
-        this.bootMetadataConfig,
-        this.includeStartupScript
+        this.bootMetadataConfig
       );
       const diskName = gcpSandboxName(config.sessionId);
       const primaryZone = gcpZoneForSession(config.sessionId, this.zones);
@@ -363,9 +362,10 @@ export class GcpSandboxProvider implements SandboxProvider {
 
     try {
       const name = gcpSandboxName(config.sessionId);
+      const metadata = buildGcpResumeMetadata(config, this.bootMetadataConfig);
       const existing = await this.client.getInstance(name, this.zones, config.correlation);
       if (existing) {
-        const started = await this.ensureStarted(existing, config.correlation);
+        const started = await this.ensureStarted(existing, metadata, config.correlation);
         return {
           success: true,
           providerObjectId:
@@ -384,20 +384,32 @@ export class GcpSandboxProvider implements SandboxProvider {
         };
       }
 
-      const metadata = buildGcpResumeMetadata(
-        config,
-        this.bootMetadataConfig,
-        this.includeStartupScript
-      );
       const diskZone = extractGcpZone(disk.zone) || this.zones[0];
-      const instance = await this.spawnWithFallback(
-        config.sandboxId,
-        config.sessionId,
-        name,
-        metadata,
-        config.correlation,
-        diskZone
-      );
+      let instance: GcpInstance;
+      try {
+        instance = await this.spawnWithFallback(
+          config.sandboxId,
+          config.sessionId,
+          name,
+          metadata,
+          config.correlation,
+          diskZone
+        );
+      } catch (error) {
+        // The disk can vanish between the lookup and the create (the
+        // retention purge, an archive): that is a fresh spawn, not a failure.
+        if (
+          isGcpNotFoundError(error) &&
+          !(await this.client.getDisk(name, [diskZone], config.correlation))
+        ) {
+          return {
+            success: false,
+            error: `Boot disk "${name}" no longer exists in GCP`,
+            shouldSpawnFresh: true,
+          };
+        }
+        throw error;
+      }
 
       return {
         success: true,
@@ -529,28 +541,60 @@ export class GcpSandboxProvider implements SandboxProvider {
    * 3. `prebuiltImageId`
    * 4. `config.defaultImageFamily` (`GCP_IMAGE_FAMILY`), else DEFAULT_GCP_IMAGE_FAMILY
    */
-  private resolveSourceImage(config: CreateSandboxConfig): GcpSourceImage {
+  private async resolveSourceImage(config: CreateSandboxConfig): Promise<GcpSourceImage> {
+    const base = this.resolveBaseImage(config);
+    const prebuiltRef = config.prebuiltImageId?.trim();
+    if (!prebuiltRef) return base;
+
+    const prebuiltName = prebuiltRef.split("/").pop() ?? prebuiltRef;
+    const image = await this.client.getImage(prebuiltName, config.correlation);
+    if (!image || image.status === "FAILED") {
+      throw new PrebuiltImageUnavailableError(`GCP prebuilt image ${prebuiltRef} no longer exists`);
+    }
+    // A prebuilt image stands in only for the image its build booted; after
+    // the scope's image family changes, its sessions boot the new family
+    // until the next build catches up.
+    if (image.labels?.[GCP_LABEL_SOURCE_IMAGE] !== gcpSourceImageLabelValue(base.image)) {
+      log.info("gcp.prebuilt_image_skipped", {
+        prebuilt_image: prebuiltRef,
+        built_from: image.labels?.[GCP_LABEL_SOURCE_IMAGE] ?? null,
+        boot_image: base.image,
+      });
+      return base;
+    }
+    const imageSizeGb = Number(image.diskSizeGb ?? 0);
+    return {
+      image: prebuiltRef,
+      isFamily: false,
+      prebuilt: true,
+      // A disk can't be smaller than its image, which keeps the build's size.
+      sizeGb: Math.max(this.bootDiskSizeGb, Number.isFinite(imageSizeGb) ? imageSizeGb : 0),
+    };
+  }
+
+  /** The image a session boots without a prebuilt image. */
+  private resolveBaseImage(config: CreateSandboxConfig): GcpSourceImage {
     const settingsFamily = config.sandboxSettings?.imageFamily?.trim();
     if (settingsFamily) {
       return { image: settingsFamily, isFamily: true, prebuilt: false };
     }
-
     const envImage = config.userEnvVars?.REPO_IMAGE?.trim();
     if (envImage) {
       return { image: envImage, isFamily: false, prebuilt: false };
     }
-
-    const prebuilt = config.prebuiltImageId?.trim();
-    if (prebuilt) {
-      return { image: prebuilt, isFamily: false, prebuilt: true };
-    }
-
     const defaultFamily = this.config.defaultImageFamily?.trim() || DEFAULT_GCP_IMAGE_FAMILY;
     return { image: defaultFamily, isFamily: true, prebuilt: false };
   }
 
+  /**
+   * Start a stopped VM that still exists (a preempted Spot VM, or one GCE
+   * stopped at its run-duration limit). The resume fields and the current
+   * startup-script are merged over its metadata first, so it boots with this
+   * control plane's launcher rather than the one it was created with.
+   */
   private async ensureStarted(
     instance: GcpInstance,
+    metadata: Record<string, string>,
     correlation?: CreateSandboxConfig["correlation"]
   ): Promise<GcpInstance> {
     if (
@@ -561,6 +605,16 @@ export class GcpSandboxProvider implements SandboxProvider {
       return instance;
     }
     const zone = extractGcpZone(instance.zone) || this.zones[0];
+    const existing = Object.fromEntries(
+      (instance.metadata?.items ?? []).map((item) => [item.key, item.value ?? ""])
+    );
+    await this.client.setInstanceMetadata(
+      zone,
+      instance.name,
+      instance.metadata?.fingerprint ?? "",
+      { ...existing, ...metadata },
+      correlation
+    );
     await this.client.startInstance(zone, instance.name, correlation);
     return (await this.client.getInstance(instance.name, [zone], correlation)) ?? instance;
   }
@@ -587,6 +641,13 @@ export class GcpSandboxProvider implements SandboxProvider {
       return (await this.client.getInstance(instance.name, [zone], correlation)) ?? instance;
     }
 
+    await this.client.setInstanceMetadata(
+      zone,
+      instance.name,
+      instance.metadata?.fingerprint ?? "",
+      metadata,
+      correlation
+    );
     await this.client.startInstance(zone, instance.name, correlation);
     return (await this.client.getInstance(instance.name, [zone], correlation)) ?? instance;
   }

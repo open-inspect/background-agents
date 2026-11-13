@@ -67,6 +67,17 @@ export function gcpSandboxLabels(
   };
 }
 
+/**
+ * Label on a prebuilt image naming the image its build VM booted, so a session
+ * uses the prebuilt image only in place of that same image.
+ */
+export const GCP_LABEL_SOURCE_IMAGE = "source_image";
+
+/** Label-safe form of a boot image or family reference, for GCP_LABEL_SOURCE_IMAGE. */
+export function gcpSourceImageLabelValue(image: string): string {
+  return labelSafe(image);
+}
+
 /** Label-safe form of a deployment name, as stored in the deployment label. */
 export function gcpDeploymentLabelValue(deploymentName: string): string {
   return labelSafe(deploymentName);

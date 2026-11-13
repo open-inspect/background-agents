@@ -5,6 +5,10 @@ Compute Engine API directly at runtime; this package only builds images.
 
 ## What's here
 
+- **`setup-project.sh`**: one-time, idempotent setup of a GCP project dedicated to one deployment:
+  APIs, a network with Cloud NAT, Private Google Access, NAT/DNS/flow logging, firewall rules, and
+  the control-plane, sandbox-VM and image-build service accounts. See
+  [docs/GCP.md](../../docs/GCP.md#project-setup).
 - **[Shared image package](../sandbox-images/README.md)**: owns the substrate, dependency pins,
   frozen installation bundle, runtime wheel, and verification.
 - **`build-image.py`**: stages the shared bundle and creates a throwaway build VM from the public
@@ -21,6 +25,7 @@ with that session's configuration.
 
 ## Requirements
 
+- Build VMs run with no service account (`--no-service-account`); they need no identity.
 - `gcloud`, authenticated to an account or service account that can create and delete VMs and images
   in the project and SSH into them (OS Login or project SSH keys).
 - With `GCP_BUILD_USE_IAP=true`, the VMs get no external IP and SSH goes through IAP, which needs a

@@ -3,10 +3,10 @@
  *
  * Session configuration reaches the VM as instance metadata attributes. VMs
  * boot from an image built by packages/gcp-infra, which installs the shared
- * sandbox toolchain and runtime (packages/sandbox-images) on public Ubuntu and
- * bakes in the launcher and systemd unit below. The startup-script installs
- * the launcher and unit if the image lacks them, fails clearly if the image
- * has no runtime, and ensures sandbox-runtime.service is started
+ * sandbox toolchain and runtime (packages/sandbox-images) on public Ubuntu.
+ * The launcher and systemd unit below are not part of any image: the
+ * startup-script installs the current versions on every boot, fails clearly
+ * if the image has no runtime, and starts sandbox-runtime.service
  * (non-blocking).
  */
 
@@ -180,6 +180,11 @@ cd /workspace
 exec ${GCP_SANDBOX_RUNTIME_PYTHON} -m sandbox_runtime.entrypoint
 `;
 
+/**
+ * The systemd unit that runs the launcher. It has no [Install] section and is
+ * never enabled: only the startup-script starts it, after installing the
+ * current launcher, so systemd can never boot a launcher left on the disk.
+ */
 export const GCP_SANDBOX_RUNTIME_SERVICE_UNIT = `[Unit]
 Description=background-agents sandbox runtime (runs opencode + connects to the control plane)
 After=network-online.target
@@ -191,14 +196,14 @@ Environment=HOME=/root
 ExecStart=/usr/local/bin/oi-sandbox-runtime
 Restart=on-failure
 RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
 `;
 
 /**
- * GCE startup-script that provisions the runtime systemd unit if not already
- * baked into the image and ensures the service is running.
+ * GCE startup-script, run by the guest agent on every boot. The launcher and
+ * unit are not part of the image: this installs the versions this control
+ * plane ships on every boot, replacing whatever an earlier boot, an older
+ * prebuilt image, or a resumed disk left behind, then starts the runtime. A
+ * runtime already running (a second run of the script) is left alone.
  */
 export function buildGcpStartupScript(): string {
   return `#!/bin/bash
@@ -209,23 +214,35 @@ if [ ! -x ${GCP_SANDBOX_RUNTIME_PYTHON} ]; then
   exit 1
 fi
 
-if [ ! -x /usr/local/bin/oi-sandbox-runtime ]; then
-  cat << 'OI_RUNTIME_EOF' > /usr/local/bin/oi-sandbox-runtime
+if systemctl is-active --quiet sandbox-runtime.service; then
+  exit 0
+fi
+
+# install_if_changed <mode> <path>: replace <path> with stdin when it differs.
+install_if_changed() {
+  local staged
+  staged="$(mktemp)"
+  cat > "$staged"
+  if cmp -s "$staged" "$2"; then
+    rm -f "$staged"
+    return 1
+  fi
+  install -m "$1" "$staged" "$2"
+  rm -f "$staged"
+}
+
+install_if_changed 0755 /usr/local/bin/oi-sandbox-runtime << 'OI_RUNTIME_EOF' || true
 ${GCP_SANDBOX_RUNTIME_START_SCRIPT}OI_RUNTIME_EOF
-  chmod 0755 /usr/local/bin/oi-sandbox-runtime
-fi
 
-if [ ! -f /etc/systemd/system/sandbox-runtime.service ]; then
-  cat << 'OI_SERVICE_EOF' > /etc/systemd/system/sandbox-runtime.service
+if install_if_changed 0644 /etc/systemd/system/sandbox-runtime.service << 'OI_SERVICE_EOF'
 ${GCP_SANDBOX_RUNTIME_SERVICE_UNIT}OI_SERVICE_EOF
-  chmod 0644 /etc/systemd/system/sandbox-runtime.service
+then
   systemctl daemon-reload
-  systemctl enable sandbox-runtime.service
 fi
+# Disks from before the unit lost its [Install] section have it enabled.
+systemctl disable sandbox-runtime.service >/dev/null 2>&1 || true
 
-if ! systemctl is-active --quiet sandbox-runtime.service; then
-  systemctl start --no-block sandbox-runtime.service
-fi
+systemctl start --no-block sandbox-runtime.service
 `;
 }
 
@@ -260,8 +277,7 @@ function serializeSandboxSettings(
 
 export function buildGcpCreateMetadata(
   config: CreateSandboxConfig,
-  bootConfig: GcpBootMetadataConfig,
-  includeStartupScript = false
+  bootConfig: GcpBootMetadataConfig
 ): Record<string, string> {
   const metadata: Record<string, string> = {
     session_id: config.sessionId,
@@ -299,17 +315,14 @@ export function buildGcpCreateMetadata(
     metadata.from_repo_image = "true";
     metadata.repo_image_sha = config.prebuiltImageSha ?? "";
   }
-  if (includeStartupScript) {
-    metadata["startup-script"] = buildGcpStartupScript();
-  }
+  metadata["startup-script"] = buildGcpStartupScript();
 
   return pruneEmpty(metadata);
 }
 
 export function buildGcpRestoreMetadata(
   config: RestoreConfig,
-  bootConfig: GcpBootMetadataConfig,
-  includeStartupScript = false
+  bootConfig: GcpBootMetadataConfig
 ): Record<string, string> {
   const metadata: Record<string, string> = {
     session_id: config.sessionId,
@@ -343,17 +356,14 @@ export function buildGcpRestoreMetadata(
   if (config.agentSlackNotifyEnabled) {
     metadata.agent_slack_notify_enabled = "true";
   }
-  if (includeStartupScript) {
-    metadata["startup-script"] = buildGcpStartupScript();
-  }
+  metadata["startup-script"] = buildGcpStartupScript();
 
   return pruneEmpty(metadata);
 }
 
 export function buildGcpResumeMetadata(
   config: ResumeConfig,
-  bootConfig: GcpBootMetadataConfig,
-  includeStartupScript = false
+  bootConfig: GcpBootMetadataConfig
 ): Record<string, string> {
   const metadata: Record<string, string> = {
     session_id: config.sessionId,
@@ -362,9 +372,7 @@ export function buildGcpResumeMetadata(
     vertex_location: bootConfig.vertexLocation,
     sandbox_version: SANDBOX_RUNTIME_VERSION,
   };
-  if (includeStartupScript) {
-    metadata["startup-script"] = buildGcpStartupScript();
-  }
+  metadata["startup-script"] = buildGcpStartupScript();
   return pruneEmpty(metadata);
 }
 
@@ -375,15 +383,12 @@ export function buildGcpResumeMetadata(
  * disk, so none of it is part of the image saved from the disk.
  */
 export function buildGcpImageBuildMetadata(
-  buildEnv: Record<string, string>,
-  includeStartupScript = false
+  buildEnv: Record<string, string>
 ): Record<string, string> {
   const metadata: Record<string, string> = {
     image_build_mode: "true",
     image_build_env: JSON.stringify(buildEnv),
   };
-  if (includeStartupScript) {
-    metadata["startup-script"] = buildGcpStartupScript();
-  }
+  metadata["startup-script"] = buildGcpStartupScript();
   return metadata;
 }

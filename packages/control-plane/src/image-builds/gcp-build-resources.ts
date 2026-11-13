@@ -38,8 +38,10 @@ import {
 import { buildGcpImageBuildMetadata } from "../sandbox/providers/gcp/metadata";
 import {
   extractGcpZone,
+  GCP_LABEL_SOURCE_IMAGE,
   gcpDiskSelfLink,
   gcpSandboxLabels,
+  gcpSourceImageLabelValue,
   gcpZoneForSession,
 } from "../sandbox/providers/gcp/naming";
 import {
@@ -57,6 +59,11 @@ const log = createLogger("image-builds:gcp");
 export const GCP_IMAGE_NAME_PREFIX = "oi-img-";
 const GCP_BUILD_VM_NAME_PREFIX = "oi-build-";
 const GCP_NAME_SLUG_MAX_CHARS = 28;
+
+/** A build trigger with the scope's own boot image family, if it has one. */
+export interface GcpImageBuildTriggerConfig extends ImageBuildProviderTriggerConfig {
+  imageFamily?: string | null;
+}
 
 export interface GcpImageBuildResourcesConfig {
   scmProvider: SourceControlProviderName;
@@ -87,21 +94,26 @@ export class GcpImageBuildResources {
    * The bind comes first, so every failure after it is the workflow's to clean
    * up by name, including a VM whose create response never arrived.
    */
-  async triggerImageBuild(config: ImageBuildProviderTriggerConfig): Promise<void> {
+  async triggerImageBuild(config: GcpImageBuildTriggerConfig): Promise<void> {
     const name = await gcpImageBuildVmName(this.config.deploymentName, config.buildId);
     const identity = imageBuildSandboxIdentity(config, Date.now());
     const zone = gcpZoneForSession(config.buildId, this.provider.zones);
-    const labels = gcpSandboxLabels(
-      identity.sandboxId,
-      config.buildId,
-      "image-build",
-      this.provider.instanceLabels,
-      this.config.deploymentName
-    );
-    const metadata = buildGcpImageBuildMetadata(
-      this.buildEnv(config, identity.sandboxId, name),
-      this.provider.includeStartupScript ?? false
-    );
+    // The image the scope's sessions boot: its own family, else the default.
+    const sourceImage =
+      config.imageFamily?.trim() ||
+      this.provider.defaultImageFamily?.trim() ||
+      DEFAULT_GCP_IMAGE_FAMILY;
+    const labels = {
+      ...gcpSandboxLabels(
+        identity.sandboxId,
+        config.buildId,
+        "image-build",
+        this.provider.instanceLabels,
+        this.config.deploymentName
+      ),
+      [GCP_LABEL_SOURCE_IMAGE]: gcpSourceImageLabelValue(sourceImage),
+    };
+    const metadata = buildGcpImageBuildMetadata(this.buildEnv(config, identity.sandboxId, name));
 
     await config.onProviderSessionCreated(name);
     try {
@@ -111,7 +123,7 @@ export class GcpImageBuildResources {
           zone,
           sizeGb: this.provider.bootDiskSizeGb ?? DEFAULT_GCP_BOOT_DISK_SIZE_GB,
           type: this.provider.bootDiskType?.trim() || DEFAULT_GCP_BOOT_DISK_TYPE,
-          sourceImage: this.provider.defaultImageFamily?.trim() || DEFAULT_GCP_IMAGE_FAMILY,
+          sourceImage,
           treatBareImageAsFamily: true,
           labels,
         },
@@ -186,13 +198,19 @@ export class GcpImageBuildResources {
       {
         name: imageName,
         sourceDisk: gcpDiskSelfLink(this.client.project, zone, buildVmName),
-        labels: gcpSandboxLabels(
-          imageName,
-          buildVmName,
-          "prebuilt-image",
-          this.provider.instanceLabels,
-          this.config.deploymentName
-        ),
+        labels: {
+          ...gcpSandboxLabels(
+            imageName,
+            buildVmName,
+            "prebuilt-image",
+            this.provider.instanceLabels,
+            this.config.deploymentName
+          ),
+          // Carried over from the build disk: the image this one stands in for.
+          ...(disk.labels?.[GCP_LABEL_SOURCE_IMAGE]
+            ? { [GCP_LABEL_SOURCE_IMAGE]: disk.labels[GCP_LABEL_SOURCE_IMAGE] }
+            : {}),
+        },
       },
       undefined,
       signal

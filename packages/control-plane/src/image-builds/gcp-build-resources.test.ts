@@ -41,7 +41,6 @@ function createResources(client: ReturnType<typeof createClient>) {
       zones: ["us-central1-a", "us-central1-b"],
       defaultImageFamily: "open-inspect-sandbox",
       vmServiceAccountEmail: "vm@test-proj.iam.gserviceaccount.com",
-      includeStartupScript: true,
     },
     { scmProvider: "github", deploymentName: "acme" }
   );
@@ -101,6 +100,23 @@ describe("GcpImageBuildResources.triggerImageBuild", () => {
         }),
       }),
       config.correlation
+    );
+  });
+
+  it("boots the scope's own image family and records it on the build disk", async () => {
+    const client = createClient();
+
+    await createResources(client).triggerImageBuild({
+      ...triggerConfig(),
+      imageFamily: "repo-family",
+    });
+
+    expect(client.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceImage: "repo-family",
+        labels: expect.objectContaining({ source_image: "repo-family" }),
+      }),
+      expect.anything()
     );
   });
 
@@ -191,6 +207,7 @@ describe("GcpImageBuildResources lifecycle", () => {
       getDisk: vi.fn(async () => ({
         name: "oi-build-x",
         zone: "projects/test-proj/zones/us-central1-b",
+        labels: { source_image: "open-inspect-sandbox" },
       })),
     });
 
@@ -200,7 +217,10 @@ describe("GcpImageBuildResources lifecycle", () => {
       expect.objectContaining({
         name: "oi-img-x",
         sourceDisk: expect.stringContaining("zones/us-central1-b/disks/oi-build-x"),
-        labels: expect.objectContaining({ deployment: "acme" }),
+        labels: expect.objectContaining({
+          deployment: "acme",
+          source_image: "open-inspect-sandbox",
+        }),
       }),
       undefined,
       undefined

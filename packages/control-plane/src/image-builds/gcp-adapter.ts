@@ -82,6 +82,9 @@ export class GcpImageBuildAdapter implements ImageBuildAdapter {
       providerSessionTimeoutSeconds: resolveImageBuildProviderSessionTimeoutSeconds(
         plan.buildTimeoutMs
       ),
+      // The build boots the image the scope's sessions boot, so its image
+      // can stand in for that one.
+      imageFamily: plan.imageFamily ?? null,
       onProviderSessionCreated: callbacks.bindProviderSession,
       correlation: plan.correlation,
     });

@@ -99,7 +99,6 @@ export interface EnvConfig {
   GCP_VERTEX_PROJECT?: string; // Optional Vertex AI project ID passed in instance metadata (defaults to GCP_PROJECT)
   GCP_VERTEX_LOCATION?: string; // Optional Vertex AI location passed in instance metadata (default: global)
   GCP_USE_SPOT?: string; // "true" to try a Spot VM first, falling back to standard in the same zone (default: false)
-  GCP_INCLUDE_STARTUP_SCRIPT?: string; // "true" to inject startup-script metadata (default: true)
   GCP_SUPPORTS_SNAPSHOTS?: string; // "true" to enable GCE disk snapshots (default: false)
   GCP_SUPPORTS_RESTORE?: string; // "true" to enable restoring sandboxes from GCE disk snapshots (default: false)
   GCP_DISK_RETENTION_DAYS?: string; // Days a detached sandbox disk is kept before purge; 0 disables (default: DEFAULT_GCP_DISK_RETENTION_DAYS)

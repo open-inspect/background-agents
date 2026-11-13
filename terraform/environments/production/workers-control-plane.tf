@@ -175,17 +175,16 @@ module "control_plane_worker" {
     } : {},
     local.use_gcp_backend ? merge(
       {
-        GCP_PROJECT                = { value = var.gcp_project }
-        GCP_ZONES                  = { value = var.gcp_zones }
-        GCP_MACHINE_TYPE           = { value = var.gcp_machine_type }
-        GCP_BOOT_DISK_SIZE_GB      = { value = tostring(var.gcp_boot_disk_size_gb) }
-        GCP_BOOT_DISK_TYPE         = { value = var.gcp_boot_disk_type }
-        GCP_VERTEX_LOCATION        = { value = var.gcp_vertex_location }
-        GCP_USE_SPOT               = { value = tostring(var.gcp_use_spot) }
-        GCP_INCLUDE_STARTUP_SCRIPT = { value = tostring(var.gcp_include_startup_script) }
-        GCP_SUPPORTS_SNAPSHOTS     = { value = tostring(var.gcp_supports_snapshots) }
-        GCP_SUPPORTS_RESTORE       = { value = tostring(var.gcp_supports_restore) }
-        GCP_DISK_RETENTION_DAYS    = { value = tostring(var.gcp_disk_retention_days) }
+        GCP_PROJECT             = { value = var.gcp_project }
+        GCP_ZONES               = { value = var.gcp_zones }
+        GCP_MACHINE_TYPE        = { value = var.gcp_machine_type }
+        GCP_BOOT_DISK_SIZE_GB   = { value = tostring(var.gcp_boot_disk_size_gb) }
+        GCP_BOOT_DISK_TYPE      = { value = var.gcp_boot_disk_type }
+        GCP_VERTEX_LOCATION     = { value = var.gcp_vertex_location }
+        GCP_USE_SPOT            = { value = tostring(var.gcp_use_spot) }
+        GCP_SUPPORTS_SNAPSHOTS  = { value = tostring(var.gcp_supports_snapshots) }
+        GCP_SUPPORTS_RESTORE    = { value = tostring(var.gcp_supports_restore) }
+        GCP_DISK_RETENTION_DAYS = { value = tostring(var.gcp_disk_retention_days) }
       },
       # A Terraform-built image pins the Worker to that exact verified image;
       # otherwise sessions follow gcp_image_family (or the provider default).

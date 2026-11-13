@@ -129,11 +129,6 @@ export function resolveGcpSetupFromEnv(env: Env): {
     vertexProject: env.GCP_VERTEX_PROJECT,
     vertexLocation: env.GCP_VERTEX_LOCATION,
     useSpot: parseBooleanEnv("GCP_USE_SPOT", env.GCP_USE_SPOT, false),
-    includeStartupScript: parseBooleanEnv(
-      "GCP_INCLUDE_STARTUP_SCRIPT",
-      env.GCP_INCLUDE_STARTUP_SCRIPT,
-      true
-    ),
     supportsSnapshots: parseBooleanEnv("GCP_SUPPORTS_SNAPSHOTS", env.GCP_SUPPORTS_SNAPSHOTS, false),
     supportsRestore: parseBooleanEnv("GCP_SUPPORTS_RESTORE", env.GCP_SUPPORTS_RESTORE, false),
     deploymentName: env.DEPLOYMENT_NAME,

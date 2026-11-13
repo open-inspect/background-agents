@@ -64,6 +64,8 @@ def test_builds_from_public_ubuntu_saves_to_the_family_and_verifies(builder):
     build_create, verify_create = gcloud.commands("compute", "instances", "create")
     assert "--image-family=ubuntu-2404-lts-amd64" in build_create
     assert "--image-project=ubuntu-os-cloud" in build_create
+    for create in (build_create, verify_create):
+        assert "--no-service-account" in create and "--no-scopes" in create
     assert "--image=open-inspect-sandbox-abc-1" in verify_create
     (image_create,) = gcloud.commands("compute", "images", "create")
     assert "--family=open-inspect-sandbox" in image_create

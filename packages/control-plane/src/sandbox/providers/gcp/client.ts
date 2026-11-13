@@ -120,6 +120,8 @@ const gcpImageSchema = z.object({
   /** PENDING while GCE copies the disk, then READY or FAILED. */
   status: z.string().optional(),
   sourceDisk: z.string().optional(),
+  /** int64 encoded as a decimal string by the API. */
+  diskSizeGb: z.union([z.string(), z.number()]).optional(),
   selfLink: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
 });
