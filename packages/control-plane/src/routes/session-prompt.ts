@@ -159,6 +159,7 @@ sessionPromptRoutes.post(
   admit({
     ...GITHUB_USER_OR_SERVICE_ROUTE,
     authorization: requireSession("collaborate"),
+    personalAccessTokens: "accept",
   }),
   (c) => dispatchSession(c, handleSessionPrompt)
 );

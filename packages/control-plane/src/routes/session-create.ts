@@ -380,6 +380,7 @@ sessionCreateRoutes.post(
     ...GITHUB_USER_OR_SERVICE_ROUTE,
     authorization: requirePermission("sessions.create"),
     serviceActorClaims: extractSessionActorProfileClaims,
+    personalAccessTokens: "accept",
   }),
   (c) => dispatch(c, handleCreateSession)
 );
