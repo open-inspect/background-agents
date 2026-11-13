@@ -3,6 +3,7 @@ import {
   createDaytonaRestClientFromEnv,
   createSandboxProviderFromEnv,
   resolveBoatDefaultMachineType,
+  resolveGcpSetupFromEnv,
 } from "../sandbox/provider-factory";
 import { resolveScmProviderFromEnv } from "../source-control";
 import type { Env } from "../types";
@@ -11,6 +12,8 @@ import { BoatImageBuildResources } from "./boat-build-resources";
 import { DaytonaImageBuildAdapter } from "./daytona-adapter";
 import { DaytonaImageBuildResources } from "./daytona-build-resources";
 import { E2BImageBuildAdapter } from "./e2b-adapter";
+import { GcpImageBuildAdapter } from "./gcp-adapter";
+import { GcpImageBuildResources } from "./gcp-build-resources";
 import { ModalImageBuildAdapter } from "./modal-adapter";
 import type { ImageBuildProvider } from "./model";
 import type { ImageBuildAdapter } from "./types";
@@ -58,6 +61,17 @@ class EnvImageBuildAdapterFactory implements ImageBuildAdapterFactory {
             baseSnapshot: this.env.BOAT_BASE_SNAPSHOT,
           })
         );
+      case "gcp": {
+        // Finishing or reclaiming a build needs only the API credentials;
+        // starting one also boots the deployment's sandbox image.
+        const { client, config } = resolveGcpSetupFromEnv(this.env);
+        return new GcpImageBuildAdapter(
+          new GcpImageBuildResources(client, config, {
+            scmProvider: resolveScmProviderFromEnv(this.env.SCM_PROVIDER),
+            deploymentName: this.env.DEPLOYMENT_NAME,
+          })
+        );
+      }
       case "daytona":
         return new DaytonaImageBuildAdapter(
           new DaytonaImageBuildResources(

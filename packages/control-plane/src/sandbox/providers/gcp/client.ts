@@ -5,6 +5,7 @@
  * - Zonal instances: get, insert, start, delete, setMetadata
  * - Zonal persistent disks: get, list, insert, delete, createSnapshot
  * - Global snapshots: delete
+ * - Global images: insert, get, delete; zonal instances: stop
  * - Long-running operation waiting (/zonalOperations/.../wait, /globalOperations/.../wait)
  */
 
@@ -59,6 +60,19 @@ export interface GcpInstanceSpec {
   metadata?: Record<string, string>;
   serviceAccountEmail?: string;
   spot?: boolean;
+  /**
+   * GCE stops (never deletes) the VM after this long, whatever the control
+   * plane does: a bound on a VM nothing is left to stop. Its disk is kept.
+   */
+  maxRunDurationSeconds?: number;
+}
+
+export interface GcpImageSpec {
+  name: string;
+  /** Zonal disk self-link or `projects/<p>/zones/<z>/disks/<name>` path. */
+  sourceDisk: string;
+  family?: string;
+  labels?: Record<string, string>;
 }
 
 const gcpMetadataItemSchema = z.object({
@@ -100,6 +114,17 @@ const gcpDiskListSchema = z.object({
 });
 
 export type GcpDisk = z.infer<typeof gcpDiskSchema>;
+
+const gcpImageSchema = z.object({
+  name: z.string(),
+  /** PENDING while GCE copies the disk, then READY or FAILED. */
+  status: z.string().optional(),
+  sourceDisk: z.string().optional(),
+  selfLink: z.string().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+});
+
+export type GcpImage = z.infer<typeof gcpImageSchema>;
 
 const gcpOperationErrorEntrySchema = z.object({
   code: z.string().optional(),
@@ -469,6 +494,96 @@ export class GcpComputeClient {
     await this.waitForZonalOperation(zone, op, correlation, signal);
   }
 
+  /**
+   * Ask GCE to stop a VM, keeping its disks, and return without waiting: a
+   * caller that must know the outcome reads the instance status later.
+   */
+  async requestStopInstance(
+    zone: string,
+    name: string,
+    correlation?: CorrelationContext,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await this.requestJson(
+      `/projects/${encodeURIComponent(this.project)}/zones/${encodeURIComponent(zone)}/instances/${encodeURIComponent(name)}/stop`,
+      { method: "POST", signal },
+      gcpOperationSchema,
+      correlation,
+      "stopInstance",
+      DEFAULT_API_DEADLINE_MS
+    );
+  }
+
+  /**
+   * Submit an image created from a disk and return without waiting: a large
+   * disk takes minutes to copy, so callers poll getImage until READY. An image
+   * already under the name is reported as a 409 GcpComputeApiError.
+   */
+  async requestCreateImage(
+    spec: GcpImageSpec,
+    correlation?: CorrelationContext,
+    signal?: AbortSignal
+  ): Promise<void> {
+    await this.requestJson(
+      `/projects/${encodeURIComponent(this.project)}/global/images`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: spec.name,
+          sourceDisk: spec.sourceDisk,
+          ...(spec.family ? { family: spec.family } : {}),
+          ...(spec.labels ? { labels: spec.labels } : {}),
+        }),
+        signal,
+      },
+      gcpOperationSchema,
+      correlation,
+      "insertImage",
+      DEFAULT_API_DEADLINE_MS
+    );
+  }
+
+  /** The image under `name` in this project, or null when there is none. */
+  async getImage(
+    name: string,
+    correlation?: CorrelationContext,
+    signal?: AbortSignal
+  ): Promise<GcpImage | null> {
+    try {
+      return await this.requestJson(
+        `/projects/${encodeURIComponent(this.project)}/global/images/${encodeURIComponent(name)}`,
+        { method: "GET", signal },
+        gcpImageSchema,
+        correlation,
+        "getImage",
+        DEFAULT_API_DEADLINE_MS
+      );
+    } catch (error) {
+      if (isGcpNotFoundError(error)) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Delete an image and return once GCE accepts the request; one already gone
+   * counts as deleted.
+   */
+  async deleteImage(name: string, correlation?: CorrelationContext, signal?: AbortSignal) {
+    try {
+      await this.requestJson(
+        `/projects/${encodeURIComponent(this.project)}/global/images/${encodeURIComponent(name)}`,
+        { method: "DELETE", signal },
+        gcpOperationSchema,
+        correlation,
+        "deleteImage",
+        DEFAULT_API_DEADLINE_MS
+      );
+    } catch (error) {
+      if (isGcpNotFoundError(error)) return;
+      throw error;
+    }
+  }
+
   async deleteSnapshot(
     snapshotName: string,
     correlation?: CorrelationContext,
@@ -695,13 +810,23 @@ function buildInstanceResource(spec: GcpInstanceSpec): Record<string, unknown> {
     ];
   }
 
+  const scheduling: Record<string, unknown> = {};
   if (spec.spot) {
-    instance.scheduling = {
+    Object.assign(scheduling, {
       provisioningModel: "SPOT",
       preemptible: true,
       automaticRestart: false,
       onHostMaintenance: "TERMINATE",
-    };
+    });
+  }
+  if (spec.maxRunDurationSeconds !== undefined && spec.maxRunDurationSeconds > 0) {
+    Object.assign(scheduling, {
+      maxRunDuration: { seconds: String(Math.ceil(spec.maxRunDurationSeconds)) },
+      instanceTerminationAction: "STOP",
+    });
+  }
+  if (Object.keys(scheduling).length > 0) {
+    instance.scheduling = scheduling;
   }
 
   return instance;

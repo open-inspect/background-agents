@@ -19,6 +19,7 @@
 import { supportsConfigurableSandboxTimeout } from "@open-inspect/shared/types/integrations";
 import {
   DEFAULT_SANDBOX_TIMEOUT_SECONDS,
+  PrebuiltImageUnavailableError,
   SandboxProviderError,
   signalUntilDeadline,
   type CreateSandboxConfig,
@@ -39,6 +40,7 @@ import { createLogger, type CorrelationContext } from "../../../logger";
 import {
   GcpComputeApiError,
   isGcpCapacityError,
+  isGcpNotFoundError,
   type GcpComputeClient,
   type GcpDisk,
   type GcpInstance,
@@ -83,6 +85,13 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const SESSION_ARCHIVED_STOP_REASON = "session_archived";
 
 const log = createLogger("gcp-provider");
+
+interface GcpSourceImage {
+  image: string;
+  isFamily: boolean;
+  /** Whether this is the scope's prebuilt image (its setup.sh already ran). */
+  prebuilt: boolean;
+}
 
 export interface GcpProviderConfig {
   project: string;
@@ -181,8 +190,17 @@ export class GcpSandboxProvider implements SandboxProvider {
     const timeoutSeconds = config.timeoutSeconds ?? DEFAULT_SANDBOX_TIMEOUT_SECONDS;
 
     try {
+      const sourceImage = this.resolveSourceImage(config);
+      // FROM_REPO_IMAGE follows the image actually booted: a repository with
+      // its own image family ignores the prebuilt image, which then never
+      // ran its setup.sh.
       const metadata = buildGcpCreateMetadata(
-        { ...config, timeoutSeconds },
+        {
+          ...config,
+          timeoutSeconds,
+          prebuiltImageId: sourceImage.prebuilt ? config.prebuiltImageId : null,
+          prebuiltImageSha: sourceImage.prebuilt ? config.prebuiltImageSha : null,
+        },
         this.bootMetadataConfig,
         this.includeStartupScript
       );
@@ -201,26 +219,27 @@ export class GcpSandboxProvider implements SandboxProvider {
         };
       }
 
-      const sourceImage = this.resolveSourceImage(config);
       const primaryZone = gcpZoneForSession(config.sessionId, this.zones);
 
-      await this.client.createDisk(
-        {
-          name,
-          zone: primaryZone,
-          sizeGb: this.bootDiskSizeGb,
-          type: this.bootDiskType,
-          sourceImage: sourceImage.image,
-          treatBareImageAsFamily: sourceImage.isFamily,
-          labels: gcpSandboxLabels(
-            config.sandboxId,
-            config.sessionId,
-            "pending",
-            this.config.instanceLabels,
-            this.config.deploymentName
-          ),
-        },
-        config.correlation
+      await this.createBootDisk(sourceImage, () =>
+        this.client.createDisk(
+          {
+            name,
+            zone: primaryZone,
+            sizeGb: this.bootDiskSizeGb,
+            type: this.bootDiskType,
+            sourceImage: sourceImage.image,
+            treatBareImageAsFamily: sourceImage.isFamily,
+            labels: gcpSandboxLabels(
+              config.sandboxId,
+              config.sessionId,
+              "pending",
+              this.config.instanceLabels,
+              this.config.deploymentName
+            ),
+          },
+          config.correlation
+        )
       );
 
       let instance: GcpInstance;
@@ -483,6 +502,25 @@ export class GcpSandboxProvider implements SandboxProvider {
   }
 
   /**
+   * Create a session's boot disk. A prebuilt image GCE reports missing is
+   * retired (PrebuiltImageUnavailableError) so the session falls back to the
+   * base image; any other failure is classified as usual.
+   */
+  private async createBootDisk(source: GcpSourceImage, create: () => Promise<unknown>) {
+    try {
+      await create();
+    } catch (error) {
+      if (source.prebuilt && isGcpNotFoundError(error)) {
+        throw new PrebuiltImageUnavailableError(
+          `GCP prebuilt image ${source.image} no longer exists`,
+          error instanceof Error ? error : undefined
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Resolves the boot image or image family for a fresh sandbox.
    *
    * Priority order:
@@ -491,24 +529,24 @@ export class GcpSandboxProvider implements SandboxProvider {
    * 3. `prebuiltImageId`
    * 4. `config.defaultImageFamily` (`GCP_IMAGE_FAMILY`), else DEFAULT_GCP_IMAGE_FAMILY
    */
-  private resolveSourceImage(config: CreateSandboxConfig): { image: string; isFamily: boolean } {
+  private resolveSourceImage(config: CreateSandboxConfig): GcpSourceImage {
     const settingsFamily = config.sandboxSettings?.imageFamily?.trim();
     if (settingsFamily) {
-      return { image: settingsFamily, isFamily: true };
+      return { image: settingsFamily, isFamily: true, prebuilt: false };
     }
 
     const envImage = config.userEnvVars?.REPO_IMAGE?.trim();
     if (envImage) {
-      return { image: envImage, isFamily: false };
+      return { image: envImage, isFamily: false, prebuilt: false };
     }
 
     const prebuilt = config.prebuiltImageId?.trim();
     if (prebuilt) {
-      return { image: prebuilt, isFamily: false };
+      return { image: prebuilt, isFamily: false, prebuilt: true };
     }
 
     const defaultFamily = this.config.defaultImageFamily?.trim() || DEFAULT_GCP_IMAGE_FAMILY;
-    return { image: defaultFamily, isFamily: true };
+    return { image: defaultFamily, isFamily: true, prebuilt: false };
   }
 
   private async ensureStarted(

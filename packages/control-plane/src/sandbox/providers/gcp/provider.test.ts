@@ -5,9 +5,13 @@ import { GcpComputeApiError } from "./client";
 import {
   buildGcpCreateMetadata,
   buildGcpRestoreMetadata,
+  buildGcpImageBuildMetadata,
   buildGcpResumeMetadata,
   buildGcpStartupScript,
+  GCP_SANDBOX_RUNTIME_START_SCRIPT,
 } from "./metadata";
+import { SANDBOX_RUNTIME_VERSION } from "../../runtime-manifest";
+import { PrebuiltImageUnavailableError } from "../../provider";
 import {
   gcpImageSourceUrl,
   gcpSandboxLabels,
@@ -204,6 +208,38 @@ describe("GCP metadata and startup-script", () => {
       sandbox_id: "sbx-123",
       vertex_project: "vertex-proj",
       vertex_location: "global",
+      sandbox_version: SANDBOX_RUNTIME_VERSION,
+    });
+  });
+
+  it("states the boot controls after the user's env and reports the runtime version", () => {
+    const script = GCP_SANDBOX_RUNTIME_START_SCRIPT;
+    const userEnv = script.indexOf('export_json_env "$user_env_vars_raw"');
+    const controls = script.indexOf("export IMAGE_BUILD_MODE=false OI_DEFERRED_START=false");
+    expect(userEnv).toBeGreaterThan(-1);
+    expect(controls).toBeGreaterThan(userEnv);
+    expect(script).toContain('export SANDBOX_VERSION="$(meta sandbox_version)"');
+    expect(script).toContain('export FROM_REPO_IMAGE=true REPO_IMAGE_SHA="$(meta repo_image_sha)"');
+    expect(script).toContain("export RESTORED_FROM_SNAPSHOT=false");
+  });
+
+  it("runs an image build entirely from metadata with nothing written to the disk", () => {
+    const script = GCP_SANDBOX_RUNTIME_START_SCRIPT;
+    const buildBranch = script.slice(
+      script.indexOf("image_build_mode"),
+      script.indexOf("STATE=/var/lib/oi")
+    );
+    expect(buildBranch).toContain("BUILD_STATE=/run/openinspect-image-build");
+    expect(buildBranch).toContain('export_json_env "$build_env"');
+    expect(buildBranch).toContain(
+      "exec /opt/openinspect/python/bin/python -m sandbox_runtime.entrypoint"
+    );
+    expect(buildBranch).not.toContain("/var/lib/oi");
+    expect(script.indexOf("image_build_mode")).toBeLessThan(script.indexOf("STATE=/var/lib/oi"));
+
+    expect(buildGcpImageBuildMetadata({ IMAGE_BUILD_MODE: "true", A: "b" }, false)).toEqual({
+      image_build_mode: "true",
+      image_build_env: JSON.stringify({ IMAGE_BUILD_MODE: "true", A: "b" }),
     });
   });
 
@@ -331,6 +367,77 @@ describe("GcpSandboxProvider", () => {
       undefined
     );
     expect(result.providerObjectId).toContain("/instances/ssess-123");
+  });
+
+  it("boots a prebuilt image and tells the runtime it already ran setup", async () => {
+    const client = createMockGcpClient();
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    await provider.createSandbox({
+      ...baseCreateConfig,
+      prebuiltImageId: "projects/test-project/global/images/oi-img-abc",
+      prebuiltImageSha: "deadbeef",
+    });
+
+    expect(client.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceImage: "projects/test-project/global/images/oi-img-abc",
+        treatBareImageAsFamily: false,
+      }),
+      undefined
+    );
+    expect(client.createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ from_repo_image: "true", repo_image_sha: "deadbeef" }),
+      }),
+      undefined
+    );
+  });
+
+  it("ignores the prebuilt image, and says so, for a repository with its own image family", async () => {
+    const client = createMockGcpClient();
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    await provider.createSandbox({
+      ...baseCreateConfig,
+      sandboxSettings: { imageFamily: "repo-family" },
+      prebuiltImageId: "projects/test-project/global/images/oi-img-abc",
+      prebuiltImageSha: "deadbeef",
+    });
+
+    expect(client.createDisk).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceImage: "repo-family" }),
+      undefined
+    );
+    const metadata = vi.mocked(client.createInstance).mock.calls[0][0].metadata ?? {};
+    expect(metadata.from_repo_image).toBeUndefined();
+    expect(metadata.repo_image_sha).toBeUndefined();
+  });
+
+  it("retires a prebuilt image GCE reports missing so the session falls back", async () => {
+    const client = createMockGcpClient({
+      createDisk: vi.fn(async () => {
+        throw new GcpComputeApiError("image not found", 404);
+      }),
+    });
+    const provider = new GcpSandboxProvider(client, {
+      project: "test-project",
+      zones: ["us-central1-a"],
+    });
+
+    await expect(
+      provider.createSandbox({
+        ...baseCreateConfig,
+        prebuiltImageId: "projects/test-project/global/images/oi-img-gone",
+      })
+    ).rejects.toBeInstanceOf(PrebuiltImageUnavailableError);
+    expect(client.createInstance).not.toHaveBeenCalled();
   });
 
   it("boots the gcp-infra image family when no image is configured", async () => {

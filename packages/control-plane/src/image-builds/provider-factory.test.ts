@@ -47,6 +47,23 @@ describe("createImageBuildAdapterFactory", () => {
     expect(() => factory.create("boat", "existing_session")).toThrow("BOAT_API_KEY is required");
   });
 
+  it("builds a GCP adapter from the deployment's GCP settings and requires its credentials", () => {
+    expect(() => createImageBuildAdapterFactory(createEnv({})).create("gcp", "start")).toThrow(
+      "GCP_SERVICE_ACCOUNT_JSON is required"
+    );
+    const factory = createImageBuildAdapterFactory(
+      createEnv({
+        GCP_SERVICE_ACCOUNT_JSON: JSON.stringify({
+          client_email: "sa@test-proj.iam.gserviceaccount.com",
+          private_key: "-----BEGIN PRIVATE KEY-----\nMII=\n-----END PRIVATE KEY-----",
+        }),
+        GCP_PROJECT: "test-proj",
+      })
+    );
+    expect(factory.create("gcp", "start")).toBeDefined();
+    expect(factory.create("gcp", "existing_session")).toBeDefined();
+  });
+
   it("still requires Daytona credentials for every operation", () => {
     const factory = createImageBuildAdapterFactory(
       createEnv({ DAYTONA_API_URL: "https://daytona.test" })

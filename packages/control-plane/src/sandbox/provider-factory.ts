@@ -20,12 +20,13 @@ import {
 } from "./providers/e2b-provider";
 import { createModalProvider, type ModalSandboxProvider } from "./providers/modal-provider";
 import { GcpServiceAccountTokenProvider, parseGcpServiceAccountKey } from "./providers/gcp/auth";
-import { createGcpComputeClient } from "./providers/gcp/client";
+import { createGcpComputeClient, type GcpComputeClient } from "./providers/gcp/client";
 import {
   createGcpProvider,
   DEFAULT_GCP_BOOT_DISK_SIZE_GB,
   DEFAULT_GCP_DISK_RETENTION_DAYS,
   DEFAULT_GCP_ZONES,
+  type GcpProviderConfig,
   type GcpSandboxProvider,
 } from "./providers/gcp/provider";
 import { createVercelSandboxClient } from "./providers/vercel/client";
@@ -80,6 +81,18 @@ function createVercelProviderFromEnv(env: Env): VercelSandboxProvider {
 }
 
 function createGcpProviderFromEnv(env: Env): GcpSandboxProvider {
+  const { client, config } = resolveGcpSetupFromEnv(env);
+  return createGcpProvider(client, config);
+}
+
+/**
+ * The Compute Engine client and provider settings a GCP deployment runs with,
+ * shared by sandbox sessions and image builds so both create VMs alike.
+ */
+export function resolveGcpSetupFromEnv(env: Env): {
+  client: GcpComputeClient;
+  config: GcpProviderConfig;
+} {
   if (!env.GCP_SERVICE_ACCOUNT_JSON) {
     throw new Error("GCP_SERVICE_ACCOUNT_JSON is required when SANDBOX_PROVIDER=gcp");
   }
@@ -98,7 +111,7 @@ function createGcpProviderFromEnv(env: Env): GcpSandboxProvider {
     imageProject: env.GCP_IMAGE_PROJECT,
   });
 
-  return createGcpProvider(client, {
+  const config: GcpProviderConfig = {
     project,
     zones,
     defaultImageFamily: env.GCP_IMAGE_FAMILY,
@@ -129,7 +142,8 @@ function createGcpProviderFromEnv(env: Env): GcpSandboxProvider {
       env.GCP_DISK_RETENTION_DAYS,
       DEFAULT_GCP_DISK_RETENTION_DAYS
     ),
-  });
+  };
+  return { client, config };
 }
 
 /**

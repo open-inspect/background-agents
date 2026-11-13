@@ -11,6 +11,7 @@
  */
 
 import type { CreateSandboxConfig, RestoreConfig, ResumeConfig } from "../../provider";
+import { SANDBOX_RUNTIME_VERSION } from "../../runtime-manifest";
 import { toRepositoryConfigPayload } from "../../sandbox-env";
 
 export const DEFAULT_GCP_VERTEX_LOCATION = "global";
@@ -35,6 +36,37 @@ export const GCP_SANDBOX_RUNTIME_START_SCRIPT = `#!/bin/bash
 set -euo pipefail
 
 META="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+
+# export_json_env <json>: export each key of a JSON object whose name is a shell identifier.
+function export_json_env() {
+  while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      echo "skipping invalid env var name: \${key}" >&2
+      continue
+    fi
+    export "\${key}=\${value}"
+  done < <(jq -j 'to_entries[] | .key, "\\u0000", (.value | tostring), "\\u0000"' <<< "$1")
+}
+
+# An image build VM: its disk becomes a prebuilt image, so nothing of the build
+# (its env, the clone token, scope secrets, runtime state) may be written to
+# it. Everything stays in /run, which is memory-backed and never saved. The
+# control plane composes the whole build env, boot markers included.
+if [ "$(curl -sf --retry 5 --retry-connrefused -H "Metadata-Flavor: Google" "\${META}/image_build_mode" || true)" = "true" ]; then
+  BUILD_STATE=/run/openinspect-image-build
+  install -d -m 0700 "\${BUILD_STATE}/state"
+  build_env="$(curl -sf --retry 5 --retry-connrefused -H "Metadata-Flavor: Google" "\${META}/image_build_env" || true)"
+  if [ -z "$build_env" ]; then
+    echo "missing image_build_env instance metadata" >&2
+    exit 1
+  fi
+  export_json_env "$build_env"
+  export OPENINSPECT_STATE_DIR="\${BUILD_STATE}/state"
+  export OI_BOOT_COMPLETE_MARKER="\${BUILD_STATE}/boot-complete"
+  cd /workspace
+  exec ${GCP_SANDBOX_RUNTIME_PYTHON} -m sandbox_runtime.entrypoint
+fi
+
 # Kept on the boot disk, which survives stop/resume; /tmp does not survive a reboot.
 STATE=/var/lib/oi
 install -d -m 0700 "\${STATE}/metadata" "\${STATE}/state"
@@ -57,13 +89,19 @@ fi
 
 user_env_vars_raw="$(meta user_env_vars)"
 if [ -n "$user_env_vars_raw" ]; then
-  while IFS= read -r -d '' key && IFS= read -r -d '' value; do
-    if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      echo "skipping invalid user env var name: \${key}" >&2
-      continue
-    fi
-    export "\${key}=\${value}"
-  done < <(jq -j 'to_entries[] | .key, "\\u0000", (.value | tostring), "\\u0000"' <<< "$user_env_vars_raw")
+  export_json_env "$user_env_vars_raw"
+fi
+
+# Boot controls are stated after the user's env so a repo secret of the same
+# name can never decide how the runtime boots.
+export IMAGE_BUILD_MODE=false OI_DEFERRED_START=false
+export SANDBOX_VERSION="$(meta sandbox_version)"
+if [ "$(meta from_repo_image)" = "true" ]; then
+  # A prebuilt image already ran setup.sh; the runtime syncs and skips it.
+  export FROM_REPO_IMAGE=true REPO_IMAGE_SHA="$(meta repo_image_sha)"
+else
+  export FROM_REPO_IMAGE=false
+  unset REPO_IMAGE_SHA
 fi
 
 SANDBOX_ID="$(meta sandbox_id)"
@@ -134,6 +172,8 @@ export OPENINSPECT_STATE_DIR="\${STATE}/state"
 export OI_BOOT_COMPLETE_MARKER="\${STATE}/boot-complete"
 if [ -n "$(meta snapshot_image_id)" ] || [ -e "$OI_BOOT_COMPLETE_MARKER" ]; then
   export RESTORED_FROM_SNAPSHOT=true
+else
+  export RESTORED_FROM_SNAPSHOT=false
 fi
 
 cd /workspace
@@ -238,6 +278,7 @@ export function buildGcpCreateMetadata(
     code_server_enabled: String(config.codeServerEnabled ?? false),
     vertex_project: bootConfig.vertexProject,
     vertex_location: bootConfig.vertexLocation,
+    sandbox_version: SANDBOX_RUNTIME_VERSION,
   };
 
   if (config.timeoutSeconds !== undefined && config.timeoutSeconds > 0) {
@@ -253,6 +294,10 @@ export function buildGcpCreateMetadata(
 
   if (config.agentSlackNotifyEnabled) {
     metadata.agent_slack_notify_enabled = "true";
+  }
+  if (config.prebuiltImageId) {
+    metadata.from_repo_image = "true";
+    metadata.repo_image_sha = config.prebuiltImageSha ?? "";
   }
   if (includeStartupScript) {
     metadata["startup-script"] = buildGcpStartupScript();
@@ -281,6 +326,7 @@ export function buildGcpRestoreMetadata(
     code_server_enabled: String(config.codeServerEnabled ?? false),
     vertex_project: bootConfig.vertexProject,
     vertex_location: bootConfig.vertexLocation,
+    sandbox_version: SANDBOX_RUNTIME_VERSION,
   };
 
   if (config.timeoutSeconds !== undefined && config.timeoutSeconds > 0) {
@@ -314,9 +360,30 @@ export function buildGcpResumeMetadata(
     sandbox_id: config.sandboxId,
     vertex_project: bootConfig.vertexProject,
     vertex_location: bootConfig.vertexLocation,
+    sandbox_version: SANDBOX_RUNTIME_VERSION,
   };
   if (includeStartupScript) {
     metadata["startup-script"] = buildGcpStartupScript();
   }
   return pruneEmpty(metadata);
+}
+
+/**
+ * Metadata for an image build VM: the build-mode marker, the whole build env
+ * as one JSON attribute (which the launcher exports and never writes to
+ * disk), and the startup-script. Instance metadata belongs to the VM, not its
+ * disk, so none of it is part of the image saved from the disk.
+ */
+export function buildGcpImageBuildMetadata(
+  buildEnv: Record<string, string>,
+  includeStartupScript = false
+): Record<string, string> {
+  const metadata: Record<string, string> = {
+    image_build_mode: "true",
+    image_build_env: JSON.stringify(buildEnv),
+  };
+  if (includeStartupScript) {
+    metadata["startup-script"] = buildGcpStartupScript();
+  }
+  return metadata;
 }

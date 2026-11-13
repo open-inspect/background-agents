@@ -112,13 +112,13 @@ agent-written code, so anything this account can do, the agent can do.
 
 The simplest setup uses predefined roles:
 
-| Role                             | Granted on                         | Why                                                                      |
-| -------------------------------- | ---------------------------------- | ------------------------------------------------------------------------ |
-| `roles/compute.instanceAdmin.v1` | `gcp_project`                      | Create, start, delete VMs; create, attach, delete disks; set metadata    |
-| `roles/iam.serviceAccountUser`   | the VM service account (only)      | Attach the VM service account to instances (`iam.serviceAccounts.actAs`) |
-| `roles/compute.imageUser`        | `gcp_image_project`, if different  | Boot disks from images in another project                                |
-| `roles/compute.networkUser`      | the subnet, if on a Shared VPC     | Place VMs on a subnet in a host project                                  |
-| `roles/compute.storageAdmin`     | `gcp_project`, if snapshots are on | Create and delete disk snapshots                                         |
+| Role                             | Granted on                                            | Why                                                                      |
+| -------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------ |
+| `roles/compute.instanceAdmin.v1` | `gcp_project`                                         | Create, start, delete VMs; create, attach, delete disks; set metadata    |
+| `roles/iam.serviceAccountUser`   | the VM service account (only)                         | Attach the VM service account to instances (`iam.serviceAccounts.actAs`) |
+| `roles/compute.imageUser`        | `gcp_image_project`, if different                     | Boot disks from images in another project                                |
+| `roles/compute.networkUser`      | the subnet, if on a Shared VPC                        | Place VMs on a subnet in a host project                                  |
+| `roles/compute.storageAdmin`     | `gcp_project`, if snapshots or prebuilt images are on | Create and delete disk snapshots and prebuilt images                     |
 
 Grant `roles/iam.serviceAccountUser` on the VM service account itself, not on the project. Granting
 it project-wide lets the control plane attach any service account in the project to a VM.
@@ -134,6 +134,7 @@ compute.instances.delete
 compute.instances.setMetadata
 compute.instances.setLabels
 compute.instances.setServiceAccount   # when gcp_vm_service_account_email is set
+compute.instances.stop                # prebuilt image builds
 
 # Disks
 compute.disks.create
@@ -163,6 +164,11 @@ compute.snapshots.create
 compute.snapshots.delete
 compute.snapshots.setLabels
 compute.snapshots.useReadOnly
+
+# Prebuilt images (Settings > Images)
+compute.images.create
+compute.images.get
+compute.images.delete
 
 # On the VM service account
 iam.serviceAccounts.actAs
@@ -220,6 +226,10 @@ variable or secret of the same name in upper case (for example `GCP_ZONES`).
 
 ## Per-Repository Settings
 
+- **Prebuilt images** (Settings > Images): bake a repository's clone and `setup.sh` into a Compute
+  Engine image, rebuilt as the default branch moves, so sessions start in seconds. See
+  [GCP prebuilds](IMAGE_PREBUILD.md#gcp-prebuilds).
+
 These are set in the web UI under the repository's Sandbox settings (or through the integration
 settings API):
 
@@ -235,5 +245,6 @@ For a fresh sandbox, the boot image is the first of these that is set:
 
 1. The repository's `imageFamily` sandbox setting
 2. A `REPO_IMAGE` repository secret (legacy override, treated as an image rather than a family)
-3. A prebuilt image ID, if one exists for the repository
+3. The scope's [prebuilt image](IMAGE_PREBUILD.md#gcp-prebuilds), when prebuilds are on and one is
+   ready (a repository whose own `imageFamily` is set skips it)
 4. `gcp_image_family`, or the `open-inspect-sandbox` family if unset
