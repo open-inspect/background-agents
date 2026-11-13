@@ -121,6 +121,8 @@ Each tool's description states the grant it needs, so the assistant can tell you
 | `get_automation_run`          | `GET /automations/:id/runs/:runId`                 | `automations.read`                                     |
 | `create_automation`           | `POST /automations`                                | `automations.create`, `sessions.create`                |
 | `trigger_automation`          | `POST /automations/:id/trigger`                    | `automations.trigger.own` or `.any`, `sessions.create` |
+| `create_session`              | `POST /sessions`                                   | `sessions.create`, `repositories.use`                  |
+| `send_prompt`                 | `POST /sessions/:id/prompt`                        | `sessions.collaborate`                                 |
 | `list_skills`                 | `GET /skills`                                      | `skills.read`                                          |
 | `import_skill_from_git`       | `POST /skills/import` (+ preview)                  | `skills.read`, `skills.manage`                         |
 | `update_skill_from_git`       | `POST /skills/:id/reimport` (+ …)                  | `skills.read`, `skills.manage`                         |

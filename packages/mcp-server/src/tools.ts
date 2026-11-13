@@ -553,6 +553,50 @@ export const TOOLS: ToolDefinition[] = [
       client.post(`/automations/${encodeURIComponent(args.automation_id)}/trigger`, {}),
   }),
   defineTool({
+    name: "create_session",
+    requires: "sessions.create, plus repositories.use for the repository",
+    title: "Start a session",
+    readOnly: false,
+    description:
+      "Start a new session on a repository. It has no work until you send it some with " +
+      "send_prompt; follow it with get_session_events, get_session_messages and get_session_diff. " +
+      "Returns the new session's sessionId and status.",
+    inputSchema: {
+      repo_owner: z.string().min(1).describe("Repository owner"),
+      repo_name: z.string().min(1).describe("Repository name"),
+      branch: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Branch the session starts from. Defaults to the repository's default branch."),
+      title: z.string().min(1).optional().describe("Session title, as the dashboard lists it"),
+    },
+    run: (client, args) =>
+      client.post("/sessions", {
+        repoOwner: args.repo_owner,
+        repoName: args.repo_name,
+        branch: args.branch,
+        title: args.title,
+      }),
+  }),
+  defineTool({
+    name: "send_prompt",
+    requires: "sessions.collaborate on the session",
+    title: "Send a prompt to a session",
+    readOnly: false,
+    description:
+      "Send a prompt to a session you can collaborate in. The agent works on it in the " +
+      "background; follow its progress with get_session_events and get_session_messages.",
+    inputSchema: {
+      session_id: sessionId,
+      content: z.string().min(1).describe("The prompt to send"),
+    },
+    run: (client, args) =>
+      client.post(`/sessions/${encodeURIComponent(args.session_id)}/prompt`, {
+        content: args.content,
+      }),
+  }),
+  defineTool({
     name: "list_skills",
     requires: "skills.read",
     title: "List managed skills",
