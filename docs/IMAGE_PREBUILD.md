@@ -35,11 +35,12 @@ few minutes of changes.
 
 Pre-built images are available when the deployment uses `sandbox_provider = "modal"`,
 `sandbox_provider = "modal-vm"`, `sandbox_provider = "vercel"`, `sandbox_provider = "e2b"`,
-`sandbox_provider = "daytona"`, or `sandbox_provider = "boat"`. The artifact is stored per provider
-as a Modal image, Vercel snapshot, E2B/Daytona snapshot, or Boat saved snapshot. With `modal-vm`,
-the artifact is a Modal image built on the VM backend. Images built under `modal` are not used by
-`modal-vm` sessions. Boat's artifact has its own allowance and snapshot rules — see
-[Boat prebuilds](#boat-prebuilds).
+`sandbox_provider = "daytona"`, `sandbox_provider = "boat"`, or `sandbox_provider = "gcp"`. The
+artifact is stored per provider as a Modal image, Vercel snapshot, E2B/Daytona snapshot, Boat saved
+snapshot, or Compute Engine image. With `modal-vm`, the artifact is a Modal image built on the VM
+backend. Images built under `modal` are not used by `modal-vm` sessions. Boat's artifact has its own
+allowance and snapshot rules — see [Boat prebuilds](#boat-prebuilds); so do GCP's — see
+[GCP prebuilds](#gcp-prebuilds).
 
 Daytona additionally requires an operator to open admission (`daytona_prebuilds_enabled`, default
 off) — see [Daytona prebuilds](#daytona-prebuilds) below. While admission is closed the settings
@@ -414,6 +415,57 @@ Things to know:
 | Callback accepted, build stays `building` for minutes   | The save is still `saving`, or the source is still archiving.  | Nothing; finalization re-polls the reserved name. It fails the build only past the save's fixed deadline, and then reclaims the name.      |
 | `image_build.operation_unresolved` naming an `oi-img-*` | A reserved save never settled and maintenance keeps asking.    | Check the name in the Boat dashboard; a `failed` or `ready` snapshot under it is deleted by maintenance on its next pass.                  |
 | Cleanup backlog after a provider switch                 | Rows dispatch cleanup from their own recorded provider.        | Keep `boat_api_key` (with `boat_api_url` and `boat_org`) configured until the backlog drains. The base snapshot is not needed for cleanup. |
+
+## GCP prebuilds
+
+On GCP a prebuilt image is a **Compute Engine image** of the build VM's boot disk, named after the
+build (`oi-img-<scope>-<digest>`) in `gcp_project` and labeled with the deployment. A session boots
+a fresh disk from it exactly as it boots from the deployment's sandbox image, with its own metadata,
+and the runtime syncs the checkout and skips `setup.sh`.
+
+A build VM (`oi-build-<scope>-<digest>`) boots from the deployment's sandbox image on
+`gcp_machine_type` in one of `gcp_zones`. Finalization stops it, images its boot disk, and waits for
+GCE to report the image `READY`; the VM and its disk are then deleted. GCE refuses a second image
+under a name, so a retried finalization can never leave a second artifact behind. Superseded images
+are deleted by the same reaper as on every other provider.
+
+Things to know:
+
+- **Builds boot what the scope's sessions boot.** A build VM boots the repository's own image family
+  from Sandbox settings, or else the deployment's sandbox image, and the prebuilt image records
+  which (a `source_image` label). A session uses the prebuilt image only in place of that same
+  image: after a repository's image family changes, its sessions boot the new family until the next
+  build. A session's boot disk is sized to fit the prebuilt image if it is larger than
+  `gcp_boot_disk_size_gb`.
+- **Current launcher on every boot.** The runtime launcher is not part of the image; each VM's
+  startup-script installs the one the current control plane ships, so an older prebuilt image never
+  runs an outdated launcher.
+- **Nothing of the build reaches the image.** The build's env (repository set, clone token, scope
+  secrets, callback contract) is instance metadata, which belongs to the VM, not its disk. The
+  launcher exports it without writing it anywhere and keeps the build's runtime state in `/run`,
+  which is memory-backed, so the image carries the workspace and what `setup.sh` wrote, and nothing
+  of the build itself. Anyone who can read the project's instance metadata (`compute.instances.get`)
+  can read a running build's env, as for sessions. Treat a scope's image as no less sensitive than
+  the scope's secrets: its filesystem holds whatever `setup.sh` wrote, as the
+  [credential trust boundary](#credential-trust-boundary) already requires.
+- **A build VM can't run forever.** It is created with a GCE run-duration limit equal to the build's
+  provider-session lifetime and stops (keeping its disk) when that passes, so a build the control
+  plane loses track of stops billing for compute.
+- **Its name is bound before it exists.** The build VM's name is fixed by the deployment and build
+  and recorded on the build before the VM is created, so a failed or lost create is cleaned up by
+  name like any other failed build.
+- **Deletion is narrow.** Image deletion refuses any image not named `oi-img-*`, so a bad reference
+  can never delete the deployment's sandbox image.
+- **Permissions.** The control-plane service account also needs `compute.images.create`,
+  `compute.images.get`, `compute.images.delete`, and `compute.instances.stop`
+  (`roles/compute.storageAdmin` covers the image permissions). See
+  [docs/GCP.md](GCP.md#service-accounts-and-iam).
+
+| Symptom                                               | What it means                                                                                                    | What to do                                                                                                       |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Callback accepted, build stays `building` for minutes | The build VM is still stopping, or the image is still `PENDING`.                                                 | Nothing; finalization re-polls. It fails the build only past the image's fixed deadline, then reclaims the name. |
+| `image_build.operation_unresolved` naming `oi-img-*`  | A reserved image never settled and maintenance keeps asking.                                                     | Check the image in the console; a `FAILED` or `READY` image under it is deleted on the next pass.                |
+| Session doesn't use the prebuilt image                | The image was built from a different image than the session boots (the repository's image family changed since). | Nothing; the next build catches up. Rebuild from Settings > Images to do it now.                                 |
 
 ---
 

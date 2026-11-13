@@ -281,4 +281,48 @@ describe("sandbox resource limit drafts", () => {
     expect(inherit.values).toEqual(unedited.values);
     expect(providerDefault.values).toEqual(unedited.values);
   });
+
+  it("resolves GCP imageFamily drafts across global, repo override, null reset, and inherit", () => {
+    const globalResolved = resolveSandboxSettingsDraft({
+      isGlobal: true,
+      provider: "gcp",
+      draft: { imageFamily: "  sandbox-image-family  " },
+    });
+    expect(globalResolved.result.settings).toMatchObject({
+      imageFamily: "sandbox-image-family",
+    });
+
+    const repoOverride = resolveSandboxSettingsDraft({
+      isGlobal: false,
+      provider: "gcp",
+      baseDefaults: { imageFamily: "sandbox-image-family" },
+      draft: { imageFamily: "custom-repo-family" },
+    });
+    expect(repoOverride.result).toEqual({
+      settings: { imageFamily: "custom-repo-family" },
+    });
+
+    const repoResetToDefault = resolveSandboxSettingsDraft({
+      isGlobal: false,
+      provider: "gcp",
+      baseDefaults: { imageFamily: "sandbox-image-family" },
+      ownSettings: { imageFamily: "custom-repo-family" },
+      draft: { imageFamily: "" },
+    });
+    expect(repoResetToDefault.result).toEqual({
+      settings: { imageFamily: null },
+    });
+
+    const repoInherit = resolveSandboxSettingsDraft({
+      isGlobal: false,
+      provider: "gcp",
+      baseDefaults: { imageFamily: "sandbox-image-family" },
+      ownSettings: { imageFamily: "custom-repo-family" },
+      draft: { imageFamily: INHERIT_SANDBOX_SETTING },
+    });
+    expect(repoInherit.result).toEqual({
+      settings: {},
+    });
+    expect(repoInherit.values.imageFamily).toBe("sandbox-image-family");
+  });
 });

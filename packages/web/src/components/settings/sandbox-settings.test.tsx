@@ -1451,4 +1451,71 @@ describe("SandboxSettingsEditor — environment scope", () => {
       );
     });
   });
+
+  it("renders and saves per-repo GCP image family when SANDBOX_PROVIDER=gcp", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SANDBOX_PROVIDER", "gcp");
+    Element.prototype.scrollIntoView = vi.fn();
+    reposMock.repos = [
+      {
+        id: 1,
+        fullName: "acme/example-repo",
+        owner: "acme",
+        name: "example-repo",
+        description: null,
+        private: false,
+        defaultBranch: "main",
+      },
+    ];
+    const repoKey = "/api/integration-settings/sandbox/repos/acme/example-repo";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SWRConfig
+        value={{
+          provider: () => new Map(),
+          fallback: {
+            [SETTINGS_KEY]: {
+              integrationId: "sandbox",
+              settings: { defaults: { imageFamily: "sandbox-image-family" } },
+            },
+            [repoKey]: { integrationId: "sandbox", repo: "acme/example-repo", settings: null },
+          },
+          dedupingInterval: Infinity,
+          revalidateOnFocus: false,
+          revalidateIfStale: false,
+          revalidateOnReconnect: false,
+        }}
+      >
+        <SandboxSettingsPage />
+      </SWRConfig>
+    );
+
+    await user.click(screen.getByText("All Repositories (Global)"));
+    await user.click(screen.getByRole("option", { name: /example-repo/ }));
+
+    const input = screen.getByLabelText("GCP Image Family");
+    expect(input).toHaveValue("sandbox-image-family");
+
+    await user.clear(input);
+    await user.type(input, "sandbox-image-custom");
+    await user.click(screen.getByText("Save Settings"));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        repoKey,
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({
+            settings: { imageFamily: "sandbox-image-custom" },
+          }),
+        })
+      );
+    });
+  });
 });

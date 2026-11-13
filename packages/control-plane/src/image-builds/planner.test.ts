@@ -32,6 +32,37 @@ describe("ImageBuildPlanner", () => {
     });
     expect(plan.resources).toEqual(resources);
   });
+
+  it("carries the scope's own image family, and null without one", async () => {
+    vi.spyOn(scopeResolution, "loadScopeBuildSecrets").mockResolvedValue(undefined);
+    vi.spyOn(
+      GitHubSourceControlProvider.prototype,
+      "generateCredentialHelperAuth"
+    ).mockRejectedValue(new Error("Token scope denied"));
+    const env = createTestEnv({ SCM_PROVIDER: "github" });
+    const request = {
+      buildId: "build-1",
+      scope: { kind: "repo" as const, id: "acme/web" },
+      target: {
+        kind: "repo" as const,
+        repoId: 12,
+        repositories: [{ repoOwner: "acme", repoName: "web", baseBranch: "main" }],
+        repositoriesFingerprint: "fp-repo",
+      },
+      callbackUrl: "https://worker.test/image-builds/build-complete",
+      failureCallbackUrl: "https://worker.test/image-builds/build-failed",
+      correlation: { request_id: "request-1", trace_id: "trace-1" },
+      callbackAuth: { token: "callback-token", tokenHash: "callback-hash", expiresAt: 1000 },
+    };
+    const settings = vi.spyOn(scopeResolution, "resolveScopeSandboxSettings");
+
+    settings.mockResolvedValueOnce({ imageFamily: "repo-family" });
+    expect((await new ImageBuildPlanner(env, env.DB).planBuild(request)).imageFamily).toBe(
+      "repo-family"
+    );
+    settings.mockResolvedValueOnce({});
+    expect((await new ImageBuildPlanner(env, env.DB).planBuild(request)).imageFamily).toBeNull();
+  });
   it("does not retry a scoped credential failure with broader auth", async () => {
     const mint = vi
       .spyOn(GitHubSourceControlProvider.prototype, "generateCredentialHelperAuth")

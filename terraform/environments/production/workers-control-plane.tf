@@ -172,7 +172,32 @@ module "control_plane_worker" {
     local.use_boat_backend ? {
       BOAT_BASE_SNAPSHOT = { value = module.boat_infra[0].snapshot_name }
       BOAT_SANDBOX_TYPE  = { value = var.boat_sandbox_type }
-    } : {}
+    } : {},
+    local.use_gcp_backend ? merge(
+      {
+        GCP_PROJECT             = { value = var.gcp_project }
+        GCP_ZONES               = { value = var.gcp_zones }
+        GCP_MACHINE_TYPE        = { value = var.gcp_machine_type }
+        GCP_BOOT_DISK_SIZE_GB   = { value = tostring(var.gcp_boot_disk_size_gb) }
+        GCP_BOOT_DISK_TYPE      = { value = var.gcp_boot_disk_type }
+        GCP_VERTEX_LOCATION     = { value = var.gcp_vertex_location }
+        GCP_USE_SPOT            = { value = tostring(var.gcp_use_spot) }
+        GCP_SUPPORTS_SNAPSHOTS  = { value = tostring(var.gcp_supports_snapshots) }
+        GCP_SUPPORTS_RESTORE    = { value = tostring(var.gcp_supports_restore) }
+        GCP_DISK_RETENTION_DAYS = { value = tostring(var.gcp_disk_retention_days) }
+      },
+      # A Terraform-built image pins the Worker to that exact verified image;
+      # otherwise sessions follow gcp_image_family (or the provider default).
+      local.build_gcp_image ? { GCP_IMAGE_FAMILY = { value = module.gcp_infra[0].image_reference } } : (
+        var.gcp_image_family != "" ? { GCP_IMAGE_FAMILY = { value = var.gcp_image_family } } : {}
+      ),
+      var.gcp_image_project != "" ? { GCP_IMAGE_PROJECT = { value = var.gcp_image_project } } : {},
+      var.gcp_network != "" ? { GCP_NETWORK = { value = var.gcp_network } } : {},
+      var.gcp_subnet != "" ? { GCP_SUBNET = { value = var.gcp_subnet } } : {},
+      var.gcp_vm_service_account_email != "" ? { GCP_VM_SERVICE_ACCOUNT_EMAIL = { value = var.gcp_vm_service_account_email } } : {},
+      var.gcp_instance_labels != "" ? { GCP_INSTANCE_LABELS = { value = var.gcp_instance_labels } } : {},
+      var.gcp_vertex_project != "" ? { GCP_VERTEX_PROJECT = { value = var.gcp_vertex_project } } : {}
+    ) : {}
   )
 
   secrets = merge(
@@ -216,6 +241,9 @@ module "control_plane_worker" {
     } : {},
     trimspace(var.boat_api_key) != "" ? {
       BOAT_API_KEY = { value = var.boat_api_key }
+    } : {},
+    local.use_gcp_backend ? {
+      GCP_SERVICE_ACCOUNT_JSON = { value = var.gcp_service_account_json }
     } : {},
     # Slack bot token enables the agent-initiated `slack-notify` endpoint.
     # Shares the variable with the slack-bot worker; bound here so the same

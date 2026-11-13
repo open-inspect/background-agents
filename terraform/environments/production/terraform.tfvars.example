@@ -137,6 +137,34 @@ boat_base_snapshot = ""        # e.g., "open-inspect"
 # smallest size that fits it. One of small, default, large, xlarge.
 # boat_sandbox_type = "default"
 
+# GCP Compute Engine sandbox provider
+# Only required when sandbox_provider = "gcp"
+gcp_service_account_json     = "" # JSON service account key with Compute Instance Admin permissions
+gcp_project                  = "" # GCP project ID where sandbox VMs and disks are created
+# gcp_zones                  = "us-central1-a,us-central1-b,us-central1-c,us-central1-f"
+# gcp_image_family           = "" # Default image family; empty uses "open-inspect-sandbox", built by packages/gcp-infra
+# gcp_image_project          = "" # Optional project ID hosting sandbox images (defaults to gcp_project)
+# gcp_machine_type           = "e2-standard-4"
+# gcp_boot_disk_size_gb      = 80
+# gcp_boot_disk_type         = "pd-balanced"
+# gcp_network                = ""
+# gcp_subnet                 = ""
+# gcp_vm_service_account_email = ""
+# gcp_instance_labels        = ""
+# gcp_vertex_project         = ""
+# gcp_vertex_location        = "global"
+# gcp_use_spot               = false
+# gcp_supports_snapshots     = false
+# gcp_supports_restore       = false
+# gcp_disk_retention_days    = 14 # delete detached disks unused this many days; 0 disables
+# Image build: Terraform builds the sandbox image with packages/gcp-infra (gcloud and uv
+# required where Terraform runs) and pins the Worker to it. Set false to manage images
+# yourself through gcp_image_family.
+# gcp_build_image                      = true
+# gcp_image_build_service_account_json = "" # build credentials; empty uses gcloud's own
+# gcp_image_build_use_iap              = false
+
+
 # =============================================================================
 # GitHub App Credentials
 # =============================================================================
@@ -329,6 +357,7 @@ nextauth_secret = ""
 # - "vercel": Vercel Sandbox API with filesystem snapshot restore
 # - "e2b": direct E2B REST API integration with pause/resume
 # - "boat": direct Boat REST API integration with stop/resume (archived snapshot)
+# - "gcp": native Google Cloud Compute Engine VMs and persistent boot disks
 # Select "modal-vm" for Docker-capable VMs (deployment-wide; see docs/MODAL_DOCKER.md).
 sandbox_provider = "modal"
 
