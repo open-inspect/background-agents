@@ -1,0 +1,75 @@
+name: Terraform Staging
+
+# Provisions the staging Cloudflare environment (terraform/environments/staging):
+# D1, KV, R2, Queues, Worker scripts, Vercel projects and sandbox artifacts.
+# Worker code is deployed by deploy-staging.yml, which runs after this workflow
+# completes on main. Path lists are held equal to TERRAFORM_PATHS in
+# scripts/cloudflare-deploy/changes.mjs.
+#
+# Opt-in: set the repository variable CLOUDFLARE_STAGING_ENABLED=true and
+# configure a "staging" GitHub Environment with its own DEPLOYMENT_NAME and
+# credentials. Plans and applies both read the staging Environment.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "!terraform/d1/**"
+      - "packages/boat-infra/**"
+      - "packages/daytona-infra/**"
+      - "packages/e2b-infra/**"
+      - "packages/modal-infra/**"
+      - "packages/sandbox-images/**"
+      - "packages/sandbox-runtime/**"
+      - "packages/vercel-infra/**"
+      - "package-lock.json"
+      - "packages/control-plane/scripts/build-vercel-base-snapshot.ts"
+      - "packages/control-plane/src/**"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "packages/shared/tsconfig.json"
+      - ".github/workflows/terraform-cloudflare.yml"
+      - ".github/workflows/terraform-production.yml"
+      - ".github/workflows/terraform-staging.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "!terraform/d1/**"
+      - "packages/boat-infra/**"
+      - "packages/daytona-infra/**"
+      - "packages/e2b-infra/**"
+      - "packages/modal-infra/**"
+      - "packages/sandbox-images/**"
+      - "packages/sandbox-runtime/**"
+      - "packages/vercel-infra/**"
+      - "package-lock.json"
+      - "packages/control-plane/scripts/build-vercel-base-snapshot.ts"
+      - "packages/control-plane/src/**"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "packages/shared/tsconfig.json"
+      - ".github/workflows/terraform-cloudflare.yml"
+      - ".github/workflows/terraform-production.yml"
+      - ".github/workflows/terraform-staging.yml"
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: terraform-staging-${{ github.ref }}
+  cancel-in-progress: false # Don't cancel terraform operations
+
+jobs:
+  terraform:
+    name: Terraform
+    if: vars.CLOUDFLARE_STAGING_ENABLED == 'true'
+    uses: ./.github/workflows/terraform-cloudflare.yml
+    with:
+      environment: staging
+      working-directory: terraform/environments/staging
+      plan-environment: "staging"
+    secrets: inherit
