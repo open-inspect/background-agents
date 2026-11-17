@@ -112,4 +112,37 @@ describe("createSandboxProviderFromEnv", () => {
       "E2B_AUTO_PAUSE must be a valid boolean"
     );
   });
+
+  it("validates required GCP sandbox provider configuration", () => {
+    expect(() => createSandboxProviderFromEnv(createEnv({}), "gcp")).toThrow(
+      "GCP_SERVICE_ACCOUNT_JSON is required when SANDBOX_PROVIDER=gcp"
+    );
+
+    const saKey = JSON.stringify({
+      client_email: "sa@test-proj.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nMII=\n-----END PRIVATE KEY-----",
+    });
+
+    expect(() =>
+      createSandboxProviderFromEnv(createEnv({ GCP_SERVICE_ACCOUNT_JSON: saKey }), "gcp")
+    ).toThrow("GCP_PROJECT is required when SANDBOX_PROVIDER=gcp");
+
+    expect(
+      createSandboxProviderFromEnv(
+        createEnv({ GCP_SERVICE_ACCOUNT_JSON: saKey, GCP_PROJECT: "test-proj" }),
+        "gcp"
+      ).name
+    ).toBe("gcp");
+
+    const provider = createSandboxProviderFromEnv(
+      createEnv({
+        GCP_SERVICE_ACCOUNT_JSON: saKey,
+        GCP_PROJECT: "test-proj",
+        GCP_ZONES: "us-central1-a, us-central1-b",
+        GCP_IMAGE_FAMILY: "sandbox-image-family",
+      }),
+      "gcp"
+    );
+    expect(provider.name).toBe("gcp");
+  });
 });

@@ -180,6 +180,23 @@ export function normalizeSandboxSettings(
     result.maxSessionCostUsd = maxSessionCostUsd;
   }
 
+  if (settings.imageFamily !== undefined) {
+    if (settings.imageFamily === null) {
+      result.imageFamily = null;
+    } else if (typeof settings.imageFamily !== "string") {
+      reject("imageFamily must be a string");
+    } else {
+      const trimmed = settings.imageFamily.trim();
+      if (!trimmed) {
+        reject("imageFamily must be a non-empty string");
+      } else if (/\s/.test(trimmed)) {
+        reject("imageFamily must not contain whitespace");
+      } else {
+        result.imageFamily = trimmed;
+      }
+    }
+  }
+
   checkPortCollisions(result, reject);
 
   return result;

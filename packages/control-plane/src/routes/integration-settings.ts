@@ -477,6 +477,7 @@ async function handleGetResolvedConfig(
         memoryLimitMib: sandboxSettings.memoryLimitMib ?? null,
         sandboxTimeoutMs: sandboxSettings.sandboxTimeoutMs ?? null,
         finalSnapshotBufferMs: sandboxSettings.finalSnapshotBufferMs ?? null,
+        imageFamily: sandboxSettings.imageFamily ?? null,
         enabledRepos,
       },
     });

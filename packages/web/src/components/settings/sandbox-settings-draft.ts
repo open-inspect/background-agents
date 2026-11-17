@@ -35,7 +35,8 @@ export const INHERIT_SANDBOX_SETTING = Symbol("inherit");
 
 // Absent fields are unedited; blanks reset to provider defaults; inherit removes an override.
 export type SandboxSettingsDraft = Partial<{
-  [K in keyof SandboxSettingsDraftValues]: K extends "cpuLimitCores" | "memoryLimitMib"
+  [K in keyof SandboxSettingsDraftValues]: K extends
+    "cpuLimitCores" | "memoryLimitMib" | "imageFamily"
     ? SandboxSettingsDraftValues[K] | typeof INHERIT_SANDBOX_SETTING
     : SandboxSettingsDraftValues[K];
 }>;
@@ -202,6 +203,20 @@ const fields: FieldRegistry = {
     },
     isChanged: (value, current) => value.trim() !== current,
   },
+  imageFamily: {
+    draftKey: "imageFamily",
+    format: (value) => value ?? "",
+    parse: (input) => {
+      const trimmed = input.trim();
+      if (trimmed === "") return { value: undefined };
+      if (/\s/.test(trimmed)) {
+        return { error: "Image family must not contain whitespace." };
+      }
+      return { value: trimmed };
+    },
+    isChanged: (value, current) => value.trim() !== current,
+    clearValue: null,
+  },
 };
 
 export function resolveSandboxSettingsDraft({
@@ -229,7 +244,14 @@ export function resolveSandboxSettingsDraft({
   // Probe all provider-dependent fields, including ones absent from stored settings.
   const hiddenFields = new Set<keyof SandboxSettings>(
     unsupportedSandboxSettings(
-      { cpuCores: 0, memoryMib: 0, cpuLimitCores: 0, memoryLimitMib: 0, sandboxTimeoutMs: 0 },
+      {
+        cpuCores: 0,
+        memoryMib: 0,
+        cpuLimitCores: 0,
+        memoryLimitMib: 0,
+        sandboxTimeoutMs: 0,
+        imageFamily: "",
+      },
       provider
     )
   );

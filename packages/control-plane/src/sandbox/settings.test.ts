@@ -346,4 +346,25 @@ describe("normalizeSandboxSettings", () => {
       tunnelPorts: [3000],
     });
   });
+
+  it("normalizes and validates imageFamily overrides", () => {
+    expect(normalizeSandboxSettings({ imageFamily: "  sandbox-image-family  " })).toEqual({
+      imageFamily: "sandbox-image-family",
+    });
+    expect(normalizeSandboxSettings({ imageFamily: null })).toEqual({
+      imageFamily: null,
+    });
+    expect(() => normalizeSandboxSettings({ imageFamily: "   " })).toThrow(
+      SandboxSettingsValidationError
+    );
+    expect(() => normalizeSandboxSettings({ imageFamily: "has spaces" })).toThrow(
+      SandboxSettingsValidationError
+    );
+    expect(
+      normalizeSandboxSettings(
+        { imageFamily: "bad family", terminalEnabled: true },
+        { invalid: "omit" }
+      )
+    ).toEqual({ terminalEnabled: true });
+  });
 });

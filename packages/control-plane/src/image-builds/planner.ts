@@ -106,6 +106,7 @@ export class ImageBuildPlanner implements ImageBuildPlannerPort {
         cpuLimitCores: sandboxSettings.cpuLimitCores,
         memoryLimitMib: sandboxSettings.memoryLimitMib,
       },
+      imageFamily: sandboxSettings.imageFamily ?? null,
       userEnvVars: userEnvVars
         ? prepareLegacyManagedProviderEnv({
             exposedSecrets: userEnvVars,

@@ -1,0 +1,9 @@
+[project]
+name = "open-inspect-gcp"
+version = "0.1.0"
+description = "GCE sandbox image build for Open-Inspect coding agent"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false

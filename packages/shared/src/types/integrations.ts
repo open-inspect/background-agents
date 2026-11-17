@@ -312,6 +312,8 @@ export const sandboxSettingsSchema = z.strictObject({
   buildTimeoutSeconds: z.number().optional(),
   /** Maximum OpenCode-reported session cost in USD. */
   maxSessionCostUsd: z.number().finite().positive().optional(),
+  /** GCE image family or image reference to boot for this repository when SANDBOX_PROVIDER=gcp. */
+  imageFamily: z.string().nullable().optional(),
 });
 
 export type SandboxSettings = z.infer<typeof sandboxSettingsSchema>;
@@ -324,6 +326,7 @@ export const SANDBOX_PROVIDER_NAMES = [
   "vercel",
   "e2b",
   "boat",
+  "gcp",
 ] as const;
 
 export type SandboxProviderName = (typeof SANDBOX_PROVIDER_NAMES)[number];
@@ -332,18 +335,20 @@ const DEFAULT_SANDBOX_SETTING_CAPABILITIES = {
   resources: true,
   resourceLimits: false,
   timeout: true,
+  imageFamily: false,
 };
 const SANDBOX_SETTING_CAPABILITIES = {
   modal: { ...DEFAULT_SANDBOX_SETTING_CAPABILITIES, resourceLimits: true },
   "modal-vm": { ...DEFAULT_SANDBOX_SETTING_CAPABILITIES, resourceLimits: true },
-  daytona: { resources: false, resourceLimits: false, timeout: false },
+  daytona: { resources: false, resourceLimits: false, timeout: false, imageFamily: false },
   vercel: DEFAULT_SANDBOX_SETTING_CAPABILITIES,
-  e2b: { resources: false, resourceLimits: false, timeout: true },
+  e2b: { resources: false, resourceLimits: false, timeout: true, imageFamily: false },
   // Resource requests select the smallest Boat machine type that fits them.
-  boat: { resources: true, resourceLimits: false, timeout: true },
+  boat: { resources: true, resourceLimits: false, timeout: true, imageFamily: false },
+  gcp: { resources: false, resourceLimits: false, timeout: true, imageFamily: true },
 } satisfies Record<
   SandboxProviderName,
-  { resources: boolean; resourceLimits: boolean; timeout: boolean }
+  { resources: boolean; resourceLimits: boolean; timeout: boolean; imageFamily: boolean }
 >;
 
 export function isSandboxProviderName(provider: string): provider is SandboxProviderName {
@@ -355,6 +360,7 @@ export function sandboxSettingCapabilities(provider: string): {
   resources: boolean;
   resourceLimits: boolean;
   timeout: boolean;
+  imageFamily: boolean;
 } {
   const normalized = provider.trim().toLowerCase();
   return isSandboxProviderName(normalized)
@@ -375,6 +381,11 @@ export function supportsConfigurableSandboxResourceLimits(provider: string): boo
 /** Whether the provider honors a per-session sandbox lifetime. */
 export function supportsConfigurableSandboxTimeout(provider: string): boolean {
   return sandboxSettingCapabilities(provider).timeout;
+}
+
+/** Whether the provider honors a per-repo VM image family override. */
+export function supportsConfigurableSandboxImageFamily(provider: string): boolean {
+  return sandboxSettingCapabilities(provider).imageFamily;
 }
 
 export type SandboxResources = Pick<
@@ -405,7 +416,8 @@ export function validateSandboxResourceLimits(
   return undefined;
 }
 
-export type ProviderSpecificSandboxSetting = keyof SandboxResources | "sandboxTimeoutMs";
+export type ProviderSpecificSandboxSetting =
+  keyof SandboxResources | "sandboxTimeoutMs" | "imageFamily";
 
 export function unsupportedSandboxSettings(
   settings: SandboxSettings,
@@ -422,6 +434,9 @@ export function unsupportedSandboxSettings(
   }
   if (!supportsConfigurableSandboxTimeout(provider) && settings.sandboxTimeoutMs !== undefined) {
     unsupported.push("sandboxTimeoutMs");
+  }
+  if (!supportsConfigurableSandboxImageFamily(provider) && settings.imageFamily !== undefined) {
+    unsupported.push("imageFamily");
   }
   return unsupported;
 }

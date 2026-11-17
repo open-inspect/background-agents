@@ -20,6 +20,7 @@ export const IMAGE_BUILD_PROVIDER_IDS = [
   "e2b",
   "daytona",
   "boat",
+  "gcp",
 ] as const satisfies readonly SandboxProviderName[];
 
 /** Mirrors the `image_builds.status` column. */

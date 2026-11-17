@@ -33,5 +33,12 @@
     "node": "24",
     "user": "user",
     "home": "/home/user"
+  },
+  "gcp": {
+    "os": "debian",
+    "base": "ubuntu-os-cloud/ubuntu-2404-lts-amd64",
+    "node": "24",
+    "user": "root",
+    "home": "/root"
   }
 }

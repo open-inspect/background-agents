@@ -14,6 +14,7 @@ on:
       - "packages/daytona-infra/**"
       - "packages/e2b-infra/**"
       - "packages/boat-infra/**"
+      - "packages/gcp-infra/**"
       - "packages/sandbox-runtime/**"
       - "packages/sandbox-images/**"
       - "packages/vercel-infra/**"
@@ -34,6 +35,7 @@ on:
       - "packages/daytona-infra/**"
       - "packages/e2b-infra/**"
       - "packages/boat-infra/**"
+      - "packages/gcp-infra/**"
       - "packages/sandbox-runtime/**"
       - "packages/sandbox-images/**"
       - "packages/vercel-infra/**"
@@ -300,6 +302,28 @@ jobs:
           # after provisioning the site destroys its Vercel project on apply.
           TF_VAR_docs_site_enabled: "${{ vars.DOCS_SITE_ENABLED || secrets.DOCS_SITE_ENABLED || 'false' }}"
           TF_VAR_docs_custom_domain: ${{ vars.DOCS_CUSTOM_DOMAIN || secrets.DOCS_CUSTOM_DOMAIN }}
+          # Sandbox provider: gcp.
+          TF_VAR_gcp_service_account_json: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          TF_VAR_gcp_project: ${{ vars.GCP_PROJECT || secrets.GCP_PROJECT }}
+          TF_VAR_gcp_zones: "${{ vars.GCP_ZONES || secrets.GCP_ZONES || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f' }}"
+          TF_VAR_gcp_image_family: ${{ vars.GCP_IMAGE_FAMILY || secrets.GCP_IMAGE_FAMILY }}
+          TF_VAR_gcp_image_project: ${{ vars.GCP_IMAGE_PROJECT || secrets.GCP_IMAGE_PROJECT }}
+          TF_VAR_gcp_machine_type: "${{ vars.GCP_MACHINE_TYPE || secrets.GCP_MACHINE_TYPE || 'e2-standard-4' }}"
+          TF_VAR_gcp_boot_disk_size_gb: "${{ vars.GCP_BOOT_DISK_SIZE_GB || secrets.GCP_BOOT_DISK_SIZE_GB || '80' }}"
+          TF_VAR_gcp_boot_disk_type: "${{ vars.GCP_BOOT_DISK_TYPE || secrets.GCP_BOOT_DISK_TYPE || 'pd-balanced' }}"
+          TF_VAR_gcp_network: ${{ vars.GCP_NETWORK || secrets.GCP_NETWORK }}
+          TF_VAR_gcp_subnet: ${{ vars.GCP_SUBNET || secrets.GCP_SUBNET }}
+          TF_VAR_gcp_vm_service_account_email: ${{ vars.GCP_VM_SERVICE_ACCOUNT_EMAIL || secrets.GCP_VM_SERVICE_ACCOUNT_EMAIL }}
+          TF_VAR_gcp_instance_labels: ${{ vars.GCP_INSTANCE_LABELS || secrets.GCP_INSTANCE_LABELS }}
+          TF_VAR_gcp_vertex_project: ${{ vars.GCP_VERTEX_PROJECT || secrets.GCP_VERTEX_PROJECT }}
+          TF_VAR_gcp_vertex_location: "${{ vars.GCP_VERTEX_LOCATION || secrets.GCP_VERTEX_LOCATION || 'global' }}"
+          TF_VAR_gcp_use_spot: "${{ vars.GCP_USE_SPOT || secrets.GCP_USE_SPOT || 'false' }}"
+          TF_VAR_gcp_supports_snapshots: "${{ vars.GCP_SUPPORTS_SNAPSHOTS || secrets.GCP_SUPPORTS_SNAPSHOTS || 'false' }}"
+          TF_VAR_gcp_supports_restore: "${{ vars.GCP_SUPPORTS_RESTORE || secrets.GCP_SUPPORTS_RESTORE || 'false' }}"
+          TF_VAR_gcp_disk_retention_days: "${{ vars.GCP_DISK_RETENTION_DAYS || secrets.GCP_DISK_RETENTION_DAYS || '14' }}"
+          TF_VAR_gcp_build_image: "${{ vars.GCP_BUILD_IMAGE || secrets.GCP_BUILD_IMAGE || 'true' }}"
+          TF_VAR_gcp_image_build_service_account_json: ${{ secrets.GCP_IMAGE_BUILD_SERVICE_ACCOUNT_JSON }}
+          TF_VAR_gcp_image_build_use_iap: "${{ vars.GCP_IMAGE_BUILD_USE_IAP || secrets.GCP_IMAGE_BUILD_USE_IAP || 'false' }}"
 
       - name: Prepare Plan Comment
         id: prepare_comment
@@ -585,6 +609,28 @@ jobs:
           # after provisioning the site destroys its Vercel project on apply.
           TF_VAR_docs_site_enabled: "${{ vars.DOCS_SITE_ENABLED || secrets.DOCS_SITE_ENABLED || 'false' }}"
           TF_VAR_docs_custom_domain: ${{ vars.DOCS_CUSTOM_DOMAIN || secrets.DOCS_CUSTOM_DOMAIN }}
+          # Sandbox provider: gcp.
+          TF_VAR_gcp_service_account_json: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          TF_VAR_gcp_project: ${{ vars.GCP_PROJECT || secrets.GCP_PROJECT }}
+          TF_VAR_gcp_zones: "${{ vars.GCP_ZONES || secrets.GCP_ZONES || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f' }}"
+          TF_VAR_gcp_image_family: ${{ vars.GCP_IMAGE_FAMILY || secrets.GCP_IMAGE_FAMILY }}
+          TF_VAR_gcp_image_project: ${{ vars.GCP_IMAGE_PROJECT || secrets.GCP_IMAGE_PROJECT }}
+          TF_VAR_gcp_machine_type: "${{ vars.GCP_MACHINE_TYPE || secrets.GCP_MACHINE_TYPE || 'e2-standard-4' }}"
+          TF_VAR_gcp_boot_disk_size_gb: "${{ vars.GCP_BOOT_DISK_SIZE_GB || secrets.GCP_BOOT_DISK_SIZE_GB || '80' }}"
+          TF_VAR_gcp_boot_disk_type: "${{ vars.GCP_BOOT_DISK_TYPE || secrets.GCP_BOOT_DISK_TYPE || 'pd-balanced' }}"
+          TF_VAR_gcp_network: ${{ vars.GCP_NETWORK || secrets.GCP_NETWORK }}
+          TF_VAR_gcp_subnet: ${{ vars.GCP_SUBNET || secrets.GCP_SUBNET }}
+          TF_VAR_gcp_vm_service_account_email: ${{ vars.GCP_VM_SERVICE_ACCOUNT_EMAIL || secrets.GCP_VM_SERVICE_ACCOUNT_EMAIL }}
+          TF_VAR_gcp_instance_labels: ${{ vars.GCP_INSTANCE_LABELS || secrets.GCP_INSTANCE_LABELS }}
+          TF_VAR_gcp_vertex_project: ${{ vars.GCP_VERTEX_PROJECT || secrets.GCP_VERTEX_PROJECT }}
+          TF_VAR_gcp_vertex_location: "${{ vars.GCP_VERTEX_LOCATION || secrets.GCP_VERTEX_LOCATION || 'global' }}"
+          TF_VAR_gcp_use_spot: "${{ vars.GCP_USE_SPOT || secrets.GCP_USE_SPOT || 'false' }}"
+          TF_VAR_gcp_supports_snapshots: "${{ vars.GCP_SUPPORTS_SNAPSHOTS || secrets.GCP_SUPPORTS_SNAPSHOTS || 'false' }}"
+          TF_VAR_gcp_supports_restore: "${{ vars.GCP_SUPPORTS_RESTORE || secrets.GCP_SUPPORTS_RESTORE || 'false' }}"
+          TF_VAR_gcp_disk_retention_days: "${{ vars.GCP_DISK_RETENTION_DAYS || secrets.GCP_DISK_RETENTION_DAYS || '14' }}"
+          TF_VAR_gcp_build_image: "${{ vars.GCP_BUILD_IMAGE || secrets.GCP_BUILD_IMAGE || 'true' }}"
+          TF_VAR_gcp_image_build_service_account_json: ${{ secrets.GCP_IMAGE_BUILD_SERVICE_ACCOUNT_JSON }}
+          TF_VAR_gcp_image_build_use_iap: "${{ vars.GCP_IMAGE_BUILD_USE_IAP || secrets.GCP_IMAGE_BUILD_USE_IAP || 'false' }}"
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
