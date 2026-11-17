@@ -48,6 +48,7 @@ const OPENAI_MODELS = [
   "openai/gpt-6-astra",
   "openai/gpt-6-sol",
   "openai/gpt-6.1-sol",
+  "openai/gpt-6.1-terra",
   "openai/gpt-6-luna",
 ] as const;
 
@@ -62,11 +63,15 @@ const ZEN_MODELS = [
   "opencode/glm-5",
   "opencode/glm-5.1",
   "opencode/glm-5.2",
+  "opencode/gemini-4-carbon",
+  "opencode/gemini-4-argon",
+  "opencode/gemini-3.8-flash",
 ] as const;
 
 const GO_MODELS = [
   "opencode-go/grok-4.6",
   "opencode-go/gpt-5.6-luna",
+  "opencode-go/gemini-4-argon",
   "opencode-go/glm-5.3-flash",
   "opencode-go/glm-5.3",
   "opencode-go/glm-5.2",
@@ -104,6 +109,28 @@ const KIMI_CODE_PLAN_MODELS = [
   "kimi-code-plan-global/kimi-for-coding-highspeed",
 ] as const;
 const ZAI_CODING_PLAN_MODELS = ["zai-coding-plan/glm-5.2", "zai-coding-plan/glm-5.3"] as const;
+
+it("keeps the OpenCode gateway wire-test efforts aligned with the catalog", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../sandbox-runtime/tests/fixtures/opencode-gateway-efforts.json",
+        import.meta.url
+      ),
+      "utf8"
+    )
+  );
+  const expected = Object.fromEntries(
+    MODEL_CATALOG.flatMap((group) => group.models)
+      .filter(
+        (model) =>
+          (model.id.startsWith("opencode/") || model.id.startsWith("opencode-go/")) &&
+          "reasoning" in model
+      )
+      .map((model) => [model.id, [...model.reasoning.efforts]])
+  );
+  expect(fixture).toEqual(expected);
+});
 
 it.each([
   "../../../docs/AVAILABLE_MODELS.md",
@@ -509,6 +536,10 @@ describe("model utilities", () => {
       efforts: ["low", "medium", "high", "xhigh", "max"],
       default: "medium",
     });
+    expect(getReasoningConfig("openai/gpt-6.1-terra")).toEqual({
+      efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      default: "medium",
+    });
     expect(getReasoningConfig("openai/gpt-5.6-sol")).toEqual({
       efforts: ["none", "low", "medium", "high", "xhigh"],
       default: "medium",
@@ -561,6 +592,8 @@ describe("model utilities", () => {
     expect(isValidReasoningEffort("openai/gpt-6-sol", "max")).toBe(true);
     expect(isValidReasoningEffort("openai/gpt-6.1-sol", "max")).toBe(true);
     expect(isValidReasoningEffort("openai/gpt-6.1-sol", "none")).toBe(false);
+    expect(isValidReasoningEffort("openai/gpt-6.1-terra", "none")).toBe(true);
+    expect(isValidReasoningEffort("openai/gpt-6.1-terra", "max")).toBe(true);
     expect(isValidReasoningEffort("openai/gpt-6-luna", "none")).toBe(true);
     expect(isValidReasoningEffort("openai/gpt-6-luna", "max")).toBe(true);
     expect(isValidReasoningEffort("openai/gpt-5.6-sol", "xhigh")).toBe(true);
