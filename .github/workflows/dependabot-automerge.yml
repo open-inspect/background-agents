@@ -45,32 +45,47 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
+      actions: read
       checks: read
       contents: read
       pull-requests: read
       statuses: read
     steps:
       - id: metadata
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
       - name: Wait for checks
         id: wait
         if: contains(fromJSON('["version-update:semver-minor", "version-update:semver-patch"]'), steps.metadata.outputs.update-type)
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Give every workflow the pull request triggered time to register its checks.
-          sleep 60
+          # GitHub creates every workflow run for an event together, so the runs this pull request
+          # triggered all exist once this one does, even while queued and before their jobs report
+          # checks. Waiting on those runs, not only on the checks reported so far, means a check that
+          # registers late cannot be missed. Path-filtered workflows that don't apply create no run.
+          # The short pause gives checks from GitHub Apps (not Actions) time to register.
+          sleep 30
           while :; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)]")
+            runs_pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+            runs_failed=$(jq -r '.[] | select(.status == "completed" and (.conclusion | IN("success", "skipped", "neutral") | not)) | "\(.name) (\(.conclusion))"' <<<"$runs")
             checks=$(gh pr checks "$PR_URL" --json name,bucket --jq "map(select(.name != env.SELF_CHECK))")
             total=$(jq length <<<"$checks")
             pending=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$checks")
             passed=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$checks")
             failed=$(jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | .name' <<<"$checks")
-            if [ -n "$failed" ]; then
-              echo "::notice::Not merging; these checks did not pass:"
-              echo "$failed"
+            if [ -n "$failed$runs_failed" ]; then
+              echo "::notice::Not merging; these checks or workflow runs did not pass:"
+              { echo "$failed"; echo "$runs_failed"; } | sed '/^$/d'
               exit 0
+            fi
+            if [ "$runs_pending" -gt 0 ]; then
+              echo "$runs_pending workflow run(s) for this commit still running"
+              sleep 30
+              continue
             fi
             if [ "$total" -eq 0 ]; then
               echo "::error::No checks reported on the pull request, so nothing vouches for it"
@@ -90,7 +105,7 @@ jobs:
       # Minted after the wait, since an app token expires after an hour.
       - id: token
         if: steps.wait.outputs.green == 'true'
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.DEPENDABOT_AUTOMERGE_APP_CLIENT_ID }}
           private-key: ${{ secrets.DEPENDABOT_AUTOMERGE_APP_PRIVATE_KEY }}
