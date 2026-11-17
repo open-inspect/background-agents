@@ -764,10 +764,13 @@ cross the control-plane boundary.
 Sandbox environment preparation reads the complete resolved session auth snapshot from D1.
 `prepareManagedProviderEnv` owns the `PROVIDER_ENV` registry of API-key, managed-marker, and legacy
 refresh-token names. For account mode, preparation sets the managed-auth marker and strips the API
-key and legacy refresh token. It does the same for legacy mode only when the resolved secrets
-contain the matching legacy refresh token; otherwise it preserves the API key as the compatibility
-fallback. API-key mode receives no managed marker and retains existing injection behavior. D1 read
-failures and incomplete snapshots fail closed rather than falling back to API-key exposure.
+key and legacy refresh token. A stripped user-supplied API key stays in the sandbox as
+`OPENINSPECT_USER_<KEY>` (for example `OPENINSPECT_USER_OPENAI_API_KEY`), a name no harness reads,
+so an application the repository hooks start can still be handed it. It does the same for legacy
+mode only when the resolved secrets contain the matching legacy refresh token; otherwise it
+preserves the API key as the compatibility fallback. API-key mode receives no managed marker and
+retains existing injection behavior. D1 read failures and incomplete snapshots fail closed rather
+than falling back to API-key exposure.
 
 Suppression happens before `CreateSandboxConfig` reaches a sandbox provider, but provider-specific
 environment layering must obey the same result. Add cross-provider create and restore conformance
