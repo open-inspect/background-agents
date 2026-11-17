@@ -13,6 +13,9 @@ name: Dependabot auto-merge
 #   2. Set the app's client ID as the `DEPENDABOT_AUTOMERGE_APP_CLIENT_ID` repository variable.
 #   3. Store its private key as the `DEPENDABOT_AUTOMERGE_APP_PRIVATE_KEY` *Dependabot* secret.
 #      Runs Dependabot triggers can read only Dependabot secrets.
+#   4. Optional: if a GitHub App (not Actions) posts a check that must gate merges, list its check
+#      names, comma-separated, in the `DEPENDABOT_AUTOMERGE_REQUIRED_CHECKS` repository variable.
+#      The workflow then waits for each of them to appear and pass, however late it registers.
 #
 # Approval and merge use the app's token, never `GITHUB_TOKEN`: a merge made with `GITHUB_TOKEN`
 # fires no `push` workflow, so deploy-on-push workflows would never see the commit. If `main`
@@ -32,6 +35,7 @@ concurrency:
 env:
   # Must equal the job name below; the wait loop skips this job's own check.
   SELF_CHECK: Merge when green
+  CHECK_POLL_INTERVAL_SECONDS: 30
 
 jobs:
   auto-merge:
@@ -60,13 +64,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REQUIRED_CHECKS: ${{ vars.DEPENDABOT_AUTOMERGE_REQUIRED_CHECKS }}
         run: |
-          # GitHub creates every workflow run for an event together, so the runs this pull request
-          # triggered all exist once this one does, even while queued and before their jobs report
-          # checks. Waiting on those runs, not only on the checks reported so far, means a check that
-          # registers late cannot be missed. Path-filtered workflows that don't apply create no run.
-          # The short pause gives checks from GitHub Apps (not Actions) time to register.
-          sleep 30
+          # GitHub creates the workflow runs for an event when it processes the event, so the runs
+          # this pull request triggered are listed even while queued and before their jobs report
+          # checks. Waiting on those runs, not only on the checks reported so far, covers Actions
+          # checks that register late. Path-filtered workflows that don't apply create no run.
+          # Checks from GitHub Apps have no such listing: an App creates its check only after it
+          # receives the event. Checks named in REQUIRED_CHECKS must appear and pass. For any other
+          # App check, the merge also needs two consecutive all-green polls with the same set of
+          # checks, so a check that registers between polls restarts the wait.
+          required=$(jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))' <<<"$REQUIRED_CHECKS")
+          sleep "$CHECK_POLL_INTERVAL_SECONDS"
+          previous_green=""
           while :; do
             runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100" \
               --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)]")
@@ -77,6 +87,7 @@ jobs:
             pending=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$checks")
             passed=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$checks")
             failed=$(jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | .name' <<<"$checks")
+            missing=$(jq -r --argjson required "$required" '[.[].name] as $seen | $required - $seen | .[]' <<<"$checks")
             if [ -n "$failed$runs_failed" ]; then
               echo "::notice::Not merging; these checks or workflow runs did not pass:"
               { echo "$failed"; echo "$runs_failed"; } | sed '/^$/d'
@@ -84,23 +95,29 @@ jobs:
             fi
             if [ "$runs_pending" -gt 0 ]; then
               echo "$runs_pending workflow run(s) for this commit still running"
-              sleep 30
-              continue
-            fi
-            if [ "$total" -eq 0 ]; then
+              previous_green=""
+            elif [ -n "$missing" ]; then
+              echo "Waiting for required checks to appear: $(paste -sd, <<<"$missing")"
+              previous_green=""
+            elif [ "$total" -eq 0 ]; then
               echo "::error::No checks reported on the pull request, so nothing vouches for it"
               exit 1
-            fi
-            if [ "$pending" -eq 0 ]; then
-              if [ "$passed" -eq 0 ]; then
-                echo "::error::Every check was skipped, so nothing vouches for the pull request"
-                exit 1
+            elif [ "$pending" -gt 0 ]; then
+              echo "$pending of $total checks still running"
+              previous_green=""
+            elif [ "$passed" -eq 0 ]; then
+              echo "::error::Every check was skipped, so nothing vouches for the pull request"
+              exit 1
+            else
+              green_set=$(jq -c '[.[].name] | sort' <<<"$checks")
+              if [ "$green_set" = "$previous_green" ]; then
+                echo "green=true" >>"$GITHUB_OUTPUT"
+                exit 0
               fi
-              echo "green=true" >>"$GITHUB_OUTPUT"
-              exit 0
+              echo "All $total checks passed; confirming no new check registers"
+              previous_green=$green_set
             fi
-            echo "$pending of $total checks still running"
-            sleep 30
+            sleep "$CHECK_POLL_INTERVAL_SECONDS"
           done
       # Minted after the wait, since an app token expires after an hour.
       - id: token
