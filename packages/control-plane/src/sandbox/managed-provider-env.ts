@@ -139,7 +139,8 @@ export function prepareManagedProviderEnv({
       const withheldApiKey = env[config.apiKey];
       delete env[config.apiKey];
       if (withheldApiKey) {
-        env[`${WITHHELD_PROVIDER_API_KEY_PREFIX}${config.apiKey}`] = withheldApiKey;
+        // A secret the user stored under the prefixed name is their explicit choice and wins.
+        env[`${WITHHELD_PROVIDER_API_KEY_PREFIX}${config.apiKey}`] ??= withheldApiKey;
       }
       for (const key of config.strip) delete env[key];
       for (const key of Object.keys(env)) {

@@ -78,6 +78,20 @@ describe("prepareManagedProviderEnv", () => {
     });
   });
 
+  it("keeps a secret the user stored under the prefixed name", () => {
+    expect(
+      prepareManagedProviderEnv({
+        harness: "opencode",
+        exposedSecrets: {
+          OPENAI_API_KEY: "openai-key",
+          OPENINSPECT_USER_OPENAI_API_KEY: "explicit",
+        },
+        brokerSecrets: {},
+        providerAuthModes: { openai: "provider_account", xai: "api_key", anthropic: "api_key" },
+      })
+    ).toEqual({ OPENAI_OAUTH_MANAGED: "1", OPENINSPECT_USER_OPENAI_API_KEY: "explicit" });
+  });
+
   it("adds no prefixed name when the user supplied no API key", () => {
     expect(
       prepareManagedProviderEnv({
