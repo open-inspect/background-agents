@@ -609,9 +609,11 @@ row. Explicit or policy-selected API-key mode creates an API-key auth row withou
 control plane removes or suppresses the corresponding provider API key from the sandbox environment
 when account mode applies so OpenCode cannot bypass the selected subscription. The one exception is
 deliberate: a key the user supplied stays in the sandbox under `OPENINSPECT_USER_<KEY>`, a name no
-harness reads as a credential. Every process in the sandbox inherits that variable, including
-repository hooks and commands the agent runs, so the guarantee is that the harness does not
-authenticate with the key, not that the key is absent. API keys for other providers are unchanged.
+harness reads as a credential, unless the user already stored a secret under that name, which is
+kept and leaves the withheld key unexposed. Every process in the sandbox inherits that variable,
+including repository hooks and commands the agent runs, so the guarantee is that the harness does
+not authenticate with the key, not that the key is absent. API keys for other providers are
+unchanged.
 
 This precedence applies to the initial model and later per-prompt model changes. Account selection
 is not inferred from the mere presence of an API key.
