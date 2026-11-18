@@ -219,6 +219,7 @@ export default defineConfig({
     }),
   ],
   test: {
+    fsModuleCache: false,
     include: ["test/integration/**/*.test.ts"],
     setupFiles: ["test/integration/apply-migrations.ts"],
     onUnhandledError(error) {
