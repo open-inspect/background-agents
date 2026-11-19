@@ -255,7 +255,9 @@ function TokensSection() {
   // The saved policy, so each token shows when it actually stops working under the lifetime cap.
   const { policy } = useWorkspacePersonalAccessTokenPolicy();
   const [revocation, setRevocation] = useState<Revocation | null>(null);
-  const now = Date.now();
+  // Read the clock once per mount: render must stay pure, and expiry labels only
+  // need minute-level precision.
+  const [now] = useState(Date.now);
 
   async function revoke(target: Revocation) {
     try {

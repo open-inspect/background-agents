@@ -420,7 +420,9 @@ function TokenRow({
   expiresAt: number;
   onRevoke: () => void;
 }) {
-  const now = Date.now();
+  // Read the clock once per mount: render must stay pure, and expiry labels only
+  // need minute-level precision.
+  const [now] = useState(Date.now);
   const expired = expiresAt <= now;
   return (
     <li className="rounded-md border border-border bg-card px-4 py-3">
