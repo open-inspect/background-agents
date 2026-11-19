@@ -391,8 +391,6 @@ describe("sig1 service-credential authentication", () => {
   });
 
   it("keeps callback contexts bound to the signed prompt service and source", async () => {
-    const { stub, sessionName } = await initNamedSession("callback-source-ownership");
-    const url = `https://test.local/sessions/${sessionName}/prompt`;
     const discordContext = {
       source: "discord",
       channelId: "100000000000000001",
@@ -408,18 +406,33 @@ describe("sig1 service-credential authentication", () => {
       model: "anthropic/claude-haiku-4-5",
     };
 
+    const service = "discord-bot";
+    const actor = `discord:${discordContext.userId}`;
+    const created = await signedFetch({
+      service,
+      actor,
+      method: "POST",
+      url: "https://test.local/sessions",
+      body: JSON.stringify({ title: "Callback source ownership", model: discordContext.model }),
+    });
+    expect(created.status, await created.clone().text()).toBe(201);
+    const { sessionId } = await created.json<{ sessionId: string }>();
+    const stub = env.SESSION.get(env.SESSION.idFromName(sessionId));
+    const url = `https://test.local/sessions/${sessionId}/prompt`;
+
     for (const [source, callbackContext, stored] of [
       ["discord", discordContext, discordContext],
       ["slack", slackContext, null],
       [undefined, slackContext, null],
     ] as const) {
       const response = await signedFetch({
-        service: "discord-bot",
+        service,
+        actor,
         method: "POST",
         url,
         body: JSON.stringify({ content: "Check callback ownership", source, callbackContext }),
       });
-      expect(response.status).toBe(200);
+      expect(response.status, await response.clone().text()).toBe(200);
       const { messageId } = await response.json<{ messageId: string }>();
       const [message] = await queryDO<{ source: string; callback_context: string | null }>(
         stub,
@@ -432,7 +445,8 @@ describe("sig1 service-credential authentication", () => {
     }
 
     const mismatchedContext = await signedFetch({
-      service: "discord-bot",
+      service,
+      actor,
       method: "POST",
       url,
       body: JSON.stringify({
