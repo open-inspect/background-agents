@@ -71,9 +71,10 @@ jobs:
           # checks. Waiting on those runs, not only on the checks reported so far, covers Actions
           # checks that register late. Path-filtered workflows that don't apply create no run.
           # Checks from GitHub Apps have no such listing: an App creates its check only after it
-          # receives the event. Checks named in REQUIRED_CHECKS must appear and pass. For any other
-          # App check, the merge also needs two consecutive all-green polls with the same set of
-          # checks, so a check that registers between polls restarts the wait.
+          # receives the event. Checks named in REQUIRED_CHECKS must appear and pass, and a skipped
+          # one stops the merge. For any other App check, the merge also needs two consecutive
+          # all-green polls with the same set of checks, so a check that registers between polls
+          # restarts the wait.
           required=$(jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))' <<<"$REQUIRED_CHECKS")
           sleep "$CHECK_POLL_INTERVAL_SECONDS"
           previous_green=""
@@ -88,9 +89,12 @@ jobs:
             passed=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$checks")
             failed=$(jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | .name' <<<"$checks")
             missing=$(jq -r --argjson required "$required" '[.[].name] as $seen | $required - $seen | .[]' <<<"$checks")
-            if [ -n "$failed$runs_failed" ]; then
+            # A required check that finished as skipped or neutral did not pass, and won't change.
+            required_skipped=$(jq -r --argjson required "$required" \
+              '[.[] | select(.bucket == "skipping") | .name] as $skipped | $required - ($required - $skipped) | .[] | "\(.) (skipped)"' <<<"$checks")
+            if [ -n "$failed$runs_failed$required_skipped" ]; then
               echo "::notice::Not merging; these checks or workflow runs did not pass:"
-              { echo "$failed"; echo "$runs_failed"; } | sed '/^$/d'
+              { echo "$failed"; echo "$runs_failed"; echo "$required_skipped"; } | sed '/^$/d'
               exit 0
             fi
             if [ "$runs_pending" -gt 0 ]; then
