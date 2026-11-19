@@ -199,7 +199,7 @@ export function SafeMarkdown({
 }: SafeMarkdownProps) {
   return (
     <div
-      className={`prose prose-sm dark:prose-invert min-w-0 max-w-none wrap-break-word wrap-anywhere ${className}`}
+      className={`prose prose-sm dark:prose-invert min-w-0 max-w-none wrap-anywhere ${className}`}
     >
       <MermaidMarkdownContext.Provider value={renderMermaid}>
         <ReactMarkdown

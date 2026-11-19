@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useNow } from "@/hooks/use-now";
 import { toast } from "sonner";
 import {
   isPersonalAccessTokenGrantable,
@@ -255,9 +256,8 @@ function TokensSection() {
   // The saved policy, so each token shows when it actually stops working under the lifetime cap.
   const { policy } = useWorkspacePersonalAccessTokenPolicy();
   const [revocation, setRevocation] = useState<Revocation | null>(null);
-  // Read the clock once per mount: render must stay pure, and expiry labels only
-  // need minute-level precision.
-  const [now] = useState(Date.now);
+  // Expiry labels only need minute-level precision.
+  const now = useNow();
 
   async function revoke(target: Revocation) {
     try {
