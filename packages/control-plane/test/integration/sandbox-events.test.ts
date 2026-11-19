@@ -448,6 +448,52 @@ describe("POST /internal/sandbox-event", () => {
     expect(sessions[0].status).toBe("completed");
   });
 
+  it("disables failed native MCP cleanup before advancing the queue", async () => {
+    const { stub } = await initSession();
+    // Session init warms a sandbox in the background, and that spawn records a
+    // fresh MCP launch (runtime version 0). Let it settle so it cannot reset the
+    // runtime version set below while the event is processed.
+    await waitForSandboxStatus(stub, "failed");
+    const [{ id: authorId }] = await queryDO<{ id: string }>(
+      stub,
+      "SELECT id FROM participants LIMIT 1"
+    );
+    await seedMessage(stub, {
+      id: "msg-mcp-cleanup",
+      authorId,
+      content: "Use managed MCP",
+      source: "web",
+      status: "processing",
+      createdAt: Date.now() - 1000,
+      startedAt: Date.now() - 500,
+    });
+    await queryDO(stub, "UPDATE sandbox SET mcp_runtime_version = 1");
+
+    await runInSessionDO(stub, async (instance, state) => {
+      const { messageQueue, sandboxEventProcessor } = componentsOf(instance);
+      const processMessageQueue = vi
+        .spyOn(messageQueue, "processMessageQueue")
+        .mockImplementation(async () => {
+          expect(
+            state.storage.sql.exec("SELECT mcp_runtime_version FROM sandbox").toArray()
+          ).toEqual([{ mcp_runtime_version: -1 }]);
+        });
+      try {
+        await sandboxEventProcessor.processSandboxEvent({
+          type: "execution_complete",
+          messageId: "msg-mcp-cleanup",
+          success: false,
+          managedMcpReady: false,
+          sandboxId: "sb-1",
+          timestamp: Date.now() / 1000,
+        });
+        expect(processMessageQueue).toHaveBeenCalledOnce();
+      } finally {
+        processMessageQueue.mockRestore();
+      }
+    });
+  });
+
   it("projects reported step tokens to the session index when the turn settles", async () => {
     const { stub, sessionName } = await initSession();
     const participants = await queryDO<{ id: string }>(

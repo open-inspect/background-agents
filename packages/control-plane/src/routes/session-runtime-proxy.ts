@@ -133,6 +133,20 @@ async function handleSandboxError(
   });
 }
 
+async function handleSandboxBootstrap(
+  request: Request,
+  _env: Env,
+  params: SessionParams,
+  ctx: SessionRouteContext
+): Promise<Response> {
+  const authorization = request.headers.get("Authorization");
+  if (!authorization) return error("Unauthorized", 401);
+  return ctx.sessionRuntime.fetch(params.id, SessionInternalPaths.sandboxBootstrap, {
+    method: "POST",
+    headers: { Authorization: authorization },
+  });
+}
+
 async function handleParticipantProfiles(
   _request: Request,
   _env: Env,
@@ -376,6 +390,11 @@ sessionRuntimeProxyRoutes.post(
   admit({ ...SCM_AGNOSTIC_HANDLER_AUTHENTICATED_ROUTE, authorization: NO_AUTHORIZATION }),
   (c) => dispatchSession(c, handleSandboxError)
 );
+sessionRuntimeProxyRoutes.post(
+  "/sessions/:id/sandbox-bootstrap",
+  admit({ ...SCM_AGNOSTIC_HANDLER_AUTHENTICATED_ROUTE, authorization: NO_AUTHORIZATION }),
+  (c) => dispatchSession(c, handleSandboxBootstrap)
+);
 sessionRuntimeProxyRoutes.get(
   "/sessions/:id/events",
   admit({
@@ -383,6 +402,7 @@ sessionRuntimeProxyRoutes.get(
     authorization: requireSession("read", {
       actorlessGrants: [{ service: "slack-bot" }, { service: "linear-bot" }],
     }),
+    personalAccessTokens: "accept",
   }),
   (c) =>
     dispatchSession(
@@ -415,7 +435,11 @@ sessionRuntimeProxyRoutes.get(
 );
 sessionRuntimeProxyRoutes.get(
   "/sessions/:id/messages",
-  admit({ ...GITHUB_USER_OR_SERVICE_ROUTE, authorization: requireSession("read") }),
+  admit({
+    ...GITHUB_USER_OR_SERVICE_ROUTE,
+    authorization: requireSession("read"),
+    personalAccessTokens: "accept",
+  }),
   (c) =>
     dispatchSession(
       c,

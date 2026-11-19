@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS sandbox_preservation (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   state TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sandbox_bootstrap (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  sandbox_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL,
+  env TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
 -- Core session state
 CREATE TABLE IF NOT EXISTS session (
   id TEXT PRIMARY KEY,                              -- Same as DO ID
@@ -124,7 +131,7 @@ CREATE TABLE IF NOT EXISTS session (
 CREATE TABLE IF NOT EXISTS participants (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
-  canonical_user_id TEXT,                           -- D1 users.id for cosmetic profile joins only
+  canonical_user_id TEXT,                           -- D1 users.id of the participant's account; NULL for unmapped integration authors
   scm_user_id TEXT,                                 -- SCM numeric ID
   scm_login TEXT,                                   -- SCM username
   scm_email TEXT,                                   -- For git commit attribution
@@ -145,6 +152,7 @@ CREATE TABLE IF NOT EXISTS participants (
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   author_id TEXT NOT NULL,
+  author_canonical_user_id TEXT,                    -- Author's account when queued; NULL for Autofix turns and authors without one
   content TEXT NOT NULL,
   source TEXT NOT NULL,                             -- 'web', 'slack', 'extension', 'github'
   model TEXT,                                       -- LLM model for this specific message (per-message override)
@@ -769,6 +777,51 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
     id: 56,
     description: "Retain rejected sandbox startup cleanup intent",
     run: "ALTER TABLE sandbox ADD COLUMN startup_rejected INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    id: 57,
+    description: "Record each prompt author's account as it was when the prompt was queued",
+    run: "ALTER TABLE messages ADD COLUMN author_canonical_user_id TEXT",
+  },
+  {
+    id: 58,
+    description: "Retain admitted MCP author and queue-owned context",
+    run: (sql) => {
+      runMigration(sql, "ALTER TABLE messages ADD COLUMN admitted_canonical_user_id TEXT");
+      runMigration(sql, "ALTER TABLE messages ADD COLUMN mcp_eligible INTEGER NOT NULL DEFAULT 0");
+      runMigration(sql, "ALTER TABLE messages ADD COLUMN mcp_revision INTEGER NOT NULL DEFAULT 0");
+      runMigration(sql, "ALTER TABLE messages ADD COLUMN mcp_context TEXT");
+      runMigration(sql, "ALTER TABLE messages ADD COLUMN mcp_closed INTEGER NOT NULL DEFAULT 1");
+      runMigration(sql, "ALTER TABLE sandbox ADD COLUMN mcp_servers TEXT");
+      runMigration(
+        sql,
+        "ALTER TABLE sandbox ADD COLUMN mcp_runtime_version INTEGER NOT NULL DEFAULT 0"
+      );
+      runMigration(
+        sql,
+        "ALTER TABLE sandbox ADD COLUMN mcp_rate_window INTEGER NOT NULL DEFAULT 0"
+      );
+      runMigration(sql, "ALTER TABLE sandbox ADD COLUMN mcp_rate_count INTEGER NOT NULL DEFAULT 0");
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS mcp_proxy_leases (id TEXT PRIMARY KEY, sandbox_id TEXT NOT NULL, expires_at INTEGER NOT NULL)"
+      );
+    },
+  },
+  {
+    id: 59,
+    description: "Distinguish bridge process replacement from transport reconnect",
+    run: "ALTER TABLE sandbox ADD COLUMN mcp_bridge_instance_id TEXT",
+  },
+  {
+    id: 60,
+    description: "Hold the environment a bootstrapping sandbox redeems once",
+    run: `CREATE TABLE IF NOT EXISTS sandbox_bootstrap (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      sandbox_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      env TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`,
   },
 ];
 

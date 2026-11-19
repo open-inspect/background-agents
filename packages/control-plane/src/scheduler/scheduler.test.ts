@@ -20,6 +20,16 @@ import { normalizeWebhookEvent, type SlackAutomationEvent } from "@open-inspect/
 import type { Team } from "@open-inspect/shared/types/teams";
 import type { EffectiveAuthorization } from "@open-inspect/shared/rbac";
 import type * as SessionAdmissionModule from "../authorization/session-admission";
+import type { ManualTriggerRequester } from "./contracts";
+import type { GitHubEnrichment } from "../session/identity";
+
+/** A person firing from the browser, with only their live role bounding the run. */
+function asPerson(
+  userId: string,
+  scmEnrichment: GitHubEnrichment | null = null
+): ManualTriggerRequester {
+  return { userId, scmEnrichment, actorKind: "person" };
+}
 
 vi.mock("../logger", async (importOriginal) => {
   const actual = await importOriginal<typeof LoggerModule>();
@@ -903,7 +913,10 @@ describe("Scheduler", () => {
         { provider: "github", providerUserId: "42", providerLogin: "owner" },
       ]);
       const stub = createMockSessionStub();
-      await createScheduler(createEnv(undefined, stub)).trigger("auto-1", "manual-user", null);
+      await createScheduler(createEnv(undefined, stub)).trigger(
+        "auto-1",
+        asPerson("manual-user", null)
+      );
       expect(mockUserStoreGetIdentitiesForUser).not.toHaveBeenCalled();
       expect((await getInitBody(vi.mocked(stub.fetch))).scmUserId).toBeUndefined();
     });
@@ -911,11 +924,16 @@ describe("Scheduler", () => {
     it("resolves the scheduled owner's verified profile when no login is cached", async () => {
       mockStore.getOverdueAutomations.mockResolvedValue([sampleAutomation]);
       mockUserStoreGetIdentitiesForUser.mockResolvedValue([
-        { provider: "github", providerUserId: "42", providerLogin: null },
+        { id: "github-account-42", provider: "github", providerUserId: "42", providerLogin: null },
       ]);
       mockGetGitHubAccessToken.mockResolvedValue({ accessToken: "grant" });
       mockGitHubAccountInfo.mockResolvedValue({
-        user: { id: "42" },
+        account: {
+          id: "github-account-42",
+          providerId: "github",
+          accountId: "42",
+        },
+        user: { name: "Verified Owner" },
         data: {
           provider: "github",
           issuer: "https://github.com",
@@ -935,7 +953,7 @@ describe("Scheduler", () => {
         scmEmail: "42+verified-owner@users.noreply.github.com",
       });
       expect(mockGitHubAccountInfo).toHaveBeenCalledWith({
-        query: { providerId: "github", accountId: "42", userId: "user-1" },
+        query: { accountId: "github-account-42", userId: "user-1" },
       });
     });
 
@@ -2247,7 +2265,7 @@ describe("Scheduler", () => {
       mockStore.getById.mockResolvedValue(null);
 
       const scheduler = createScheduler();
-      await expect(scheduler.trigger("nonexistent", "user-1")).rejects.toThrow(
+      await expect(scheduler.trigger("nonexistent", asPerson("user-1"))).rejects.toThrow(
         "Automation not found"
       );
     });
@@ -2257,7 +2275,7 @@ describe("Scheduler", () => {
       mockStore.getActiveRunForAutomation.mockResolvedValue({ id: "run-active" });
 
       const scheduler = createScheduler();
-      await expect(scheduler.trigger("auto-1", "user-1")).rejects.toThrow(
+      await expect(scheduler.trigger("auto-1", asPerson("user-1"))).rejects.toThrow(
         "An active run already exists"
       );
       expect(mockStore.insertSkippedInvocation).not.toHaveBeenCalled();
@@ -2269,7 +2287,7 @@ describe("Scheduler", () => {
       mockIsAutomationExecutionAuthorized.mockResolvedValue(false);
 
       const scheduler = createScheduler();
-      const denied = scheduler.trigger("auto-1", "user-1");
+      const denied = scheduler.trigger("auto-1", asPerson("user-1"));
       await expect(denied).rejects.toBeInstanceOf(AutomationExecutionUnauthorizedError);
       await expect(denied).rejects.toMatchObject({
         reason: "execution_authorization_denied",
@@ -2291,12 +2309,15 @@ describe("Scheduler", () => {
 
       const fetchMock = vi.mocked(stub.fetch);
       const scheduler = createScheduler(env);
-      const result = await scheduler.trigger("auto-1", "user-1", {
-        scmUserId: "123",
-        scmLogin: "requester",
-        displayName: "Requester",
-        email: "123+requester@users.noreply.github.com",
-      });
+      const result = await scheduler.trigger(
+        "auto-1",
+        asPerson("user-1", {
+          scmUserId: "123",
+          scmLogin: "requester",
+          displayName: "Requester",
+          email: "123+requester@users.noreply.github.com",
+        })
+      );
 
       expect(result).toEqual({
         invocationId: expect.any(String),
@@ -2306,6 +2327,7 @@ describe("Scheduler", () => {
       expect(params.invocation).toMatchObject({
         automation_id: "auto-1",
         source: "manual",
+        actor_kind: "person",
         scheduled_at: null,
       });
       expect(params.advanceSchedule).toBeUndefined();
@@ -2321,6 +2343,35 @@ describe("Scheduler", () => {
         scmName: "Requester",
         scmEmail: "123+requester@users.noreply.github.com",
       });
+    });
+
+    it("records the requester's provenance and bounds admission and launch by its ceiling", async () => {
+      mockStore.getById.mockResolvedValue(sampleAutomation);
+      mockStore.getActiveRunForAutomation.mockResolvedValue(null);
+      mockStore.getRepositoriesForAutomation.mockResolvedValue([repositoryRow("auto-1")]);
+      const permissionCeiling = [
+        "automations.trigger.own",
+        "sessions.create",
+        "repositories.use",
+      ] as const;
+
+      await createScheduler(createEnv(undefined, createMockSessionStub())).trigger("auto-1", {
+        userId: "user-1",
+        scmEnrichment: null,
+        actorKind: "unknown",
+        permissionCeiling,
+      });
+
+      expect(mockStore.insertInvocationGuarded.mock.calls[0][0].invocation).toMatchObject({
+        source: "manual",
+        actor_kind: "unknown",
+      });
+      // Admission and the child's launch each re-check execution, both within the ceiling.
+      const checks = mockIsAutomationExecutionAuthorized.mock.calls.map(([, request]) => request);
+      expect(checks.length).toBeGreaterThanOrEqual(2);
+      for (const request of checks) {
+        expect(request).toMatchObject({ executionUserId: "user-1", permissionCeiling });
+      }
     });
 
     it("rejects when every launch fails, still recording the failed children", async () => {
@@ -2341,7 +2392,7 @@ describe("Scheduler", () => {
       const scheduler = createScheduler(env);
       const errorSpy = vi.spyOn(schedulerLogger(), "error").mockImplementation(() => {});
 
-      await expect(scheduler.trigger("auto-1", "user-1")).rejects.toThrow(
+      await expect(scheduler.trigger("auto-1", asPerson("user-1"))).rejects.toThrow(
         "Failed to trigger automation"
       );
 
@@ -2725,11 +2776,16 @@ describe("Scheduler", () => {
         sampleRunRow({ session_id: "sess-running" })
       );
       mockUserStoreGetIdentitiesForUser.mockResolvedValue([
-        { provider: "github", providerUserId: "77", providerLogin: null },
+        { id: "github-account-77", provider: "github", providerUserId: "77", providerLogin: null },
       ]);
       mockGetGitHubAccessToken.mockResolvedValue({ accessToken: "grant" });
       mockGitHubAccountInfo.mockResolvedValue({
-        user: { id: "77" },
+        account: {
+          id: "github-account-77",
+          providerId: "github",
+          accountId: "77",
+        },
+        user: { name: "Verified Actor" },
         data: {
           provider: "github",
           issuer: "https://github.com",
@@ -2754,7 +2810,7 @@ describe("Scheduler", () => {
         },
       });
       expect(mockGitHubAccountInfo).toHaveBeenCalledWith({
-        query: { providerId: "github", accountId: "77", userId: "slack-actor-user" },
+        query: { accountId: "github-account-77", userId: "slack-actor-user" },
       });
     });
 
@@ -2766,7 +2822,12 @@ describe("Scheduler", () => {
           sampleRunRow({ session_id: "sess-running" })
         );
         mockUserStoreGetIdentitiesForUser.mockResolvedValue([
-          { provider: "github", providerUserId: "77", providerLogin: null },
+          {
+            id: "github-account-77",
+            provider: "github",
+            providerUserId: "77",
+            providerLogin: null,
+          },
         ]);
         if (scenario === "empty") mockGetGitHubAccessToken.mockResolvedValue({ accessToken: "" });
         else mockGetGitHubAccessToken.mockRejectedValue(new Error("revoked grant"));
@@ -2797,11 +2858,16 @@ describe("Scheduler", () => {
         sampleRunRow({ session_id: "sess-running" })
       );
       mockUserStoreGetIdentitiesForUser.mockResolvedValue([
-        { provider: "github", providerUserId: "77", providerLogin: null },
+        { id: "github-account-77", provider: "github", providerUserId: "77", providerLogin: null },
       ]);
       mockGetGitHubAccessToken.mockResolvedValue({ accessToken: "grant" });
       mockGitHubAccountInfo.mockResolvedValue({
-        user: { id: "42" },
+        account: {
+          id: "github-account-77",
+          providerId: "github",
+          accountId: "42",
+        },
+        user: { name: "Wrong" },
         data: {
           provider: "github",
           issuer: "https://github.com",
@@ -4001,7 +4067,9 @@ describe("Scheduler", () => {
         denyAfterAdmission();
         mockStore.getInvocationRunAggregate.mockResolvedValue(aggregate({ total: 1, active: 0 }));
 
-        await expect(createScheduler().trigger("auto-1", "manual-user")).rejects.toMatchObject({
+        await expect(
+          createScheduler().trigger("auto-1", asPerson("manual-user"))
+        ).rejects.toMatchObject({
           name: "AutomationExecutionUnauthorizedError",
           reason: "execution_authorization_denied",
         });
@@ -4040,7 +4108,9 @@ describe("Scheduler", () => {
           .mockResolvedValueOnce(activeTeam)
           .mockResolvedValue({ ...activeTeam, archivedAt: 2 });
 
-        await expect(createScheduler().trigger("auto-1", "manual-user")).rejects.toMatchObject({
+        await expect(
+          createScheduler().trigger("auto-1", asPerson("manual-user"))
+        ).rejects.toMatchObject({
           reason: "team_archived",
         });
       });
@@ -4070,7 +4140,7 @@ describe("Scheduler", () => {
         });
 
         it("fails a manual trigger and counts the genuine failure", async () => {
-          const trigger = createScheduler().trigger("auto-1", "manual-user");
+          const trigger = createScheduler().trigger("auto-1", asPerson("manual-user"));
           await expect(trigger).rejects.toThrow("Failed to trigger automation");
           await expect(trigger).rejects.not.toBeInstanceOf(AutomationExecutionUnauthorizedError);
           expect(mockStore.updateRun).toHaveBeenCalledWith(
@@ -4106,7 +4176,7 @@ describe("Scheduler", () => {
         launchableRepositories(["web-app", "api", "worker"]);
         mockStore.getInvocationRunAggregate.mockResolvedValue(aggregate({ total: 3, active: 3 }));
 
-        const result = await createScheduler().trigger("auto-1", "manual-user");
+        const result = await createScheduler().trigger("auto-1", asPerson("manual-user"));
 
         expect(result.runs.filter((run) => run.status === "running")).toHaveLength(3);
         expect(mockIsAutomationExecutionAuthorized).toHaveBeenCalledTimes(1 + 3);
@@ -4121,7 +4191,7 @@ describe("Scheduler", () => {
           .mockResolvedValue({ ...activeTeam, defaultVisibility: "team" });
         mockStore.getInvocationRunAggregate.mockResolvedValue(aggregate({ total: 1, active: 1 }));
 
-        await createScheduler().trigger("auto-1", "manual-user");
+        await createScheduler().trigger("auto-1", asPerson("manual-user"));
 
         expect(mockSessionStoreCreate).toHaveBeenCalledWith(
           expect.objectContaining({ ownerTeamId: teamId, visibility: "team" })
@@ -4141,7 +4211,7 @@ describe("Scheduler", () => {
 
       const stub = createMockSessionStub();
       await expect(
-        createScheduler(createEnv(undefined, stub)).trigger("auto-1", "manual-user")
+        createScheduler(createEnv(undefined, stub)).trigger("auto-1", asPerson("manual-user"))
       ).rejects.toMatchObject({ reason: "target_team_missing_grant" });
       expect(mockTeamGrantCovers).toHaveBeenCalledWith(teamId, [98765]);
       expect(mockCheckRepositoryAccess).toHaveBeenCalledTimes(1);
@@ -4175,7 +4245,7 @@ describe("Scheduler", () => {
           aggregate({ total: 2, active: 1, failed: 1 })
         );
 
-        const result = await createScheduler().trigger("auto-1", "manual-user");
+        const result = await createScheduler().trigger("auto-1", asPerson("manual-user"));
 
         expect(result.runs).toEqual([
           expect.objectContaining({ repo_name: "web-app", status: "running" }),

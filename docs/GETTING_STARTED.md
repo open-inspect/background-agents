@@ -136,8 +136,8 @@ npm install -g wrangler
 
 ## Step 1: Fork the Repository
 
-Fork [ColeMurray/background-agents](https://github.com/ColeMurray/background-agents) to your GitHub
-account or organization.
+Fork [open-inspect/background-agents](https://github.com/open-inspect/background-agents) to your
+GitHub account or organization.
 
 ```bash
 # Clone your fork
@@ -597,8 +597,16 @@ The core path uses GitHub sign-in. To add or switch to Google, see
 > grants access. Use `allowed_emails` for individual users on shared domains (e.g. a specific
 > `person@gmail.com`) where `allowed_email_domains` would admit too many. `allowed_github_orgs`
 > checks membership at sign-in only with the signing-in user's OAuth token; existing sessions last
-> until session expiry. The `read:org` OAuth scope is requested only when org access is configured,
-> and GitHub Apps using org access need Organization permissions: Members read-only.
+> until session expiry. Org rules request no new OAuth scopes or `read:org`; GitHub Apps using org
+> rules need Organization permissions: Members read-only. After deployment, Owners and
+> Administrators can add rules under **Settings > Workspace access > Who can sign in**; those rules
+> add to these lists and cannot remove anything from them. See
+> [Sign-In Allowlist](AUTH.md#sign-in-allowlist). The same rules decide whether the Slack and Linear
+> bots may create an account for someone new, and they can match only exact-email and domain rules,
+> or unsafe allow-all when every list is empty (the bot still needs an attested email); the GitHub
+> bot acts only for people already known, unless unsafe allow-all is in effect. Where people are
+> admitted by GitHub username or organization alone, they sign in on the web first; see
+> [Bot enrollment](AUTH.md#bot-enrollment).
 
 ---
 
@@ -961,6 +969,13 @@ For the full runtime, lifecycle, and configuration model, see
 > **Important**: the Boat provider has no fleet-wide key of its own. Add the key for the models you
 > plan to use — `ANTHROPIC_API_KEY` for Claude — as a **global secret** in Settings > Secrets after
 > deploying. See [Secrets Management](SECRETS.md) for details.
+
+### EC2 (AWS-hosted control plane)
+
+When the control plane runs on AWS (see [AWS bring-up](AWS_BRING_UP.md)), sandboxes can run as EC2
+instances in the same account: one instance per session, stopped when idle and started again on the
+next prompt. Set `ec2_sandboxes` in the AWS Terraform environment, build the base AMI, and name it.
+See [EC2 Sandbox Provider](EC2_SANDBOX_PROVIDER.md).
 
 ---
 
@@ -1395,7 +1410,7 @@ Secrets for credentials:
 | `CLOUDFLARE_ACCOUNT_ID`                    | Your Cloudflare account ID                                                                                                        |
 | `CLOUDFLARE_WORKER_SUBDOMAIN`              | Your workers.dev subdomain                                                                                                        |
 | `R2_MEDIA_LOCATION`                        | R2 location hint for the media bucket (defaults to `ENAM`)                                                                        |
-| `R2_MEDIA_BUCKET_NAME`                     | Optional media bucket name override for a pre-created bucket                                                                      |
+| `R2_MEDIA_BUCKET_NAME`                     | Optional name for the media bucket Terraform creates (import an existing bucket first)                                            |
 | `DEPLOYMENT_NAME`                          | Your deployment name                                                                                                              |
 | `TEAMS_ENFORCEMENT`                        | Session enforcement: `off`, `shadow` (default), or `on`; prefer a repository variable                                             |
 | `R2_ACCESS_KEY_ID`                         | R2 access key ID                                                                                                                  |
@@ -1758,8 +1773,9 @@ that set no fleet-wide key in Terraform supply model credentials as secrets inst
 1. Go to **Settings > Secrets** in the web app
 2. Select **All Repositories (Global)** from the scope dropdown
 3. Add the key for your chosen provider (e.g., `ANTHROPIC_API_KEY` for Claude models or
-   `DEEPSEEK_API_KEY` for DeepSeek models, `ZHIPU_API_KEY` for Z.AI Coding Plan models, or
-   `OPENCODE_API_KEY` for OpenCode Zen and OpenCode Go models)
+   `DEEPSEEK_API_KEY` for DeepSeek models, `KIMI_API_KEY` for Kimi Coding Plan models,
+   `ZHIPU_API_KEY` for Z.AI Coding Plan models, or `OPENCODE_API_KEY` for OpenCode Zen and OpenCode
+   Go models)
 4. Click **Save**
 
 See [Secrets Management](SECRETS.md) for more on global and repository secrets.

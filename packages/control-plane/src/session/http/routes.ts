@@ -47,13 +47,17 @@ export interface SessionInternalRouteHandlers {
   archive: SessionInternalRouteHandler;
   unarchive: SessionInternalRouteHandler;
   expireDraft: SessionInternalRouteHandler;
+  mcpContext: SessionInternalRouteHandler;
+  mcpClose: SessionInternalRouteHandler;
   verifySandboxToken: SessionInternalRouteHandler;
+  sandboxBootstrap: SessionInternalRouteHandler;
   openaiTokenRefresh: SessionInternalRouteHandler;
   xaiTokenRefresh: SessionInternalRouteHandler;
   scmCredentials: SessionInternalRouteHandler;
   tunnelUrls: SessionInternalRouteHandler;
   spawnContext: SessionInternalRouteHandler;
   activePromptAuthor: SessionInternalRouteHandler;
+  memoryPromptContext: SessionInternalRouteHandler;
   childSummary: SessionInternalRouteHandler;
   parentPrompt: SessionInternalRouteHandler;
   cancel: SessionInternalRouteHandler;
@@ -73,6 +77,8 @@ export function createSessionInternalRoutes(
   handlers: SessionInternalRouteHandlers
 ): SessionInternalRoute[] {
   return [
+    { method: "POST", path: SessionInternalPaths.mcpContext, handler: handlers.mcpContext },
+    { method: "POST", path: SessionInternalPaths.mcpClose, handler: handlers.mcpClose },
     { method: "POST", path: SessionInternalPaths.init, handler: handlers.init },
     { method: "GET", path: SessionInternalPaths.state, handler: handlers.state },
     { method: "GET", path: SessionInternalPaths.snapshot, handler: handlers.snapshot },
@@ -126,6 +132,11 @@ export function createSessionInternalRoutes(
     },
     {
       method: "POST",
+      path: SessionInternalPaths.sandboxBootstrap,
+      handler: handlers.sandboxBootstrap,
+    },
+    {
+      method: "POST",
       path: SessionInternalPaths.openaiTokenRefresh,
       handler: handlers.openaiTokenRefresh,
     },
@@ -145,6 +156,11 @@ export function createSessionInternalRoutes(
       method: "GET",
       path: SessionInternalPaths.activePromptAuthor,
       handler: handlers.activePromptAuthor,
+    },
+    {
+      method: "GET",
+      path: SessionInternalPaths.memoryPromptContext,
+      handler: handlers.memoryPromptContext,
     },
     { method: "GET", path: SessionInternalPaths.childSummary, handler: handlers.childSummary },
     { method: "POST", path: SessionInternalPaths.parentPrompt, handler: handlers.parentPrompt },

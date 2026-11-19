@@ -1,11 +1,11 @@
 # Available Models
 
 Open-Inspect exposes these models in the model picker and integration preferences. The default
-enabled set includes Anthropic and OpenAI models. xAI / SuperGrok, OpenCode Zen, OpenCode Go, Z.AI
-Coding Plan, and DeepSeek models are available but must be enabled in **Settings > Models**. OpenAI
-and SuperGrok subscriptions are configured in **Settings > Provider Accounts**; OpenCode Zen and
-OpenCode Go require `OPENCODE_API_KEY`; Z.AI Coding Plan requires `ZHIPU_API_KEY`; DeepSeek requires
-`DEEPSEEK_API_KEY`.
+enabled set includes Anthropic and OpenAI models. xAI / SuperGrok, OpenCode Zen, OpenCode Go, Kimi
+Coding Plan, Z.AI Coding Plan, and DeepSeek models are available but must be enabled in **Settings >
+Models**. OpenAI and SuperGrok subscriptions are configured in **Settings > Provider Accounts**;
+OpenCode Zen and OpenCode Go require `OPENCODE_API_KEY`; Kimi Coding Plan requires `KIMI_API_KEY`;
+Z.AI Coding Plan requires `ZHIPU_API_KEY`; DeepSeek requires `DEEPSEEK_API_KEY`.
 
 OpenAI, xAI and Anthropic session selectors offer provider policy, any active connected account, and
 API-key mode. Automation editors can resolve defaults on each run or pin an account/API-key choice.
@@ -62,6 +62,9 @@ OpenAI models support connected ChatGPT provider accounts or `OPENAI_API_KEY` mo
 | `openai/gpt-6-astra`   | GPT-6 Astra   | Most capable model for complex, demanding work      | low, medium, high, xhigh, max       | medium         |
 | `openai/gpt-6-sol`     | GPT-6 Sol     | Complex coding and agentic workflows                | none, low, medium, high, xhigh, max | medium         |
 | `openai/gpt-6.1-sol`   | GPT-6.1 Sol   | Complex coding, computer use, and professional work | low, medium, high, xhigh, max       | medium         |
+| `openai/gpt-6.1-terra` | GPT-6.1 Terra | Visual reasoning, computer use, and natural writing | none, low, medium, high, xhigh, max | medium         |
+| `openai/gpt-6.2-astra` | GPT-6.2 Astra | Most capable model for your hardest projects        | low, medium, high, xhigh, max       | medium         |
+| `openai/gpt-6.2-sol`   | GPT-6.2 Sol   | Efficient everyday model for coding and agents      | low, medium, high, xhigh, max       | medium         |
 | `openai/gpt-6-luna`    | GPT-6 Luna    | Efficient model for focused, high-volume tasks      | none, low, medium, high, xhigh, max | medium         |
 
 ## xAI / SuperGrok
@@ -82,16 +85,26 @@ instructions.
 OpenCode Zen models require `OPENCODE_API_KEY` as a global or repository secret. Zen is
 pay-per-token against `https://opencode.ai/zen/v1`.
 
-| Model ID                | Display name | Description   | Reasoning efforts | Default effort |
-| ----------------------- | ------------ | ------------- | ----------------- | -------------- |
-| `opencode/kimi-k2.5`    | Kimi K2.5    | Moonshot AI   | Not supported     | N/A            |
-| `opencode/kimi-k2.6`    | Kimi K2.6    | Moonshot AI   | Not supported     | N/A            |
-| `opencode/kimi-k3`      | Kimi K3      | Moonshot AI   | Not supported     | N/A            |
-| `opencode/minimax-m2.5` | MiniMax M2.5 | MiniMax       | Not supported     | N/A            |
-| `opencode/qwen3.7-max`  | Qwen3.7 Max  | Alibaba Cloud | Not supported     | N/A            |
-| `opencode/glm-5`        | GLM 5        | Z.ai 744B MoE | Not supported     | N/A            |
-| `opencode/glm-5.1`      | GLM 5.1      | Z.ai          | Not supported     | N/A            |
-| `opencode/glm-5.2`      | GLM 5.2      | Z.ai          | Not supported     | N/A            |
+Reasoning efforts on Zen and Go models are the effort levels the models.dev catalog lists for each
+model. A model the catalog marks only as reasoning on or off, such as LongCat 2.0, has none. Most
+have no default effort, so the gateway's own default applies unless the session has one. That
+includes an effort carried over from an earlier message, a saved Slack preference or a parent
+session, which is sent whenever the new model supports that level. The Gemini models default to
+high, the thinking level OpenCode already sends for them when none is chosen.
+
+| Model ID                    | Display name     | Description   | Reasoning efforts | Default effort |
+| --------------------------- | ---------------- | ------------- | ----------------- | -------------- |
+| `opencode/kimi-k2.5`        | Kimi K2.5        | Moonshot AI   | Not supported     | N/A            |
+| `opencode/kimi-k2.6`        | Kimi K2.6        | Moonshot AI   | Not supported     | N/A            |
+| `opencode/kimi-k3`          | Kimi K3          | Moonshot AI   | low, high, max    | Not set        |
+| `opencode/minimax-m2.5`     | MiniMax M2.5     | MiniMax       | Not supported     | N/A            |
+| `opencode/qwen3.7-max`      | Qwen3.7 Max      | Alibaba Cloud | Not supported     | N/A            |
+| `opencode/glm-5`            | GLM 5            | Z.ai 744B MoE | Not supported     | N/A            |
+| `opencode/glm-5.1`          | GLM 5.1          | Z.ai          | Not supported     | N/A            |
+| `opencode/glm-5.2`          | GLM 5.2          | Z.ai          | high, max         | Not set        |
+| `opencode/gemini-4-carbon`  | Gemini 4 Carbon  | Google        | low, medium, high | high           |
+| `opencode/gemini-4-argon`   | Gemini 4 Argon   | Google        | low, medium, high | high           |
+| `opencode/gemini-3.8-flash` | Gemini 3.8 Flash | Google        | low, medium, high | high           |
 
 ## OpenCode Go
 
@@ -110,38 +123,39 @@ The catalog mirrors the model list Go publishes under
 [Endpoints](https://opencode.ai/docs/go/#endpoints), in the same order, with one exception: Go
 documents `minimax-m2.5`, but the OpenCode release pinned in
 `packages/sandbox-images/toolchain.json` does not resolve `opencode-go/minimax-m2.5`
-(`opencode models` lists 27 Go models, not 28), so it is left out rather than offered as a selection
-that fails. That model is reachable as `opencode/minimax-m2.5` on Zen.
+(`opencode models` does not list it), so it is left out rather than offered as a selection that
+fails. That model is reachable as `opencode/minimax-m2.5` on Zen.
 
-| Model ID                                   | Display name                 | Description                   | Reasoning efforts | Default effort |
-| ------------------------------------------ | ---------------------------- | ----------------------------- | ----------------- | -------------- |
-| `opencode-go/grok-4.6`                     | Grok 4.6                     | xAI                           | Not supported     | N/A            |
-| `opencode-go/gpt-5.6-luna`                 | GPT 5.6 Luna                 | OpenAI                        | Not supported     | N/A            |
-| `opencode-go/glm-5.3-flash`                | GLM 5.3 Flash                | Z.ai                          | Not supported     | N/A            |
-| `opencode-go/glm-5.3`                      | GLM 5.3                      | Z.ai                          | Not supported     | N/A            |
-| `opencode-go/glm-5.2`                      | GLM 5.2                      | Z.ai                          | Not supported     | N/A            |
-| `opencode-go/glm-5.1`                      | GLM 5.1                      | Z.ai                          | Not supported     | N/A            |
-| `opencode-go/kimi-k3`                      | Kimi K3                      | Moonshot AI                   | Not supported     | N/A            |
-| `opencode-go/kimi-k2.7-code`               | Kimi K2.7 Code               | Moonshot AI                   | Not supported     | N/A            |
-| `opencode-go/kimi-k2.6`                    | Kimi K2.6                    | Moonshot AI                   | Not supported     | N/A            |
-| `opencode-go/longcat-2.0`                  | LongCat 2.0                  | Meituan                       | Not supported     | N/A            |
-| `opencode-go/deepseek-v4.1-flash`          | DeepSeek V4.1 Flash          | DeepSeek                      | Not supported     | N/A            |
-| `opencode-go/deepseek-v4-pro`              | DeepSeek V4 Pro              | DeepSeek                      | Not supported     | N/A            |
-| `opencode-go/deepseek-v4-flash`            | DeepSeek V4 Flash            | DeepSeek                      | Not supported     | N/A            |
-| `opencode-go/deepseek-v4-flash-vision-exp` | DeepSeek V4 Flash Vision Exp | DeepSeek, experimental vision | Not supported     | N/A            |
-| `opencode-go/mimo-v2.5`                    | MiMo V2.5                    | Xiaomi                        | Not supported     | N/A            |
-| `opencode-go/mimo-v2.5-pro`                | MiMo V2.5 Pro                | Xiaomi                        | Not supported     | N/A            |
-| `opencode-go/minimax-m3`                   | MiniMax M3                   | MiniMax                       | Not supported     | N/A            |
-| `opencode-go/minimax-m2.7`                 | MiniMax M2.7                 | MiniMax                       | Not supported     | N/A            |
-| `opencode-go/muse-spark-1.3-contributor`   | Muse Spark 1.3 Contributor   | Multimodal contributor tier   | Not supported     | N/A            |
-| `opencode-go/muse-spark-1.2-contributor`   | Muse Spark 1.2 Contributor   | Multimodal contributor tier   | Not supported     | N/A            |
-| `opencode-go/qwen3.8-max`                  | Qwen3.8 Max                  | Alibaba Cloud                 | Not supported     | N/A            |
-| `opencode-go/qwen3.8-flash`                | Qwen3.8 Flash                | Alibaba Cloud                 | Not supported     | N/A            |
-| `opencode-go/qwen3.7-max`                  | Qwen3.7 Max                  | Alibaba Cloud                 | Not supported     | N/A            |
-| `opencode-go/qwen3.7-plus`                 | Qwen3.7 Plus                 | Alibaba Cloud                 | Not supported     | N/A            |
-| `opencode-go/qwen3.6-plus`                 | Qwen3.6 Plus                 | Alibaba Cloud                 | Not supported     | N/A            |
-| `opencode-go/hy4-preview`                  | Hy4 Preview                  | Tencent Hunyuan               | Not supported     | N/A            |
-| `opencode-go/hy3`                          | Hy3                          | Tencent Hunyuan               | Not supported     | N/A            |
+| Model ID                                   | Display name                 | Description                   | Reasoning efforts                   | Default effort |
+| ------------------------------------------ | ---------------------------- | ----------------------------- | ----------------------------------- | -------------- |
+| `opencode-go/grok-4.6`                     | Grok 4.6                     | xAI                           | Not supported                       | N/A            |
+| `opencode-go/gpt-5.6-luna`                 | GPT 5.6 Luna                 | OpenAI                        | none, low, medium, high, xhigh, max | Not set        |
+| `opencode-go/gemini-4-argon`               | Gemini 4 Argon               | Google                        | low, medium, high                   | high           |
+| `opencode-go/glm-5.3-flash`                | GLM 5.3 Flash                | Z.ai                          | low, high, max                      | Not set        |
+| `opencode-go/glm-5.3`                      | GLM 5.3                      | Z.ai                          | low, high, max                      | Not set        |
+| `opencode-go/glm-5.2`                      | GLM 5.2                      | Z.ai                          | high, max                           | Not set        |
+| `opencode-go/glm-5.1`                      | GLM 5.1                      | Z.ai                          | Not supported                       | N/A            |
+| `opencode-go/kimi-k3`                      | Kimi K3                      | Moonshot AI                   | max                                 | Not set        |
+| `opencode-go/kimi-k2.7-code`               | Kimi K2.7 Code               | Moonshot AI                   | Not supported                       | N/A            |
+| `opencode-go/kimi-k2.6`                    | Kimi K2.6                    | Moonshot AI                   | Not supported                       | N/A            |
+| `opencode-go/longcat-2.0`                  | LongCat 2.0                  | Meituan                       | Not supported                       | N/A            |
+| `opencode-go/deepseek-v4.1-flash`          | DeepSeek V4.1 Flash          | DeepSeek                      | low, high, max                      | Not set        |
+| `opencode-go/deepseek-v4-pro`              | DeepSeek V4 Pro              | DeepSeek                      | high, max                           | Not set        |
+| `opencode-go/deepseek-v4-flash`            | DeepSeek V4 Flash            | DeepSeek                      | Not supported                       | N/A            |
+| `opencode-go/deepseek-v4-flash-vision-exp` | DeepSeek V4 Flash Vision Exp | DeepSeek, experimental vision | Not supported                       | N/A            |
+| `opencode-go/mimo-v2.5`                    | MiMo V2.5                    | Xiaomi                        | Not supported                       | N/A            |
+| `opencode-go/mimo-v2.5-pro`                | MiMo V2.5 Pro                | Xiaomi                        | Not supported                       | N/A            |
+| `opencode-go/minimax-m3`                   | MiniMax M3                   | MiniMax                       | Not supported                       | N/A            |
+| `opencode-go/minimax-m2.7`                 | MiniMax M2.7                 | MiniMax                       | Not supported                       | N/A            |
+| `opencode-go/muse-spark-1.3-contributor`   | Muse Spark 1.3 Contributor   | Multimodal contributor tier   | low, medium, high, xhigh            | Not set        |
+| `opencode-go/muse-spark-1.2-contributor`   | Muse Spark 1.2 Contributor   | Multimodal contributor tier   | low, medium, high, xhigh            | Not set        |
+| `opencode-go/qwen3.8-max`                  | Qwen3.8 Max                  | Alibaba Cloud                 | low, medium, xhigh                  | Not set        |
+| `opencode-go/qwen3.8-flash`                | Qwen3.8 Flash                | Alibaba Cloud                 | low, medium, xhigh                  | Not set        |
+| `opencode-go/qwen3.7-max`                  | Qwen3.7 Max                  | Alibaba Cloud                 | Not supported                       | N/A            |
+| `opencode-go/qwen3.7-plus`                 | Qwen3.7 Plus                 | Alibaba Cloud                 | high, max                           | Not set        |
+| `opencode-go/qwen3.6-plus`                 | Qwen3.6 Plus                 | Alibaba Cloud                 | Not supported                       | N/A            |
+| `opencode-go/hy4-preview`                  | Hy4 Preview                  | Tencent Hunyuan               | none, high                          | Not set        |
+| `opencode-go/hy3`                          | Hy3                          | Tencent Hunyuan               | none, low, high                     | Not set        |
 
 Some of these models are reachable through more than one provider, billed against different
 credentials. `opencode-go/grok-4.6` and `xai/grok-4.6` are the same Grok model behind different
@@ -150,6 +164,28 @@ model behind three. Pick the entry whose billing you want.
 
 These models run on the OpenCode harness only — the Claude Agent harness runs Anthropic models
 exclusively.
+
+## Kimi Coding Plan
+
+Kimi Coding Plan models require a [Kimi Code membership API key](https://www.kimi.com/code/docs/en/)
+in `KIMI_API_KEY` as a global or repository secret. They run on OpenCode's built-in
+`kimi-code-plan-global` provider, which calls Kimi's overseas coding endpoint and uses the
+membership plan's allowance, separate from Kimi models billed through OpenCode Go. Model and
+context-window access depend on the plan: the Highspeed models need Pro or above (Allegretto or
+above on legacy plans), and a plan without access returns 403. See Kimi's
+[model requirements](https://www.kimi.com/code/docs/en/kimi-code/models.html). Prebuilt images from
+before runtime generation 79 may not list these models; rebuild one if a Kimi session reports the
+model as not found, then start a new session, because an existing session keeps its sandbox's model
+list.
+
+| Model ID                                          | Display name              | Description      | Reasoning efforts | Default effort |
+| ------------------------------------------------- | ------------------------- | ---------------- | ----------------- | -------------- |
+| `kimi-code-plan-global/k3.1-pro`                  | Kimi K3.1 Pro             | Kimi Coding Plan | Not supported     | N/A            |
+| `kimi-code-plan-global/k3.1-pro-highspeed`        | Kimi K3.1 Pro Highspeed   | Kimi Coding Plan | Not supported     | N/A            |
+| `kimi-code-plan-global/k3`                        | Kimi K3                   | Kimi Coding Plan | Not supported     | N/A            |
+| `kimi-code-plan-global/k3-256k`                   | Kimi K3 256K              | Kimi Coding Plan | Not supported     | N/A            |
+| `kimi-code-plan-global/kimi-for-coding`           | Kimi for Coding           | Kimi Coding Plan | Not supported     | N/A            |
+| `kimi-code-plan-global/kimi-for-coding-highspeed` | Kimi for Coding Highspeed | Kimi Coding Plan | Not supported     | N/A            |
 
 ## Z.AI Coding Plan
 

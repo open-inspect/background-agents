@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def test_image_bin_directory_heads_the_launch_path(provider):
     assert environment["PATH"].split(":")[0] == "/opt/openinspect/bin"
     tools = (REPO_ROOT / "packages/sandbox-images/install/tools.sh").read_text()
     languages = (REPO_ROOT / "packages/sandbox-images/install/languages.sh").read_text()
-    for command in ("agent-browser", "code-server", "ttyd", "google-chrome", "codex"):
+    for command in ("agent-browser", "code-server", "ttyd", "rg", "google-chrome", "codex"):
         assert f"/opt/openinspect/bin/{command}" in tools
     assert '"/opt/openinspect/bin/$command"' in languages
 
@@ -109,7 +110,7 @@ def test_agent_browser_installs_as_checked_native_binary():
 
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_pack_rejects_stale_locks_before_creating_context(checkout, tmp_path, provider):
-    path = checkout / "packages/sandbox-images/locks/runtime.txt"
+    path = checkout / "packages/sandbox-images/locks/python-tools.txt"
     path.write_text(path.read_text() + "\n")
     with pytest.raises(ValueError, match="stale"):
         pack_bundle(checkout, provider, tmp_path / "bundles")
@@ -150,18 +151,42 @@ def test_vercel_transitive_build_inputs_are_covered(checkout, source):
 
 
 @pytest.mark.parametrize(
-    "source",
+    ("provider", "source"),
     [
-        "packages/boat-infra/launcher.sh",
-        "packages/boat-infra/build-template.py",
-        "terraform/modules/boat-infra/scripts/build-snapshot.sh",
+        ("boat", "packages/boat-infra/launcher.sh"),
+        ("boat", "packages/boat-infra/build-template.py"),
+        ("boat", "terraform/modules/boat-infra/scripts/build-snapshot.sh"),
+        ("ec2", "packages/ec2-infra/launcher.sh"),
+        ("ec2", "packages/ec2-infra/exec-runtime.py"),
+        ("ec2", "packages/ec2-infra/openinspect-sandbox.service"),
+        ("ec2", "packages/ec2-infra/build-ami.py"),
+        ("ec2", "packages/ec2-infra/image_scripts.py"),
     ],
 )
-def test_boat_hash_covers_launcher_builder_and_deployment(checkout, source):
-    before = plan_image(checkout, "boat")["buildHash"]
+def test_vm_provider_hash_covers_launcher_builder_and_deployment(checkout, provider, source):
+    before = plan_image(checkout, provider)["buildHash"]
     path = checkout / source
     path.write_text(path.read_text() + "\n")
-    assert plan_image(checkout, "boat")["buildHash"] != before
+    assert plan_image(checkout, provider)["buildHash"] != before
+
+
+def test_pack_exports_runtime_requirements_from_uv_lock(checkout, tmp_path):
+    lock = checkout / "packages/sandbox-runtime/uv.lock"
+    packed = pack_bundle(checkout, "e2b", tmp_path / "bundles")
+    requirements = (packed.directory / "runtime-requirements.txt").read_text()
+    pinned = re.search(r'name = "cryptography"\nversion = "([^"]+)"', lock.read_text())
+    assert pinned
+    assert f"cryptography=={pinned[1]} \\\n    --hash=sha256:" in requirements
+
+
+def test_pack_rejects_runtime_uv_lock_out_of_sync_with_pyproject(checkout, tmp_path):
+    pyproject = checkout / "packages/sandbox-runtime/pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace("dependencies = [", 'dependencies = [\n    "six",', 1)
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        pack_bundle(checkout, "e2b", tmp_path / "bundles")
+    assert not (tmp_path / "bundles").exists()
 
 
 def test_runtime_assets_are_packed_without_per_file_manifest(checkout, tmp_path):

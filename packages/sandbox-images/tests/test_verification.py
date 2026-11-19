@@ -2,6 +2,7 @@
 
 import contextlib
 import itertools
+import json
 import runpy
 import socket
 import sys
@@ -13,6 +14,26 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 verification = runpy.run_path(str(Path(__file__).parents[1] / "verify/smoke_test.py"))
+
+
+def test_deployed_image_verification_rejects_missing_model_prices(monkeypatch):
+    inspect = verification["inspect_image"]
+    probe = Mock()
+
+    def run(command, **_kwargs):
+        if "sandbox_runtime.model_catalog" in command:
+            assert command[-1] == "--check"
+            raise RuntimeError("Model price catalog unavailable")
+        return "runtime-version"
+
+    probe.run.side_effect = run
+    monkeypatch.setitem(inspect.__globals__, "Probe", Mock(return_value=probe))
+    monkeypatch.setitem(inspect.__globals__, "observed_tool_version", Mock())
+    tools = json.loads((Path(__file__).parents[1] / "toolchain.json").read_text())
+    with pytest.raises(RuntimeError, match="Model price catalog unavailable"):
+        inspect(
+            {"target": {"node": "24"}, "runtimeVersion": "runtime-version"}, tools, services=True
+        )
 
 
 @pytest.mark.parametrize("command", ["install", "verify"])
@@ -76,6 +97,11 @@ def test_smoke_test_preserves_failures(monkeypatch):
         ),
         ("ttyd", "ttyd version 1.7.7", "1.7.7"),
         ("ttyd", "ttyd version 1.7.7-40e79c7", "1.7.7"),
+        (
+            "rg",
+            "ripgrep 15.2.0 (rev 0a88cdd5a4)\n\nfeatures:+pcre2\nPCRE2 10.45 is available (JIT is available)",
+            "15.2.0",
+        ),
         ("google-chrome", "Google Chrome for Testing 152.0.7977.82", "152.0.7977.82"),
     ],
 )

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 from claude_agent_sdk import (
@@ -38,10 +39,10 @@ from sandbox_runtime.harness import AgentHarness, HarnessPrompt, HarnessStartErr
 from sandbox_runtime.harness.claude import (
     MAX_STDOUT_MESSAGE_BYTES,
     bare_model_id,
-    mcp_server_options,
     reasoning_options,
 )
 from sandbox_runtime.harness.claude_env import ClaudeAuthMode
+from sandbox_runtime.harness.claude_mcp import mcp_server_options
 from sandbox_runtime.harness.claude_translate import AUTHENTICATION_FAILED_MESSAGE
 from tests.claude_fakes import (
     FakeCredentialClient,
@@ -52,9 +53,6 @@ from tests.claude_fakes import (
     _stream,
     _text_delta,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestOpen:
@@ -208,6 +206,40 @@ class TestOptions:
         assert "mcp__linear__*" in options["allowed_tools"]
         assert "mcp__local__*" in options["allowed_tools"]
         assert "Bash" in options["allowed_tools"]
+
+    async def test_single_directory_session_passes_no_extra_options(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, turns=[[_result(0.1)]])
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="hi"))
+        options = h.client.options
+        assert "add_dirs" not in options
+        assert "claudeMdExcludes" not in json.loads(options["settings"])
+
+    async def test_multi_repo_session_adds_members_and_skips_native_workspace_notes(
+        self, tmp_path: Path
+    ) -> None:
+        """The other members reach the CLI as ``--add-dir``; the workspace notes,
+        already in the system prompt, are kept out of its native AGENTS.md load."""
+        h = Harness(
+            tmp_path,
+            turns=[[_result(0.1)]],
+            add_dirs=(tmp_path / "frontend", tmp_path / "infra"),
+            claude_md_excludes=(str(tmp_path / "AGENTS.md"),),
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="hi"))
+        options = h.client.options
+        assert options["cwd"] == str(tmp_path / "repo")
+        assert options["add_dirs"] == [str(tmp_path / "frontend"), str(tmp_path / "infra")]
+        assert json.loads(options["settings"]) == {
+            "attribution": {"commit": "", "pr": "", "sessionUrl": False},
+            "feedbackDrafts": "off",
+            "feedbackSurveyRate": 0,
+            "claudeMdExcludes": [str(tmp_path / "AGENTS.md")],
+        }
+        assert options["setting_sources"] == ["user", "project"]
 
     async def test_stdout_ceiling_clears_the_whole_attachment_budget(self, tmp_path: Path) -> None:
         """One NDJSON line carries every attachment the runtime accepts.
@@ -535,11 +567,23 @@ class TestTranslation:
             UserMessage(
                 content=[ToolResultBlock(tool_use_id="call_bg", content="x", is_error=False)]
             ),
-            _result(0.1, origin={"kind": "task-notification"}),
+            _result(
+                0.1,
+                origin={"kind": "task-notification"},
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 4,
+                    "cache_read_input_tokens": 3,
+                },
+            ),
         ]
         our_turn = [
             AssistantMessage(content=[TextBlock("real answer")], model="m", message_id="msg_1"),
-            _result(0.3, origin={"kind": "human"}),
+            _result(
+                0.3,
+                origin={"kind": "human"},
+                usage={"input_tokens": 2, "output_tokens": 1, "cache_creation_input_tokens": 5},
+            ),
         ]
         h = Harness(tmp_path, turns=[injected_turn + our_turn])
         await h.harness.open()
@@ -550,12 +594,203 @@ class TestTranslation:
         # so the session's cost still adds up.
         assert outcome.success is True and outcome.message_cost_usd == pytest.approx(0.3)
         assert [e["content"] for e in events if e["type"] == "token"] == ["real answer"]
-        assert [e for e in events if e["type"] == "tool"] == []
-        assert len([e for e in events if e["type"] == "step_finish"]) == 1
+        assert [e for e in events if e["type"] == "tool_call"] == []
+        finishes = [e for e in events if e["type"] == "step_finish"]
+        assert len(finishes) == 1
+        assert finishes[0]["messageId"] == "m1"
+        assert finishes[0]["tokens"] == {
+            "input": 12,
+            "output": 5,
+            "cache": {"read": 3, "write": 5},
+        }
+
+    @pytest.mark.asyncio
+    async def test_multiple_injected_results_with_partial_usage_count_once(
+        self, tmp_path: Path
+    ) -> None:
+        turn = [
+            UserMessage(content="first notification", origin={"kind": "task-notification"}),
+            _result(
+                0.1,
+                origin={"kind": "task-notification"},
+                subtype="error_during_execution",
+                is_error=True,
+                result="injected failed",
+                usage={"input_tokens": 7, "cache_read_input_tokens": 2},
+            ),
+            UserMessage(content="second notification", origin={"kind": "channel"}),
+            AssistantMessage(content=[TextBlock("secret")], model="m", message_id="injected"),
+            _result(0.2, usage={"output_tokens": 3, "cache_creation_input_tokens": 4}),
+            UserMessage(content="third notification", origin={"kind": "peer"}),
+            _result(0.25, origin={"kind": "peer"}, usage=None),
+            AssistantMessage(content=[TextBlock("answer")], model="m", message_id="human"),
+            _result(0.4, origin={"kind": "human"}, usage={"output_tokens": 5}),
+        ]
+        h = Harness(tmp_path, turns=[turn, [_result(0.5, usage={"input_tokens": 2})]])
+        await h.harness.open()
+        await h.harness.create_session()
+        events, outcome = await _run(h.harness)
+
+        assert outcome.success is True and outcome.message_cost_usd == pytest.approx(0.4)
+        assert [e["content"] for e in events if e["type"] == "token"] == ["answer"]
+        assert [e["type"] for e in events] == ["step_start", "token", "step_finish"]
+        assert events[-1]["tokens"] == {
+            "input": 7,
+            "output": 8,
+            "cache": {"read": 2, "write": 4},
+        }
+        next_events, _ = await _run(h.harness, HarnessPrompt(message_id="m2", text="next"))
+        assert next_events[0]["tokens"] == {"input": 2}
+
+    @pytest.mark.asyncio
+    async def test_invalid_boolean_human_usage_does_not_add_to_injected_tokens(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(
+            tmp_path,
+            turns=[
+                [
+                    UserMessage(content="notification", origin={"kind": "task-notification"}),
+                    _result(
+                        0.1,
+                        origin={"kind": "task-notification"},
+                        usage={"input_tokens": 3, "output_tokens": 2},
+                    ),
+                    _result(
+                        0.2,
+                        origin={"kind": "human"},
+                        usage={"input_tokens": True, "output_tokens": 4},
+                    ),
+                ]
+            ],
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        events, _ = await _run(h.harness)
+
+        assert events[-1]["tokens"] == {"input": 3, "output": 6}
+
+    @pytest.mark.asyncio
+    async def test_reset_inside_injected_turn_preserves_usage_and_rotates_session(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(
+            tmp_path,
+            turns=[
+                [_result(0.5, usage={"input_tokens": 2})],
+                [
+                    UserMessage(content="notification", origin={"kind": "task-notification"}),
+                    ConversationResetMessage(new_conversation_id="c2", uuid="u", session_id="s"),
+                    _result(
+                        0.1,
+                        session_id="rotated-id",
+                        origin={"kind": "task-notification"},
+                        usage={"input_tokens": 3},
+                    ),
+                    _result(
+                        0.2,
+                        session_id="rotated-id",
+                        origin={"kind": "human"},
+                        usage={"output_tokens": 4},
+                    ),
+                ],
+            ],
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="first"))
+        events, outcome = await _run(h.harness, HarnessPrompt(message_id="m2", text="second"))
+
+        assert outcome.success is True and outcome.message_cost_usd == pytest.approx(0.2)
+        assert h.harness.session_id == "rotated-id"
+        assert next(e for e in events if e["type"] == "step_finish")["tokens"] == {
+            "input": 3,
+            "output": 4,
+        }
+
+    @pytest.mark.asyncio
+    async def test_injected_result_rotates_session_even_without_a_human_result(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(
+            tmp_path,
+            turns=[
+                [_result(0.5)],
+                [
+                    UserMessage(content="notification", origin={"kind": "task-notification"}),
+                    ConversationResetMessage(new_conversation_id="c2", uuid="u", session_id="s"),
+                    _result(
+                        0.1,
+                        session_id="rotated-id",
+                        origin={"kind": "task-notification"},
+                        usage={"input_tokens": 3},
+                    ),
+                ],
+                [_result(0.1, session_id="rotated-id")],
+            ],
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="first"))
+        events, outcome = await _run(h.harness, HarnessPrompt(message_id="m2", text="second"))
+
+        assert outcome.success is False and "stream ended" in (outcome.error or "")
+        assert events == []
+        assert h.harness.session_id == "rotated-id"
+        await _run(h.harness, HarnessPrompt(message_id="m3", text="third"))
+        assert h.clients[1].options["resume"] == "rotated-id"
+
+    @pytest.mark.asyncio
+    async def test_missing_injected_usage_does_not_invent_tokens(self, tmp_path: Path) -> None:
+        h = Harness(
+            tmp_path,
+            turns=[
+                [
+                    UserMessage(content="notification", origin={"kind": "task-notification"}),
+                    _result(0.1, origin={"kind": "task-notification"}),
+                    _result(0.2, origin={"kind": "human"}),
+                ]
+            ],
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        events, outcome = await _run(h.harness)
+
+        assert outcome.success is True and outcome.message_cost_usd == pytest.approx(0.2)
+        assert len(events) == 1 and events[0]["type"] == "step_finish"
+        assert "tokens" not in events[0]
 
 
 class TestCostBaseline:
-    """§5.3: messageCostUsd = running total at turn end - baseline."""
+    """§5.3: messageCostUsd sums running-total deltas across resets."""
+
+    @pytest.mark.asyncio
+    async def test_injected_spend_before_reset_is_included_in_prompt_cost(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(
+            tmp_path,
+            turns=[
+                [_result(0.5)],
+                [
+                    UserMessage(content="first", origin={"kind": "task-notification"}),
+                    _result(0.6, origin={"kind": "task-notification"}),
+                    UserMessage(content="second", origin={"kind": "channel"}),
+                    ConversationResetMessage(new_conversation_id="c2", uuid="u", session_id="s"),
+                    _result(0.05, session_id="rotated-id", origin={"kind": "channel"}),
+                    _result(0.2, session_id="rotated-id", origin={"kind": "human"}),
+                ],
+            ],
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="first"))
+        events, outcome = await _run(h.harness, HarnessPrompt(message_id="m2", text="second"))
+
+        assert outcome.message_cost_usd == pytest.approx(0.3)
+        finish = next(e for e in events if e["type"] == "step_finish")
+        assert finish["messageCostUsd"] == pytest.approx(0.3)
+        assert finish["cost"] == pytest.approx(0.3)
 
     @pytest.mark.asyncio
     async def test_two_turns_then_restart_then_a_third(self, tmp_path: Path) -> None:
@@ -806,3 +1041,17 @@ class TestDefaultTranscriptLookup:
         )
         assert not _default_transcript_exists("not-a-uuid", tmp_path / "repo", config_dir)
         assert not _default_transcript_exists(session_id, tmp_path / "repo", tmp_path / "missing")
+
+    def test_finds_a_transcript_written_before_the_start_directory_moved(
+        self, tmp_path: Path
+    ) -> None:
+        """A multi-repo session started in /workspace resumes from the primary checkout."""
+        from sandbox_runtime.harness.claude import _default_transcript_exists
+
+        config_dir = tmp_path / "claude-config"
+        session_id = "617347e9-9ff5-4205-9efe-c185b3459127"
+        workspace_project = config_dir / "projects" / "-workspace"
+        workspace_project.mkdir(parents=True)
+        (workspace_project / f"{session_id}.jsonl").write_text("{}\n")
+
+        assert _default_transcript_exists(session_id, Path("/workspace/api"), config_dir)

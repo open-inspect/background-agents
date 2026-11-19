@@ -279,6 +279,22 @@ fix instead.
   `CLAUDE_CONFIG_DIR` (`~/.openinspect/claude/skills`); repository `.claude/` settings, hooks and
   agents load through `setting_sources=["user","project"]`, the same trust boundary as the
   repository's `.openinspect/setup.sh` and `.opencode/` directory under OpenCode.
+- **Multi-repository sessions.** The agent starts in the primary checkout, so its `.claude/`
+  settings, hooks, `CLAUDE.md`, rules and skills apply as in a single-repository session. If the
+  primary has no checkout (a failed sync on restore), it starts in `/workspace` instead. The
+  primary's `AGENTS.md`, unless it has a root `CLAUDE.md`, reaches the agent through the system
+  prompt as in a single-repository session. The other members with a checkout are passed as
+  `--add-dir` (one without is skipped): their skills, commands and agents (and the `enabledPlugins`
+  and `extraKnownMarketplaces` keys of their settings) load at start, so the trust boundary above
+  covers every member. A member's skill named like one of the primary's is hidden by the primary's,
+  with no qualified name to reach it on the bundled Claude Code. The hooks and other settings in
+  their `settings.json` don't run (a plugin a member enables brings its own hooks), and their
+  `CLAUDE.md` files and `.claude/rules/` don't load on their own; the generated
+  `/workspace/AGENTS.md` points at them by absolute path. That file reaches the agent through the
+  system prompt and is excluded from Claude Code's native `AGENTS.md` loading (under both its path
+  and its resolved path), so it appears once. After a Bash `cd` outside the start directory and the
+  added directories, Claude Code returns the shell to the start directory for the next command; a
+  chained `cd /workspace && …` works.
 - **Privacy.** The harness disables Claude Code's commit, pull request, and session-link
   attribution. It also disables nonessential Anthropic traffic, error reporting, feedback and
   surveys, and both Anthropic and OpenTelemetry usage telemetry. Model requests and Open-Inspect's
@@ -286,7 +302,9 @@ fix instead.
 - **Tools.** Open-Inspect's own tools are served to the Claude harness in-process as the `oi` MCP
   server: child sessions and `upload-media` always, `create-pull-request` when the session has a
   repository, and `slack-notify` when agent notifications are enabled for the repository. Session
-  MCP servers are passed through unchanged.
+  MCP servers are passed through, except that routed servers point at the control-plane MCP proxy. A
+  turn that may use personal (user OAuth) MCP servers restarts the SDK process with that turn's
+  servers.
 - **Sub-agents.** The child runs with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so an `Agent` tool
   call returns only when its sub-agent has finished, and several sub-agents launched in one message
   still run concurrently. This is the same contract as OpenCode's `task` tool, and the timeline

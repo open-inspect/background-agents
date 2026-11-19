@@ -2,6 +2,90 @@
 
 New features, integrations, and notable improvements to Open-Inspect — newest first.
 
+## November 10, 2026
+
+**Gemini on OpenCode Zen and Go.** Gemini 4 Carbon, Gemini 4 Argon, and Gemini 3.8 Flash are
+available in the opt-in OpenCode Zen group, and Gemini 4 Argon in the OpenCode Go group, using the
+existing `OPENCODE_API_KEY`. Each offers low, medium, and high reasoning effort, defaulting to high,
+the level OpenCode already sent for them. Gemini 4 Carbon was released on November 10; images whose
+model catalog was fetched before then may not list it, so rebuild one if a session reports the model
+as not found.
+
+**Reasoning effort on OpenCode Zen and Go.** Zen and Go models whose catalog entries list reasoning
+levels now show an Effort selector, among them Kimi K3, GLM 5.2 and 5.3, DeepSeek V4.1 Flash,
+DeepSeek V4 Pro, Qwen3.8, Muse Spark, Hy3, and GPT 5.6 Luna on Go. The selected effort was
+previously dropped for these providers. None has a default, so a session with no effort sends none.
+An effort carried over from an earlier message, a saved Slack preference or a parent session now
+reaches these models when they support that level, as it already did for Anthropic and OpenAI: a
+session on Claude at max that switches to GLM 5.2 runs GLM at max.
+
+## October 31, 2026
+
+**Kimi Coding Plan models.** Kimi K3.1 Pro, K3, Kimi for Coding, and their Highspeed and 256K
+variants run on the OpenCode harness with a Kimi Code membership API key saved as `KIMI_API_KEY`.
+Enable the opt-in Kimi Coding Plan group under Settings › Models. Requests use Kimi's coding
+endpoint and the membership plan's allowance, separate from OpenCode Go billing. Prebuilt images
+from before runtime generation 79 may not list these models; rebuild one if a Kimi session reports
+the model as not found.
+
+**Personal access tokens and an MCP server.** Issue tokens under **Settings › Access tokens** so
+local tools can call Open-Inspect as you. Each token expires, holds only the permissions you grant,
+and never exceeds your current role. The new `packages/mcp-server` uses a token to let Claude Code
+and other MCP clients work with sessions, automations, and skills. Requires D1 migration 0096. See
+the [MCP server README](packages/mcp-server/README.md).
+
+**Access token policy.** Administrators can turn all tokens off, cap their lifetime, limit the
+permissions they may hold, and revoke any member's tokens under **Settings › Access token policy**.
+Requires the new `workspace.personal_access_tokens.manage` permission and D1 migration 0097.
+
+## October 30, 2026
+
+**Managed MCP routing and personal OAuth.** Remote MCP servers can route through Open-Inspect so
+sandboxes never hold upstream credentials, and can use each user's own OAuth connection, set up
+under **Settings › Connections**. Personal servers work in OpenCode and Claude Agent sessions; Codex
+skips them with a warning. Requires D1 migration 0095; runtime generation 80 rebuilds prebuilt
+images. See [Personal MCP Connections](packages/control-plane/README.md#personal-mcp-connections).
+
+## October 29, 2026
+
+**Saved MCP credentials are listed by name.** Editing an MCP server used to show only that
+credentials existed, and saving a new value silently deleted every saved environment variable or
+header you didn't retype. The edit form now lists each saved name with its value hidden: leave a row
+blank to keep its value, enter a new value to replace it, or remove the row to delete it. Names are
+returned only to people with `mcp_servers.manage`; read-only users see neither names nor values, and
+values are never returned to anyone. API clients can send `keepCredentialKeys` with
+`PUT /mcp-servers/:id` for the same per-name edits; without it, sent credentials still replace the
+saved set.
+
+**Automation pull requests come from the GitHub App.** PRs opened by automation runs, including
+**Run now**, are now created by the GitHub App instead of the owner's account, so the owner can
+review them. The review bot can only comment on these PRs, and event automations matching the
+owner's login no longer fire on them. See
+[Creating Pull Requests](docs/HOW_IT_WORKS.md#creating-pull-requests).
+
+## October 28, 2026
+
+**Sign-in allowlist in Settings.** Owners and Administrators can edit who may sign in under
+**Settings › Workspace access** without redeploying. These rules add to the deployment's `ALLOWED_*`
+rules and can't narrow them. Requires D1 migrations 0093 and 0094. See
+[Sign-In Allowlist](docs/AUTH.md#sign-in-allowlist).
+
+**Session connections recover automatically.** Transient disconnects now retry without an attempt
+limit, with capped backoff and random jitter, rather than waiting for a click on **Reconnect** after
+a long outage. Each retry waits between half and all of its exponential delay, up to 30 seconds, so
+tabs affected by the same outage do not keep retrying in lockstep. Retries pause while the tab is
+hidden or the browser is offline and resume immediately once the tab is visible and online again.
+Existing connections stay open when a tab is hidden, but an expired authorization lease waits for
+visibility before reconnecting; a hidden session page may therefore stop maintaining sandbox
+presence while you use a separate editor or terminal. Session-expired connections fetch a fresh
+credential, and temporary credential-service failures retry instead of showing an authentication
+error. Actual authentication failures and server-overload closes still require user action.
+
+**New bot users must pass sign-in admission.** The Slack, Linear, and GitHub bots no longer create
+accounts for people the sign-in allowlist doesn't admit. Slack needs the `users:read.email` scope,
+and Slack users whose email the bot can't read, such as external Slack Connect users, can't start
+using it. See [Bot enrollment](docs/AUTH.md#bot-enrollment).
+
 ## October 27, 2026
 
 **Slack completion replies post once.** A retried completion callback or a redelivered queue job
@@ -15,7 +99,36 @@ cancelled consent screen, return to the login page with an error and a retry opt
 App lacks **Email addresses: Read-only**, the page names the permission to check and the control
 plane logs GitHub's status. Rate limits show a temporary failure instead.
 
+**Slack automations can trigger on bot messages.** Slack Message automations used to ignore every
+message from a bot or integration, so alerts from monitoring or CI tools could never start a run.
+Turn on **Trigger on bot messages** and add a **Slack User** condition listing the bot IDs (`B…`)
+allowed to trigger the automation; saving is refused without one. That list limits people too, so
+add anyone else who should still trigger it. Only a message's `text` is matched. Bots can start at
+most 10 runs of an automation per hour and never continue an existing session, and Open-Inspect's
+own messages never trigger anything. See [Bot messages](docs/AUTOMATIONS.md#bot-messages).
+
+**Personal memory follows its owner's prompts.** Your personal memories now serve only your own
+prompts, whatever the session's visibility. On someone else's prompt, an Autofix turn, or between
+prompts, the agent can't search, read, or save them, and once someone else has prompted a session it
+stops searching them there for good; the personal directives and catalog loaded when the session
+started still shape it. New team- and workspace-visible sessions you prompt yourself now save the
+personal facts the agent learns right away, until someone else prompts. Automation runs, manual ones
+included, and sessions started from Slack channels, Linear, or GitHub no longer include personal
+memories; Slack DMs work like the web. A child session spawned on someone else's prompt leaves out
+the parent owner's personal memories. Turning off **Use my personal memories in my sessions**, or
+suspending the account, now reaches existing sessions too. Only the owner sees personal items in a
+session's memory sidebar, and reads of personal memories are audited as `memory.personal_read`.
+Sessions prompted earlier keep the personal memories they loaded but stop searching them. See
+[Persistent session memory](docs/MEMORY.md).
+
 ## October 26, 2026
+
+**Codex sub-agents appear as tasks.** Most Codex models can spawn sub-agents, but their activity was
+dropped and a prompt could finish while they were still running. Each sub-agent now shows as a task
+with its tool calls grouped beneath it and its final message as the result, as on Claude Agent and
+OpenCode. The prompt finishes only after its sub-agents do, and their usage counts toward the
+prompt's tokens and cost. Sub-agents can use Open-Inspect tools. Nesting is limited to one level,
+and at most four threads, the parent included, run at once.
 
 **Fewer memory proposals.** Agents no longer weigh a memory at the end of every task; saving nothing
 is now the expected outcome. They save when you ask them to remember something, correct them, state
@@ -23,6 +136,13 @@ a standing preference, or confirm a non-obvious approach, or when they verify a 
 repository doesn't record and that would change what the next session does first. Work summaries,
 fixes already in the code, sandbox quirks, and guesses are skipped. See
 [Persistent session memory](docs/MEMORY.md).
+
+**Placement settings for the web app and sessions.** Two optional Terraform inputs let you move
+parts of the request path closer to your users and D1. `web_serverless_region` moves the Vercel web
+functions (default `iad1`) and takes effect after the web app is redeployed.
+`session_do_location_hint` asks Cloudflare to create new session Durable Objects in a chosen region,
+such as `weur` or `apac`; existing sessions stay where they are. Both default to current behavior.
+See [Co-locating the request path](terraform/README.md#co-locating-the-request-path).
 
 ## October 25, 2026
 

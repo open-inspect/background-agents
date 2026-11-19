@@ -42,7 +42,10 @@ const messageCompletionStateRowSchema = z.object({
   created_at: z.number(),
   started_at: z.number().nullable(),
 });
-const messageProcessingAuthorRowSchema = messageRowSchema.pick({ author_id: true });
+const messageProcessingAuthorRowSchema = messageRowSchema.pick({ author_id: true, source: true });
+const messageProcessingAuthorAccountRowSchema = messageRowSchema.pick({
+  author_canonical_user_id: true,
+});
 const sessionBudgetExhaustedRowSchema = sessionRowSchema.pick({ budget_exhausted: true });
 
 export interface RecordedMessageCompletion {
@@ -72,8 +75,16 @@ function parseMessageStatus(value: unknown): MessageStatus | null {
 
 /** Data for creating a message. */
 export interface CreateMessageData {
+  admittedCanonicalUserId?: string | null;
+  mcpEligible?: boolean;
   id: string;
   authorId: string;
+  /**
+   * The author's account as it is when the prompt is queued. Personal memory decisions read this
+   * snapshot, so later identity links or merges never reclassify a prompt; without one, the prompt
+   * counts as someone else's.
+   */
+  authorCanonicalUserId?: string | null;
   content: string;
   source: MessageSource;
   model?: string | null;
@@ -367,12 +378,14 @@ export class MessageRepository {
   createMessage(data: CreateMessageData): void {
     this.sql.exec(
       `INSERT INTO messages (
-         id, author_id, content, source, model, reasoning_effort, attachments,
-         callback_context, client_request_id, request_fingerprint, autofix_feedback_key,
-         autofix_pr_key, origin_context, status, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         id, author_id, author_canonical_user_id, content, source, model, reasoning_effort,
+         attachments, callback_context, client_request_id, request_fingerprint,
+         autofix_feedback_key, autofix_pr_key, origin_context, status, created_at,
+         admitted_canonical_user_id, mcp_eligible
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       data.id,
       data.authorId,
+      data.authorCanonicalUserId ?? null,
       data.content,
       data.source,
       data.model ?? null,
@@ -385,7 +398,9 @@ export class MessageRepository {
       data.autofixPrKey ?? null,
       data.originContext ?? null,
       data.status,
-      data.createdAt
+      data.createdAt,
+      data.admittedCanonicalUserId ?? null,
+      data.mcpEligible ? 1 : 0
     );
   }
 
@@ -409,7 +424,7 @@ export class MessageRepository {
   ): boolean {
     return this.transactionSync(() => {
       const claimed = this.sql.exec(
-        `UPDATE messages SET status = 'processing', started_at = ?
+        `UPDATE messages SET status = 'processing', started_at = ?, mcp_revision = mcp_revision + 1, mcp_context = NULL, mcp_closed = 0
          WHERE id = ? AND status = 'pending'
            AND NOT EXISTS (SELECT 1 FROM messages WHERE status = 'processing')
          RETURNING id`,
@@ -521,12 +536,51 @@ export class MessageRepository {
     return rows[0] ?? null;
   }
 
-  getProcessingMessageAuthor(): { author_id: string } | null {
+  getProcessingMessageAuthority(): { canonicalUserId: string | null; mcpEligible: boolean } | null {
+    const row = this.sql
+      .exec(
+        "SELECT admitted_canonical_user_id, mcp_eligible FROM messages WHERE status = 'processing' LIMIT 1"
+      )
+      .toArray()[0] as
+      { admitted_canonical_user_id: string | null; mcp_eligible: number } | undefined;
+    return row
+      ? { canonicalUserId: row.admitted_canonical_user_id, mcpEligible: row.mcp_eligible === 1 }
+      : null;
+  }
+
+  getProcessingMessageAuthor(): { author_id: string; source: MessageSource } | null {
     const result = this.sql.exec(
-      `SELECT author_id FROM messages WHERE status = 'processing' LIMIT 1`
+      `SELECT author_id, source FROM messages WHERE status = 'processing' LIMIT 1`
     );
     const rows = parseStorageRows(result.toArray(), messageProcessingAuthorRowSchema);
     return rows[0] ?? null;
+  }
+
+  /**
+   * The account the processing prompt was queued under: null when nothing is processing, for an
+   * Autofix turn, or for an author without an account.
+   */
+  getProcessingPromptAccount(): string | null {
+    const result = this.sql.exec(
+      `SELECT author_canonical_user_id FROM messages WHERE status = 'processing' LIMIT 1`
+    );
+    const row = parseStorageRows(result.toArray(), messageProcessingAuthorAccountRowSchema)[0];
+    return row?.author_canonical_user_id ?? null;
+  }
+
+  /**
+   * Whether a prompt queued under any account but `canonicalUserId`, or under none, has reached
+   * the agent. Prompts queued before accounts were recorded count as someone else's.
+   */
+  hasDispatchedPromptFromOtherUser(canonicalUserId: string): boolean {
+    const result = this.sql.exec(
+      `SELECT 1 AS present FROM messages
+       WHERE started_at IS NOT NULL
+         AND (author_canonical_user_id IS NULL OR author_canonical_user_id <> ?)
+       LIMIT 1`,
+      canonicalUserId
+    );
+    return result.toArray().length > 0;
   }
 }
 

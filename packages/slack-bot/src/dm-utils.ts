@@ -12,6 +12,14 @@ export function stripMentions(text: string): string {
 }
 
 /**
+ * Whether a Slack conversation ID names a one-to-one direct message. Slack prefixes those IDs with
+ * `D`; channels and group conversations use other prefixes.
+ */
+export function isDirectMessageChannel(channel: string): boolean {
+  return /^D[A-Z0-9]+$/.test(channel);
+}
+
+/**
  * Returns true if a Slack message event should be dispatched as a DM.
  * Filters out subtypes (bot_message, message_changed, message_deleted, etc.)
  * to prevent processing bot replies and edit/delete notifications. Messages
@@ -49,8 +57,13 @@ export function isDmDispatchable(event: {
  * bare `<@U…>` and piped `<@U…|display-name>` renderings. Slack user IDs are
  * `[A-Z0-9]+`, so the id is safe to splice into the pattern verbatim.
  */
-function mentionsUser(text: string, userId: string): boolean {
+export function mentionsUser(text: string, userId: string): boolean {
   return new RegExp(`<@${userId}(?:\\|[^>]*)?>`).test(text);
+}
+
+/** Returns true when `text` opens with a user mention, i.e. is addressed to that person. */
+export function startsWithUserMention(text: string): boolean {
+  return /^\s*<@[A-Z0-9]+(?:\|[^>]*)?>/.test(text);
 }
 
 /**

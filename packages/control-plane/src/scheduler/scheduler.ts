@@ -15,11 +15,11 @@ import type { SessionContinuityService } from "./session-continuity-service";
 import type * as Crypto from "../auth/crypto";
 import { allRunsUnauthorized, toAutomationRun, type AutomationStore } from "../db/automation-store";
 import type { Logger } from "../logger";
-import type { GitHubEnrichment } from "../session/identity";
 import {
   AutomationExecutionUnauthorizedError,
   AutomationTriggerBlockedError,
   type AutomationRunCompletion,
+  type ManualTriggerRequester,
   type SchedulerTickResult,
   type SchedulerTriggerResult,
   type SchedulerEventResult,
@@ -112,6 +112,7 @@ export class Scheduler {
         const result = await this.deps.invocations.start({
           automation,
           source: "schedule",
+          actorKind: "system",
           scheduledAt: automation.next_run_at!,
           advanceToNextRunAt: nextRunAt,
           repositories,
@@ -144,6 +145,7 @@ export class Scheduler {
                 id: this.deps.crypto.generateId(),
                 automation_id: automation.id,
                 source: "schedule",
+                actor_kind: "system",
                 scheduled_at: automation.next_run_at,
                 trigger_key: null,
                 concurrency_key: null,
@@ -193,11 +195,10 @@ export class Scheduler {
 
   // ─── Manual trigger ──────────────────────────────────────────────────────
 
-  /** Manually trigger an automation under the requesting user's authority. */
+  /** Manually trigger an automation under the requester's authority, within its ceiling. */
   async trigger(
     automationId: string,
-    requesterUserId: string,
-    requesterEnrichment: GitHubEnrichment | null = null
+    requester: ManualTriggerRequester
   ): Promise<SchedulerTriggerResult> {
     const store = this.deps.store;
     const automation = await store.getById(automationId);
@@ -208,10 +209,12 @@ export class Scheduler {
     const result = await this.deps.invocations.start({
       automation,
       source: "manual",
+      actorKind: requester.actorKind,
       executionPrincipal: {
-        platformUserId: requesterUserId,
-        participantUserId: requesterUserId,
-        scmEnrichment: requesterEnrichment,
+        platformUserId: requester.userId,
+        participantUserId: requester.userId,
+        scmEnrichment: requester.scmEnrichment,
+        permissionCeiling: requester.permissionCeiling,
       },
     });
 

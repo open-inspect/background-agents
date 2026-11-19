@@ -7,6 +7,7 @@ import {
   type AutomationRow,
   type AutomationRunRow,
   type AutomationInvocationRow,
+  type InvocationActorKind,
   type InvocationOverlapScope,
   type ScheduleAdvance,
   type AutomationRepositoryInsert,
@@ -39,8 +40,16 @@ import type { StartInvocationResult } from "./invocation-outcome";
 export interface StartInvocationParams {
   automation: AutomationRow;
   source: AutomationInvocationSource;
+  /**
+   * Who authored the triggering action. Required, so a new firing path has to
+   * decide: limits on bot-started runs count only `bot`.
+   */
+  actorKind: InvocationActorKind;
   invocationId?: string;
-  /** Human authority used for a manual firing; unattended sources use the automation owner. */
+  /**
+   * The requester's authority for a manual firing, bounded by its permission ceiling; unattended
+   * sources use the automation owner.
+   */
   executionPrincipal?: ExecutionPrincipal;
   /** Cron slot being served — becomes scheduled_at and the idempotency key (schedule source only). */
   scheduledAt?: number;
@@ -166,11 +175,13 @@ export class AutomationInvocationService {
       automation.owner_team_id === null
         ? null
         : await this.deps.teams.getById(automation.owner_team_id);
+    // Each child launch re-checks this request, ceiling included, against the selected targets.
     const authorization: AutomationExecutionAuthorizationRequest = {
       automationId: automation.id,
       executionUserId: executionPrincipal.platformUserId,
       requiresRepositoryUse: selection.length > 0,
       requiresEnvironmentUse: environmentSelection.length > 0,
+      permissionCeiling: executionPrincipal.permissionCeiling,
     };
     if (!(await this.deps.isAuthorized(authorization))) {
       return { outcome: "unauthorized", reason: executionDenialReason(team) };
@@ -266,6 +277,7 @@ export class AutomationInvocationService {
       id: invocationId,
       automation_id: automation.id,
       source,
+      actor_kind: params.actorKind,
       scheduled_at: params.scheduledAt ?? null,
       trigger_key: triggerKey,
       concurrency_key: concurrencyKey,
@@ -418,7 +430,7 @@ export class AutomationInvocationService {
   async skipEvent(
     params: Pick<
       StartInvocationParams,
-      "automation" | "triggerKey" | "concurrencyKey" | "triggerMetadata"
+      "automation" | "actorKind" | "triggerKey" | "concurrencyKey" | "triggerMetadata"
     >,
     skipReason: string
   ): Promise<StartInvocationResult> {
@@ -478,6 +490,7 @@ export class AutomationInvocationService {
         id: invocationId,
         automation_id: params.automation.id,
         source: params.source,
+        actor_kind: params.actorKind,
         scheduled_at: params.scheduledAt ?? null,
         trigger_key: null,
         concurrency_key: params.concurrencyKey ?? null,

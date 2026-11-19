@@ -63,6 +63,7 @@ const OPERATION_LABELS: Record<AuditOperationAction, string> = {
   "memory.approved": "Memory approved",
   "memory.rejected": "Memory rejected",
   "memory.superseded": "Memory superseded",
+  "memory.personal_read": "Personal memory read by an agent",
   "session.private_break_glass": "Private session break-glass read",
   "session.visibility_changed": "Session visibility changed",
   "session.moved": "Session moved",
@@ -74,6 +75,8 @@ const OPERATION_LABELS: Record<AuditOperationAction, string> = {
   "workspace.default_role_assigned": "Default role assigned",
   "workspace.owner_bootstrapped": "Owner bootstrapped",
   "workspace.user_merged": "Users merged",
+  "workspace.admission_policy_updated": "Sign-in allowlist updated",
+  "workspace.admission_policy_maintenance": "Sign-in allowlist maintenance",
   "team.created": "Team created",
   "team.updated": "Team updated",
   "team.archived": "Team archived",
@@ -89,6 +92,9 @@ const OPERATION_LABELS: Record<AuditOperationAction, string> = {
   "team.binding_added": "Team channel binding added",
   "team.binding_removed": "Team channel binding removed",
   "automation.executor_changed": "Automation executor changed",
+  "personal_access_token.created": "Personal access token created",
+  "personal_access_token.revoked": "Personal access token revoked",
+  "workspace.personal_access_token_policy_updated": "Access token policy updated",
 };
 
 const OBSERVATION_LABELS: Record<AuditObservationAction, string> = {
@@ -120,6 +126,12 @@ function badgeTreatment(interpretation: AuditEventInterpretation): BadgeTreatmen
 }
 
 function actorSummary(event: AuditEvent): string {
+  if (event.principalKind === "personal-access-token") {
+    const tokenId = event.metadata.personalAccessTokenId;
+    const token = typeof tokenId === "string" ? `Personal access token / ${tokenId}` : null;
+    const owner = event.actorUserIdSnapshot ? `User / ${event.actorUserIdSnapshot}` : null;
+    return [token ?? "Personal access token", owner].filter(Boolean).join(" / ");
+  }
   if (event.actorServiceSnapshot && event.actorUserIdSnapshot) {
     return `Service / ${event.actorServiceSnapshot} / User actor / ${event.actorUserIdSnapshot}`;
   }
