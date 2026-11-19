@@ -219,7 +219,6 @@ export default defineConfig({
     }),
   ],
   test: {
-    fsModuleCache: false,
     include: ["test/integration/**/*.test.ts"],
     // vitest 5 hands each new worker a "warm modules" snapshot of the file's
     // import graph. With the fs module cache on, every entry points at a cached
