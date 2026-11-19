@@ -236,6 +236,7 @@ SANDBOX_PROVIDER
 SANDBOX_INACTIVITY_TIMEOUT_MS # Optional; defaults to 600000
 SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS # Optional; defaults to 120000, minimum 60000
 SANDBOX_BOOT_TIMEOUT_MS       # Optional; defaults to 1800000, must exceed 240000
+IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS # Optional; defaults to 0 (rebuild whenever a base branch moves)
 
 # Daytona (only if SANDBOX_PROVIDER=daytona)
 DAYTONA_API_URL

@@ -1320,6 +1320,7 @@ R2_MEDIA_BUCKET_NAME
 SANDBOX_INACTIVITY_TIMEOUT_MS
 SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS
 SANDBOX_BOOT_TIMEOUT_MS
+IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS
 ENABLE_DURABLE_OBJECT_BINDINGS
 ENABLE_SERVICE_BINDINGS
 
@@ -1430,6 +1431,7 @@ Secrets for credentials:
 | `SANDBOX_INACTIVITY_TIMEOUT_MS`            | Regular sandbox idle timeout in milliseconds for user, Slack, and Linear sessions (defaults to `600000`)                          |
 | `SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS` | Sandbox idle timeout in milliseconds for automation, GitHub bot, and agent child sessions (defaults to `120000`, minimum `60000`) |
 | `SANDBOX_BOOT_TIMEOUT_MS`                  | Milliseconds a connected sandbox may keep booting before it fails (defaults to `1800000`)                                         |
+| `IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS`      | Deployment default minimum ms between prebuilt-image rebuilds from new commits only (defaults to `0`, no limit)                   |
 | `DAYTONA_API_URL`                          | Daytona API URL _(only if `sandbox_provider = "daytona"`)_                                                                        |
 | `DAYTONA_API_KEY`                          | Daytona API key _(only if `sandbox_provider = "daytona"`)_                                                                        |
 | `DAYTONA_BASE_SNAPSHOT`                    | Daytona base snapshot name prefix _(only if `sandbox_provider = "daytona"`)_                                                      |
