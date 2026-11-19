@@ -420,7 +420,31 @@ describe("ImageBuildScheduler", () => {
     expect(h.workflow.triggerBuildWithTarget).not.toHaveBeenCalled();
   });
 
-  it.each(["0", "1.5", " 3600000 ", "7d", "604800000ms", "0x10", "1e9"])(
+  it.each(["", "0"])(
+    "treats a minimum interval of %j as unset, without a warning",
+    async (value) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const getBranchHead = vi.fn(async () => "def456");
+      const h = harness({
+        env: createTestEnv({ IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS: value }),
+        sourceControl: { getBranchHead } as unknown as SourceControlProvider,
+      });
+      mockReadyImages(h, Date.now() - 60 * 60 * 1000);
+
+      const stats = await h.scheduler.run({ request_id: "cron-1", trace_id: "cron-1" });
+
+      expect(stats.scopesDeferred).toBe(0);
+      expect(stats.branchDrifted).toBe(1);
+      expect(stats.triggered).toBe(1);
+      const configWarnings = warn.mock.calls
+        .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .filter((entry) => entry.msg === "image_build.scheduler_config_invalid");
+      expect(configWarnings).toEqual([]);
+      warn.mockRestore();
+    }
+  );
+
+  it.each(["1.5", " 3600000 ", "7d", "604800000ms", "0x10", "1e9", "-1"])(
     "warns about a malformed minimum interval (%j) and checks branches as if unset",
     async (value) => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

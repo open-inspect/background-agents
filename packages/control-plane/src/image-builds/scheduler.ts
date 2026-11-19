@@ -243,8 +243,10 @@ export class ImageBuildScheduler {
     const provider = this.provider;
     const sourceControl = this.sourceControl;
     const scopes = await this.listScopes(this.db);
+    // "0" disables the interval, the same as leaving it unset.
+    const rawMinRebuildIntervalMs = this.env.IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS;
     const { timeoutMs: minRebuildIntervalMs, rejectedValue } = parseTimeoutMsSetting(
-      this.env.IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS,
+      rawMinRebuildIntervalMs === "0" ? undefined : rawMinRebuildIntervalMs,
       { defaultMs: 0, minMs: 1 }
     );
     if (rejectedValue !== null) {
