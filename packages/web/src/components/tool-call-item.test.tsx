@@ -87,7 +87,7 @@ describe("ToolCallItem", () => {
     const patchPre = screen.getByText("Patch:").nextElementSibling;
     expect(patchPre?.textContent).toBe(patchText);
     expect(patchPre).toHaveClass("overflow-x-auto", "whitespace-pre");
-    expect(patchPre).not.toHaveClass("whitespace-pre-wrap", "[overflow-wrap:anywhere]");
+    expect(patchPre).not.toHaveClass("whitespace-pre-wrap", "wrap-anywhere");
   });
 
   it("keeps Bash output preformatted and horizontally scrollable", () => {
@@ -108,7 +108,7 @@ describe("ToolCallItem", () => {
     const outputPre = screen.getByText("Output:").nextElementSibling;
     expect(outputPre?.textContent).toBe(output);
     expect(outputPre).toHaveClass("overflow-x-auto", "whitespace-pre");
-    expect(outputPre).not.toHaveClass("whitespace-pre-wrap", "[overflow-wrap:anywhere]");
+    expect(outputPre).not.toHaveClass("whitespace-pre-wrap", "wrap-anywhere");
   });
 
   it("uses the rich renderer for create-pull-request regardless of tool name casing", () => {

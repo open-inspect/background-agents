@@ -14,7 +14,7 @@ function AttachmentPreview({
 }) {
   return (
     <div
-      className="group/attachment relative w-16 h-16 border border-border bg-muted overflow-hidden flex-shrink-0"
+      className="group/attachment relative w-16 h-16 border border-border bg-muted overflow-hidden shrink-0"
       title={attachment.file.name}
     >
       <img
