@@ -32,7 +32,7 @@ async function fetchMode(
     method?: string;
     as?: { userId: string; role: "owner" | "administrator" | "member" | "viewer" };
     body?: string;
-    service?: "github-bot" | "linear-bot" | "slack-bot";
+    service?: "discord-bot" | "github-bot" | "linear-bot" | "slack-bot";
     actor?: string;
   } = {}
 ) {
@@ -379,13 +379,41 @@ describe("HTTP session access by enforcement mode", () => {
   );
 
   it.each(["off", "shadow", "on"])(
+    "blocks Discord completion reads after team ownership changes in %s mode",
+    async (mode) => {
+      const { sessionName, team } = await session("workspace");
+      const service = { service: "discord-bot" } as const;
+      const resources = ["events", "artifacts"];
+      await env.DB.prepare("UPDATE sessions SET owner_team_id = NULL WHERE id = ?")
+        .bind(sessionName)
+        .run();
+      for (const resource of resources) {
+        const path = `/sessions/${sessionName}/${resource}?purpose=publish`;
+        expect((await fetchMode(path, mode, service)).status).toBe(200);
+      }
+
+      await env.DB.prepare("UPDATE sessions SET owner_team_id = ? WHERE id = ?")
+        .bind(team.id, sessionName)
+        .run();
+      const runtime = vi.spyOn(env.SESSION, "get");
+      for (const resource of resources) {
+        const path = `/sessions/${sessionName}/${resource}?purpose=publish`;
+        expect((await fetchMode(path, mode, service)).status).toBe(404);
+      }
+      expect(runtime).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["off", "shadow", "on"])(
     "blocks queued Slack publication after channel rebinding in %s mode",
     async (mode) => {
       const { sessionName, team } = await session("workspace");
       const other = await otherTeam();
       await bindSlackChannel(team.id);
-      const path = `/sessions/${sessionName}/events?channel=slack:C1&purpose=slack-post`;
-      expect((await fetchMode(path, mode, { service: "slack-bot" })).status).toBe(200);
+      for (const purpose of ["publish", "slack-post"]) {
+        const path = `/sessions/${sessionName}/events?channel=slack:C1&purpose=${purpose}`;
+        expect((await fetchMode(path, mode, { service: "slack-bot" })).status).toBe(200);
+      }
       await env.DB.prepare(
         "UPDATE team_channel_bindings SET team_id = ? WHERE provider = 'slack' AND external_id = 'C1'"
       )

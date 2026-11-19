@@ -31,12 +31,12 @@ const LINEAR_CALLBACK_CONTEXT = {
 
 const DISCORD_CALLBACK_CONTEXT = {
   source: "discord",
-  channelId: "chan-1",
-  threadId: "thread-1",
-  userId: "user-1",
+  channelId: "123456789012345678",
+  threadId: "123456789012345679",
+  userId: "123456789012345680",
   repoFullName: "acme/api",
   model: "anthropic/claude-opus-5",
-  statusMessage: { id: "status-1", startedAt: 1_700_000_000_000 },
+  statusMessage: { id: "123456789012345681", startedAt: 1_700_000_000_000 },
 };
 
 const SLACK_CALLBACK_CONTEXT = {
@@ -791,7 +791,7 @@ describe("CallbackNotificationService", () => {
 
     it("rejects invalid Discord completion payloads without retrying", async () => {
       harness.repository.getMessageCallbackContext.mockReturnValue({
-        callback_context: JSON.stringify({ source: "discord", channelId: "chan-1" }),
+        callback_context: JSON.stringify({ ...DISCORD_CALLBACK_CONTEXT, channelId: "chan-1" }),
         source: "discord",
       });
 
@@ -839,8 +839,8 @@ describe("CallbackNotificationService", () => {
           sessionId: "session-123",
           timestamp: expect.any(Number),
           context: {
-            channelId: "chan-1",
-            threadId: "thread-1",
+            channelId: DISCORD_CALLBACK_CONTEXT.channelId,
+            threadId: DISCORD_CALLBACK_CONTEXT.threadId,
             statusMessage: DISCORD_CALLBACK_CONTEXT.statusMessage,
           },
           signature: expect.any(String),
@@ -930,7 +930,10 @@ describe("CallbackNotificationService", () => {
       await notify();
       expect(harness.discordBot.fetch).toHaveBeenCalledOnce();
       const body = JSON.parse(String(harness.discordBot.fetch.mock.calls[0][1]?.body));
-      expect(body.context).toEqual({ channelId: "chan-1", ...(withThread ? { threadId } : {}) });
+      expect(body.context).toEqual({
+        channelId: context.channelId,
+        ...(withThread ? { threadId } : {}),
+      });
       expect(discordPublicationStoppedCallbackSchema.safeParse(body).success).toBe(true);
     });
   });
@@ -962,8 +965,8 @@ describe("CallbackNotificationService", () => {
       const stopped = JSON.parse(String(harness.discordBot.fetch.mock.calls[1][1]?.body));
       expect(discordPublicationStoppedCallbackSchema.safeParse(stopped).success).toBe(true);
       expect(stopped.context).toEqual({
-        channelId: "chan-1",
-        threadId: "thread-1",
+        channelId: DISCORD_CALLBACK_CONTEXT.channelId,
+        threadId: DISCORD_CALLBACK_CONTEXT.threadId,
         statusMessage: DISCORD_CALLBACK_CONTEXT.statusMessage,
       });
       expect(stopped).not.toHaveProperty("error");
@@ -1816,7 +1819,7 @@ describe("CallbackNotificationService", () => {
       );
       expect(harness.publicationScope.getChannelBinding).not.toHaveBeenCalled();
       const body = JSON.parse(String(harness.discordBot.fetch.mock.calls[0][1]?.body));
-      expect(body.context.statusMessage).toEqual({ id: "status-1", startedAt: 1_700_000_000_000 });
+      expect(body.context.statusMessage).toEqual(DISCORD_CALLBACK_CONTEXT.statusMessage);
       expect(discordToolCallCallbackSchema.safeParse(body).success).toBe(true);
       expect(await verifyCallbackSignature(body, "test-secret")).toBe(true);
     });

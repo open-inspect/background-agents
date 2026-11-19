@@ -12,7 +12,7 @@ import { GlobalSecretsStore } from "../../src/db/global-secrets";
 import { UserStore } from "../../src/db/user-store";
 import { REPOS_CACHE_KEY, reposCacheIdentity } from "../../src/routes/repos";
 import { cleanD1Tables } from "./cleanup";
-import { enrollSlackActor, initNamedSession, seedSandboxAuth } from "./helpers";
+import { enrollSlackActor, initNamedSession, queryDO, seedSandboxAuth } from "./helpers";
 
 const SERVICE_SECRET: Record<ServiceName, string> = {
   web: "test-service-secret-web",
@@ -387,6 +387,63 @@ describe("sig1 service-credential authentication", () => {
     expect(deniedByServiceCeiling.status).toBe(403);
     await expect(deniedByServiceCeiling.json()).resolves.toMatchObject({
       code: "service_capability_required",
+    });
+  });
+
+  it("keeps callback contexts bound to the signed prompt service and source", async () => {
+    const { stub, sessionName } = await initNamedSession("callback-source-ownership");
+    const url = `https://test.local/sessions/${sessionName}/prompt`;
+    const discordContext = {
+      source: "discord",
+      channelId: "100000000000000001",
+      userId: "100000000000000002",
+      repoFullName: "acme/widgets",
+      model: "anthropic/claude-haiku-4-5",
+    };
+    const slackContext = {
+      source: "slack",
+      channel: "C123",
+      threadTs: "1.2",
+      repoFullName: "acme/widgets",
+      model: "anthropic/claude-haiku-4-5",
+    };
+
+    for (const [source, callbackContext, stored] of [
+      ["discord", discordContext, discordContext],
+      ["slack", slackContext, null],
+      [undefined, slackContext, null],
+    ] as const) {
+      const response = await signedFetch({
+        service: "discord-bot",
+        method: "POST",
+        url,
+        body: JSON.stringify({ content: "Check callback ownership", source, callbackContext }),
+      });
+      expect(response.status).toBe(200);
+      const { messageId } = await response.json<{ messageId: string }>();
+      const [message] = await queryDO<{ source: string; callback_context: string | null }>(
+        stub,
+        "SELECT source, callback_context FROM messages WHERE id = ?",
+        messageId
+      );
+      expect(message.source).toBe(source ?? "web");
+      const context = message.callback_context && JSON.parse(message.callback_context);
+      expect(context).toEqual(stored);
+    }
+
+    const mismatchedContext = await signedFetch({
+      service: "discord-bot",
+      method: "POST",
+      url,
+      body: JSON.stringify({
+        content: "Check conflicting context",
+        source: "discord",
+        callbackContext: slackContext,
+      }),
+    });
+    expect(mismatchedContext.status).toBe(400);
+    await expect(mismatchedContext.json()).resolves.toMatchObject({
+      error: "Invalid callbackContext",
     });
   });
 

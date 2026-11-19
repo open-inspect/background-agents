@@ -319,9 +319,13 @@ describe("buildAgentResponseFromEvents", () => {
 });
 
 describe("extractAgentResponse", () => {
-  it.each([undefined, "slack-post"] as const)(
-    "signs channel and optional purpose on all reads: %s",
-    async (readPurpose) => {
+  it.each([
+    { service: "slack-bot", channel: "slack:C123", readPurpose: undefined },
+    { service: "slack-bot", channel: "slack:C123", readPurpose: "slack-post" },
+    { service: "discord-bot", channel: undefined, readPurpose: "publish" },
+  ] as const)(
+    "signs optional channel and purpose on all $service reads ($readPurpose)",
+    async ({ service, channel, readPurpose }) => {
       const requests: { url: URL; headers: Headers }[] = [];
       const fetcher: ControlPlaneFetcher = {
         async fetch(input, init) {
@@ -338,11 +342,11 @@ describe("extractAgentResponse", () => {
         },
       };
       await extractAgentResponse(
-        { fetcher, auth: { service: "slack-bot", secret: "test-secret" }, readPurpose },
+        { fetcher, auth: { service, secret: "test-secret" }, readPurpose },
         "s1",
         "m1",
         "trace",
-        "slack:C123"
+        channel
       );
       expect(requests.map(({ url }) => url.pathname)).toEqual([
         "/sessions/s1/events",
@@ -354,7 +358,7 @@ describe("extractAgentResponse", () => {
         expect(
           await verifyServiceSignature({
             signatureHeader: headers.get("X-OpenInspect-Service-Signature")!,
-            service: "slack-bot",
+            service,
             secret: "test-secret",
             method: "GET",
             url: url.toString(),
@@ -362,7 +366,7 @@ describe("extractAgentResponse", () => {
             actor: "",
           })
         ).toMatchObject({ ok: true });
-        expect(url.searchParams.get("channel")).toBe("slack:C123");
+        expect(url.searchParams.get("channel")).toBe(channel ?? null);
         expect(url.searchParams.get("purpose")).toBe(readPurpose ?? null);
       }
     }

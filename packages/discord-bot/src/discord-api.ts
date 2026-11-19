@@ -9,7 +9,6 @@
 import { z } from "zod";
 
 import { DISCORD_API } from "./discord-constants";
-export { DISCORD_API } from "./discord-constants";
 
 const MAX_THREAD_NAME_LENGTH = 100;
 const THREAD_AUTO_ARCHIVE_DURATION_MS = 24 * 60 * 60 * 1000;

@@ -70,8 +70,8 @@ export interface ExtractorDeps {
    * Signatures are request-bound, so headers are built per URL.
    */
   auth: OutboundServiceCredential;
-  /** Revalidate outbound Slack delivery authority; protected read failures must abort delivery. */
-  readPurpose?: "slack-post";
+  /** Revalidate outbound publication authority; protected read failures must abort delivery. */
+  readPurpose?: "publish" | "slack-post";
   /** Throw on any failed read, as purpose-protected reads do, without sending a purpose. */
   failClosed?: boolean;
   /** Structured logger. Falls back to a silent no-op if not provided. */

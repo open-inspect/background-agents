@@ -14,7 +14,7 @@ import {
 } from "@open-inspect/shared/types/session-api";
 import { callbackSigningSecret } from "../auth/service/callback-signing";
 import type { CallbackPublicationScope } from "../authorization/callback-publication-scope";
-import { resolveCallbackRoute, type CallbackRoute } from "./callback-routes";
+import { resolveCallbackRoute, type PreparedCallback } from "./callback-routes";
 import type { Logger } from "../logger";
 import { deliverWithRetry, retryDelivery } from "./callback-delivery";
 import { notifyLinearStarted } from "./linear-start-callback";
@@ -154,16 +154,15 @@ export class CallbackNotificationService {
 
   /** Denials carry coordinates only, never session content or tool arguments. */
   private async notifyDenied(
-    route: CallbackRoute,
+    callback: PreparedCallback,
     sessionId: string,
-    context: unknown,
     binding: FetchClient,
     secret: string,
     cancellationSignal?: AbortSignal
   ): Promise<CallbackDeliveryResult> {
-    const denial = route.denial;
+    const denial = callback.denial;
     if (!denial) return { delivered: false, attempts: 0 };
-    const notification = denial.notification(sessionId, context, Date.now());
+    const notification = denial.notification(sessionId, Date.now());
     if (!notification) return { delivered: false, attempts: 0 };
     // The denial is latched for every retry; no later scope change may publish content.
     return deliverWithRetry(
@@ -212,11 +211,7 @@ export class CallbackNotificationService {
    * missing from the table default to the slack bot for backward compatibility
    * (web sources, etc.).
    */
-  private resolveCallbackRoute(source: string | null): {
-    route: CallbackRoute;
-    binding: FetchClient | undefined;
-    secret: string | undefined;
-  } {
+  private resolveDelivery(source: string | null) {
     const route = resolveCallbackRoute(source);
     return {
       route,
@@ -237,7 +232,7 @@ export class CallbackNotificationService {
       return;
     }
 
-    const { binding, secret } = this.resolveCallbackRoute("linear");
+    const { binding, secret } = this.resolveDelivery("linear");
     if (!secret) {
       this.log.debug("callback.started", {
         message_id: messageId,
@@ -319,7 +314,7 @@ export class CallbackNotificationService {
         return;
       }
 
-      const { route, binding, secret } = this.resolveCallbackRoute(source);
+      const { route, binding, secret } = this.resolveDelivery(source);
       if (!secret) {
         result.rejectReason = "no_secret";
         return;
@@ -338,29 +333,23 @@ export class CallbackNotificationService {
         timestamp,
         context: rawContext,
       };
-      const parsedCallback = route.completionSchema?.safeParse(callbackData);
-      if (parsedCallback && !parsedCallback.success) {
-        result.rejectReason = "invalid_payload";
+      const { callback, rejectReason: invalid } = route.prepare("completion", callbackData);
+      if (!callback) {
+        result.rejectReason = invalid;
         return;
       }
-      const payloadData = parsedCallback?.data ?? callbackData;
       let rejectReason: string | undefined;
       const delivery = await retryDelivery<Response | null, Response>(
         async (signal) => {
           const denial =
-            rejectReason ??
-            (await route.postGate(this.publicationScope, callbackSessionId, rawContext));
+            rejectReason ?? (await callback.postGate(this.publicationScope, callbackSessionId));
           // D1 reads cannot be canceled; an expired attempt must not reach the wire.
           signal.throwIfAborted();
           // The bot can stop publication even when the denial callback fails.
           rejectReason = denial ?? undefined;
           let response: Response;
           if (denial) {
-            const notification = route.denial?.notification(
-              callbackSessionId,
-              rawContext,
-              Date.now()
-            );
+            const notification = callback.denial?.notification(callbackSessionId, Date.now());
             if (!notification) return { outcome: "delivered", value: null };
             response = await this.sendCallback(
               notification.path,
@@ -372,7 +361,7 @@ export class CallbackNotificationService {
           } else {
             response = await this.sendCallback(
               "/callbacks/complete",
-              payloadData,
+              callback.payload,
               binding,
               secret,
               signal
@@ -386,7 +375,7 @@ export class CallbackNotificationService {
         ({ attempt, failure: response, error: deliveryError }) => {
           this.log.warn(
             rejectReason
-              ? (route.denial?.failureEvent ?? "callback.denied_delivery_attempt_failed")
+              ? (callback.denial?.failureEvent ?? "callback.denied_delivery_attempt_failed")
               : "callback.complete_delivery_attempt_failed",
             {
               ...(!rejectReason ? { message_id: messageId, source } : {}),
@@ -549,7 +538,7 @@ export class CallbackNotificationService {
     const message = this.messageRepository.getMessageCallbackContext(messageId);
     if (!message?.callback_context || message.source !== "slack") return;
 
-    const { route, binding, secret } = this.resolveCallbackRoute("slack");
+    const { route, binding, secret } = this.resolveDelivery("slack");
     if (!secret || !binding) {
       this.log.debug("callback.activity_refresh", {
         message_id: messageId,
@@ -575,11 +564,27 @@ export class CallbackNotificationService {
     }
 
     const sessionId = this.getSessionId();
+    const { callback, rejectReason } = route.prepare("activity", {
+      kind: SLACK_ACTIVITY_REFRESH_KIND,
+      sessionId,
+      messageId,
+      timestamp: now,
+      context,
+    });
+    if (!callback) {
+      this.log.info("callback.activity_refresh", {
+        message_id: messageId,
+        session_id: sessionId,
+        outcome: "rejected",
+        reject_reason: rejectReason,
+      });
+      return;
+    }
     try {
-      const denial = await route.postGate(this.publicationScope, sessionId, context);
+      const denial = await callback.postGate(this.publicationScope, sessionId);
       signal.throwIfAborted();
       if (denial) {
-        await this.notifyDenied(route, sessionId, context, binding, secret, signal);
+        await this.notifyDenied(callback, sessionId, binding, secret, signal);
         this.log.info("callback.activity_refresh", {
           message_id: messageId,
           session_id: sessionId,
@@ -597,14 +602,7 @@ export class CallbackNotificationService {
       });
       return;
     }
-    const callbackData = {
-      kind: SLACK_ACTIVITY_REFRESH_KIND,
-      sessionId,
-      messageId,
-      timestamp: now,
-      context,
-    };
-    const signature = await this.signPayload(callbackData, secret);
+    const signature = await this.signPayload(callback.payload, secret);
     signal.throwIfAborted();
 
     // Last look before the wire. The turn can terminate between the heartbeat
@@ -626,7 +624,7 @@ export class CallbackNotificationService {
       const response = await binding.fetch("https://internal/callbacks/activity", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...callbackData, signature }),
+        body: JSON.stringify({ ...callback.payload, signature }),
         signal,
       });
       signal.throwIfAborted();
@@ -714,7 +712,7 @@ export class CallbackNotificationService {
       return;
     }
 
-    const { route, binding, secret } = this.resolveCallbackRoute(source);
+    const { route, binding, secret } = this.resolveDelivery(source);
     if (!secret) {
       this.log.debug("callback.tool_call", {
         message_id: messageId,
@@ -761,15 +759,15 @@ export class CallbackNotificationService {
       timestamp: now,
       context: rawContext,
     };
-    const parsedPayload = route.toolCallSchema?.safeParse(callbackData);
-    if (parsedPayload && !parsedPayload.success) {
+    const { callback, rejectReason } = route.prepare("toolCall", callbackData);
+    if (!callback) {
       this.log.warn("callback.tool_call", {
         message_id: messageId,
         session_id: sessionId,
         source,
         tool,
         outcome: "skipped",
-        skip_reason: "invalid_payload",
+        skip_reason: rejectReason,
       });
       return;
     }
@@ -779,9 +777,9 @@ export class CallbackNotificationService {
     this._lastToolCallCallbackTs = now;
 
     try {
-      const denial = await route.postGate(this.publicationScope, sessionId, rawContext);
+      const denial = await callback.postGate(this.publicationScope, sessionId);
       if (denial) {
-        await this.notifyDenied(route, sessionId, rawContext, binding, secret);
+        await this.notifyDenied(callback, sessionId, binding, secret);
         this.log.info("callback.tool_call", {
           message_id: messageId,
           session_id: sessionId,
@@ -800,12 +798,10 @@ export class CallbackNotificationService {
       return;
     }
 
-    const payloadData = parsedPayload?.data ?? callbackData;
-
     try {
       const response = await this.sendCallback(
         "/callbacks/tool_call",
-        payloadData,
+        callback.payload,
         binding,
         secret
       );

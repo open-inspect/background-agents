@@ -35,11 +35,7 @@ jobs:
         id: changes
         env:
           # PRs compare from the merge base; pushes compare the complete push.
-          DIFF_RANGE: >-
-            ${{ github.event_name == 'pull_request' &&
-            format('{0}...{1}', github.event.pull_request.base.sha,
-            github.event.pull_request.head.sha) ||
-            format('{0}..{1}', github.event.before, github.sha) }}
+          DIFF_RANGE: ${{ github.event_name == 'pull_request' && format('{0}...{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
         run: |
           # The coverage gate itself applies to every suite.
           gate=(
@@ -49,26 +45,22 @@ jobs:
             scripts/coverage-baseline.json
             scripts/coverage-policy.ts
           )
-          # Every TypeScript suite installs the workspace and imports the
-          # built shared package.
+          # Every TypeScript suite installs the workspace and imports the built shared package.
           typescript=(
             package.json
             package-lock.json
             packages/shared
           )
-          # Inputs outside a suite's own packages are files its tests read
-          # or import. Keep these lists in sync with those reads.
-          # Package READMEs are not inputs.
+          # Inputs outside a suite's own packages are files its tests read or import.
+          # Keep these lists in sync with those reads. Package READMEs are not inputs.
           detect() {
             local suite=$1
             shift
             # Unknown paths and unavailable comparisons run the suite. No rename
             # detection: moving an input out of a watched directory must run it.
-            if git diff --quiet --no-renames "$DIFF_RANGE" -- "$@" \
-              ':(exclude,glob)packages/**/*.md'; then
+            if git diff --quiet --no-renames "$DIFF_RANGE" -- "$@" ':(exclude,glob)packages/**/*.md'; then
               echo "$suite=false" >> "$GITHUB_OUTPUT"
-              echo "No $suite coverage inputs changed: skipping." \
-                >> "$GITHUB_STEP_SUMMARY"
+              echo "No $suite coverage inputs changed: skipping." >> "$GITHUB_STEP_SUMMARY"
             else
               echo "$suite=true" >> "$GITHUB_OUTPUT"
             fi
@@ -104,9 +96,8 @@ jobs:
             packages/shared/src/types/integrations.ts \
             terraform/modules/modal-app/scripts/deploy.sh
 
-  # Control-plane coverage is CPU-bound on per-file Workers pool startup,
-  # so it is split across runners. Shards skip the full-suite floor;
-  # the merge job below enforces it on the merged report.
+  # Control-plane coverage is CPU-bound on per-file Workers pool startup, so it is split across
+  # runners. Shards skip the full-suite floor; the merge job below enforces it on the merged report.
   control-plane-coverage-shard:
     name: Coverage (control-plane ${{ matrix.shard }})
     needs: changes
@@ -201,8 +192,7 @@ jobs:
       - name: Enforce web coverage
         run: |
           npm run test:coverage -w @open-inspect/web
-          node scripts/check-coverage.mjs web \
-            packages/web/coverage/coverage-summary.json
+          node scripts/check-coverage.mjs web packages/web/coverage/coverage-summary.json
       - name: Upload web coverage
         if: always()
         uses: actions/upload-artifact@v7
@@ -235,8 +225,7 @@ jobs:
         run: |
           for package in shared slack-bot linear-bot github-bot discord-bot; do
             npm run test:coverage -w "@open-inspect/$package"
-            node scripts/check-coverage.mjs "$package" \
-              "packages/$package/coverage/coverage-summary.json"
+            node scripts/check-coverage.mjs "$package" "packages/$package/coverage/coverage-summary.json"
           done
       - name: Upload other TypeScript coverage
         if: always()
@@ -247,8 +236,8 @@ jobs:
             packages/shared/coverage/
             packages/slack-bot/coverage/
             packages/linear-bot/coverage/
-            packages/github-bot/coverage/
             packages/discord-bot/coverage/
+            packages/github-bot/coverage/
           if-no-files-found: error
 
   python-coverage:
@@ -274,12 +263,8 @@ jobs:
       - name: Enforce Python statement and branch coverage
         run: |
           for package in modal-infra sandbox-runtime; do
-            uv run --frozen --project "packages/$package" --extra dev \
-              pytest "packages/$package/tests" \
-              --cov="packages/$package/src" --cov-branch \
-              --cov-report="json:packages/$package/coverage/coverage.json"
-            node scripts/check-coverage.mjs "$package" \
-              "packages/$package/coverage/coverage.json"
+            uv run --frozen --project "packages/$package" --extra dev pytest "packages/$package/tests" --cov="packages/$package/src" --cov-branch --cov-report="json:packages/$package/coverage/coverage.json"
+            node scripts/check-coverage.mjs "$package" "packages/$package/coverage/coverage.json"
           done
       - name: Upload Python coverage
         if: always()
@@ -320,12 +305,10 @@ jobs:
           PYTHON_RESULT: ${{ needs.python-coverage.result }}
         run: |
           status=0
-          # A job passes when it succeeded, or was skipped because none
-          # of its inputs changed.
+          # A job passes when it succeeded, or was skipped because none of its inputs changed.
           require() {
             local job=$1 result=$2 changed=$3
-            if [ "$result" = success ] || \
-              { [ "$result" = skipped ] && [ "$changed" = false ]; }; then
+            if [ "$result" = success ] || { [ "$result" = skipped ] && [ "$changed" = false ]; }; then
               return
             fi
             echo "::error::$job coverage job result: $result"

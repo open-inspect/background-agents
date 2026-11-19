@@ -69,9 +69,9 @@ export async function handleSessionPrompt(
   if (attachments instanceof Response) return attachments;
 
   let callbackContext: CallbackContext | undefined;
-  if (mayAttachCallbackContext(ctx) && body.callbackContext !== undefined) {
+  if (body.callbackContext !== undefined && mayAttachCallbackContext(ctx, body.source)) {
     const callbackContextResult = callbackContextSchema.safeParse(body.callbackContext);
-    if (!callbackContextResult.success) {
+    if (!callbackContextResult.success || callbackContextResult.data.source !== body.source) {
       return error("Invalid callbackContext", 400);
     }
     callbackContext = callbackContextResult.data;

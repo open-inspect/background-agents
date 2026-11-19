@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeHmacHex } from "@open-inspect/shared/auth";
-import { extractAgentResponse } from "@open-inspect/shared/completion/extractor";
+import {
+  extractAgentResponse,
+  ProtectedReadError,
+} from "@open-inspect/shared/completion/extractor";
 import type * as extractorModule from "@open-inspect/shared/completion/extractor";
 import { DISCORD_PUBLICATION_STOPPED_MAX_AGE_MS } from "@open-inspect/shared/types/session-api";
 import app from "./index";
@@ -15,12 +18,14 @@ vi.mock("@open-inspect/shared/completion/extractor", async (importOriginal) => (
 
 const extract = vi.mocked(extractAgentResponse);
 const discordFetch = vi.fn();
-const statusMessage = { id: "status-1", startedAt: 1 };
+const channelId = "123456789012345678";
+const threadId = "123456789012345679";
+const statusMessage = { id: "123456789012345681", startedAt: 1 };
 const context = {
   source: "discord",
-  channelId: "channel-1",
-  threadId: "thread-1",
-  userId: "user-1",
+  channelId,
+  threadId,
+  userId: "123456789012345680",
   repoFullName: "octo/repo",
   model: "anthropic/claude-opus-5",
   statusMessage,
@@ -44,7 +49,7 @@ const stopped = () => ({
   kind: "discord.publication_stopped",
   sessionId: "s1",
   timestamp: Date.now(),
-  context: { channelId: "channel-1", threadId: "thread-1", statusMessage },
+  context: { channelId, threadId, statusMessage },
 });
 const routes = [
   ["complete", complete],
@@ -183,16 +188,50 @@ describe.each(routes)("/callbacks/%s authentication", (route, payload) => {
     expect(response.status).toBe(400);
     expect(discordFetch).not.toHaveBeenCalled();
   });
+
+  it("rejects signed callbacks with a malformed Discord channel ID", async () => {
+    const body = payload();
+    const response = await post(
+      route,
+      await signed({ ...body, context: { ...body.context, channelId: "channel-1" } })
+    );
+    expect(response.status).toBe(400);
+    expect(discordFetch).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+  });
 });
 
 describe("completion and tool callbacks", () => {
   it("threads the incoming trace into completion reads and completion logs", async () => {
     await post("complete", await signed(complete()), createEnv(), "trace-completion");
-    expect(extract).toHaveBeenCalledWith(expect.anything(), "s1", "m1", "trace-completion");
+    expect(extract).toHaveBeenCalledWith(
+      expect.objectContaining({ readPurpose: "publish" }),
+      "s1",
+      "m1",
+      "trace-completion"
+    );
     expect(console.log).toHaveBeenCalledWith(
       expect.stringContaining('"trace_id":"trace-completion"')
     );
     expect(discordEdits().some((call) => call.body.content?.includes("Finished work"))).toBe(true);
+  });
+
+  it("stops progress without posting completion when publication access is revoked", async () => {
+    extract.mockRejectedValueOnce(new ProtectedReadError("Not found", 404));
+    await post("complete", await signed(complete()));
+    expect(discordEdits()).toEqual([
+      {
+        url: expect.stringContaining(`/channels/${threadId}/messages/${statusMessage.id}`),
+        method: "PATCH",
+        body: expect.objectContaining({ content: PUBLICATION_STOPPED_TEXT }),
+      },
+    ]);
+  });
+
+  it("does not publish a completion when access cannot be verified", async () => {
+    extract.mockRejectedValueOnce(new ProtectedReadError("Unavailable", 503));
+    await post("complete", await signed(complete()));
+    expect(discordFetch).not.toHaveBeenCalled();
   });
 
   it("generates a trace when none is supplied", async () => {
@@ -229,14 +268,14 @@ describe("publication stopped", () => {
     const kv = createKv();
     const env = createEnv({ DISCORD_KV: kv as unknown as KVNamespace });
     discordFetch.mockImplementation(async () => {
-      expect(kv.store.get("status-finished:status-1")).toBe(PUBLICATION_STOPPED_TEXT);
-      return new Response(JSON.stringify({ id: "status-1" }));
+      expect(kv.store.get(`status-finished:${statusMessage.id}`)).toBe(PUBLICATION_STOPPED_TEXT);
+      return new Response(JSON.stringify({ id: statusMessage.id }));
     });
     const response = await post("publication_stopped", await signed(stopped()), env);
     expect(response.status).toBe(200);
     expect(discordEdits()).toEqual([
       {
-        url: expect.stringContaining("/channels/thread-1/messages/status-1"),
+        url: expect.stringContaining(`/channels/${threadId}/messages/${statusMessage.id}`),
         method: "PATCH",
         body: expect.objectContaining({ content: PUBLICATION_STOPPED_TEXT }),
       },
@@ -246,7 +285,7 @@ describe("publication stopped", () => {
   });
 
   it("does not post content when no status message exists", async () => {
-    const payload = { ...stopped(), context: { channelId: "channel-1" } };
+    const payload = { ...stopped(), context: { channelId } };
     expect((await post("publication_stopped", await signed(payload))).status).toBe(200);
     expect(discordFetch).not.toHaveBeenCalled();
     expect(extract).not.toHaveBeenCalled();
@@ -293,9 +332,11 @@ describe("publication stopped", () => {
     const env: Env = createEnv();
     discordFetch.mockResolvedValueOnce(new Response("down", { status: 500 }));
     expect((await post("publication_stopped", await signed(stopped()), env)).status).toBe(503);
-    expect(await env.DISCORD_KV.get("status-finished:status-1")).toBe(PUBLICATION_STOPPED_TEXT);
+    expect(await env.DISCORD_KV.get(`status-finished:${statusMessage.id}`)).toBe(
+      PUBLICATION_STOPPED_TEXT
+    );
     await recordStep(env, {
-      channelId: "thread-1",
+      channelId: threadId,
       statusMessage,
       tool: "Bash",
       args: { command: "private work" },

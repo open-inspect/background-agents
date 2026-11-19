@@ -5,7 +5,8 @@ import {
 } from "@open-inspect/shared/triggers";
 import type { computeHmacHex } from "@open-inspect/shared/auth";
 import { z } from "zod";
-import { slackPostGate, type SlackPostScope } from "../authorization/slack-post-gate";
+import type { CallbackPublicationScope } from "../authorization/callback-publication-scope";
+import { slackPostGate } from "../authorization/slack-post-gate";
 import type { AutomationStore, AutomationRunRow } from "../db/automation-store";
 import type { IntegrationSettingsStore } from "../db/integration-settings";
 import type { Logger } from "../logger";
@@ -24,7 +25,7 @@ export interface AutomationSlackServiceDeps {
   signingSecret?: string;
   automations: Pick<AutomationStore, "getInvocationById" | "getById">;
   settings: Pick<IntegrationSettingsStore, "getGlobal">;
-  postScope: SlackPostScope;
+  postScope: CallbackPublicationScope;
   sign: typeof computeHmacHex;
   retryDelivery: typeof retryDelivery;
   sleep(ms: number): Promise<void>;

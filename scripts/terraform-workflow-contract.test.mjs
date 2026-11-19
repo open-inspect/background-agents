@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -89,10 +89,10 @@ for (const [variable, input] of [
 
 test("plan and apply unset missing Discord overrides before invoking Terraform", () => {
   assertInPlanAndApply(
-    'source "$GITHUB_WORKSPACE/scripts/terraform-discord-defaults.sh"',
+    'source "$GITHUB_WORKSPACE/scripts/terraform-unset-empty.sh" TF_VAR_discord_bot_default_model TF_VAR_discord_bot_harness',
     "Discord Terraform defaults cleanup"
   );
-  const script = fileURLToPath(new URL("./terraform-discord-defaults.sh", import.meta.url));
+  const script = fileURLToPath(new URL("./terraform-unset-empty.sh", import.meta.url));
   const names = ["TF_VAR_discord_bot_default_model", "TF_VAR_discord_bot_harness"];
   for (const values of [undefined, ["", ""], ["openai/gpt-5.5", "opencode"], ["  ", "codex"]]) {
     const env = { ...process.env };
@@ -105,9 +105,10 @@ test("plan and apply unset missing Discord overrides before invoking Terraform",
       [
         "-eu",
         "-c",
-        'source "$1"; printf "%s\\n" "${TF_VAR_discord_bot_default_model-unset}" "${TF_VAR_discord_bot_harness-unset}"',
+        'source "$1" "${@:2}"; printf "%s\\n" "${TF_VAR_discord_bot_default_model-unset}" "${TF_VAR_discord_bot_harness-unset}"',
         "test",
         script,
+        ...names,
       ],
       { env, encoding: "utf8" }
     );
@@ -129,10 +130,11 @@ const NOT_FROM_ENVIRONMENT = new Set([
 ]);
 
 test("Every production Terraform variable reaches plan and apply", async () => {
-  const variables = await readFile(
-    new URL("../terraform/environments/production/variables.tf", import.meta.url),
-    "utf8"
-  );
+  const directory = new URL("../terraform/environments/production/", import.meta.url);
+  const files = (await readdir(directory)).filter((name) => name.endsWith(".tf"));
+  const variables = (
+    await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))
+  ).join("\n");
   const declared = [...variables.matchAll(/^variable "([a-z0-9_]+)"/gm)].map((match) => match[1]);
   assert.ok(declared.length > 0, "expected variables in variables.tf");
 

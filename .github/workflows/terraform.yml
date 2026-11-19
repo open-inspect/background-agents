@@ -201,7 +201,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source "$GITHUB_WORKSPACE/scripts/terraform-discord-defaults.sh"
+          source "$GITHUB_WORKSPACE/scripts/terraform-unset-empty.sh" TF_VAR_discord_bot_default_model TF_VAR_discord_bot_harness
           # Plan text must not be interpreted as runner workflow commands either.
           command_token="$(openssl rand -hex 32)"
           echo "::stop-commands::$command_token"
@@ -507,7 +507,7 @@ jobs:
       - name: Terraform Apply
         shell: bash
         run: |
-          source "$GITHUB_WORKSPACE/scripts/terraform-discord-defaults.sh"
+          source "$GITHUB_WORKSPACE/scripts/terraform-unset-empty.sh" TF_VAR_discord_bot_default_model TF_VAR_discord_bot_harness
           terraform apply -auto-approve
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:

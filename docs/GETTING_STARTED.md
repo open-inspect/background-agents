@@ -1514,6 +1514,11 @@ Secrets for credentials:
 | `ENABLE_SLACK_BOT`                         | `true` to deploy Slack bot, `false` to skip (default: `true`)                                                                     |
 | `SLACK_BOT_TOKEN`                          | Slack bot token (required if enabled)                                                                                             |
 | `SLACK_SIGNING_SECRET`                     | Slack signing secret (required if enabled)                                                                                        |
+| `ENABLE_DISCORD_BOT`                       | `true` to deploy Discord bot, `false` to skip (default: `false`)                                                                  |
+| `DISCORD_APPLICATION_ID`                   | Discord application ID (required if Discord enabled)                                                                              |
+| `DISCORD_PUBLIC_KEY`                       | Discord application public key (required if Discord enabled)                                                                      |
+| `DISCORD_BOT_TOKEN`                        | Discord bot token (required if Discord enabled)                                                                                   |
+| `DISCORD_ALLOWED_ROLE_IDS`                 | Comma-separated role IDs allowed to run `/task` (required if Discord enabled)                                                     |
 | `ENABLE_LINEAR_BOT`                        | `true` to deploy Linear bot, `false` to skip (default: `false`)                                                                   |
 | `LINEAR_CLIENT_ID`                         | Linear OAuth application client ID (required if Linear enabled)                                                                   |
 | `LINEAR_CLIENT_SECRET`                     | Linear OAuth application client secret (required if Linear enabled)                                                               |
@@ -1557,11 +1562,6 @@ for unattended sessions. Direct terminal, VS Code, or VNC connections alone do n
 Runtime heartbeats renew activity while a prompt is processing, so quiet running turns are not
 treated as idle. A follow-up prompt after an inactivity stop resumes the existing session and
 restores or resumes its sandbox rather than creating a new session.
-| `ENABLE_DISCORD_BOT`               | `true` to deploy Discord bot, `false` to skip (default: `false`)                            |
-| `DISCORD_APPLICATION_ID`           | Discord application ID (required if Discord enabled)                                        |
-| `DISCORD_PUBLIC_KEY`               | Discord application public key (required if Discord enabled)                                |
-| `DISCORD_BOT_TOKEN`                | Discord bot token (required if Discord enabled)                                             |
-| `DISCORD_ALLOWED_ROLE_IDS`         | Comma-separated role IDs allowed to run `/task` (required if Discord enabled)               |
 
 An empty allowlist only means that list is not used; it does not admit everyone. Terraform fails the
 plan unless at least one of `ALLOWED_USERS`, `ALLOWED_EMAIL_DOMAINS`, `ALLOWED_EMAILS`, or

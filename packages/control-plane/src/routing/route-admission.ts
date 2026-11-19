@@ -12,6 +12,7 @@ import type { RouteAuthorizationDecision } from "../authorization/request-audit"
 import { AuthorizationError, AuthorizationService } from "../authorization/service";
 import { serviceAllowsPermission } from "../authorization/service-permissions";
 import { parseChannelScope } from "../authorization/channel-scope";
+import { PUBLICATION_READ_POLICIES } from "../authorization/publication-read-policy";
 import { evaluateSessionAdmission } from "../authorization/session-admission";
 import { legacyPermissionForAction } from "../authorization/teams-enforcement";
 import { TeamChannelBindingStore } from "../db/team-channel-bindings";
@@ -451,15 +452,25 @@ async function enforceSessionRequirement(
     if (ctx.principal?.kind === "service" && !ctx.principal.actor) {
       const query = new URL(request.url).searchParams;
       const channels = query.getAll("channel");
-      const postRead = query.get("purpose") === "slack-post";
-      if (postRead && (channels.length !== 1 || ctx.principal.service !== "slack-bot")) {
-        return authorizationDenial(
-          error("Session not found", 404),
-          evidence,
-          requirement,
-          "session_not_visible",
-          "Session not found"
-        );
+      const purpose = query.get("purpose");
+      if (purpose === "publish" || purpose === "slack-post") {
+        // Keep the original Slack-only purpose for existing Slack callers.
+        const service = ctx.principal.service;
+        const policy = PUBLICATION_READ_POLICIES[service];
+        if (
+          !policy ||
+          channels.length !== policy.channelCount ||
+          (purpose === "slack-post" && service !== "slack-bot")
+        ) {
+          return authorizationDenial(
+            error("Session not found", 404),
+            evidence,
+            requirement,
+            "session_not_visible",
+            "Session not found"
+          );
+        }
+        ctx.servicePublicationGate = policy.gate;
       }
       if (channels.length > 0) {
         const scope = channels.length === 1 ? parseChannelScope(channels[0]) : null;
@@ -475,7 +486,6 @@ async function enforceSessionRequirement(
         ctx.serviceTeamId =
           (await new TeamChannelBindingStore(ctx.db).get(scope.provider, scope.externalId))
             ?.teamId ?? null;
-        if (postRead) ctx.serviceReadPurpose = "slack-post";
       }
     }
     const result = await evaluateSessionAdmission(

@@ -147,6 +147,8 @@ export const linearToolCallCallbackSchema = linearToolCallCallbackPayloadSchema.
 
 export type LinearToolCallCallback = z.infer<typeof linearToolCallCallbackSchema>;
 
+export const discordSnowflakeSchema = z.string().regex(/^\d{17,20}$/);
+
 /**
  * Where a Discord `/task` reply goes. The bot answers in a thread it opened on
  * its own acknowledgement message; `threadId` is absent only when the thread
@@ -159,15 +161,15 @@ export type LinearToolCallCallback = z.infer<typeof linearToolCallCallbackSchema
  */
 export const discordCallbackContextSchema = z.strictObject({
   source: z.literal("discord"),
-  channelId: nonEmptyStringSchema,
-  threadId: nonEmptyStringSchema.optional(),
-  userId: nonEmptyStringSchema,
+  channelId: discordSnowflakeSchema,
+  threadId: discordSnowflakeSchema.optional(),
+  userId: discordSnowflakeSchema,
   repoFullName: nonEmptyStringSchema,
   model: nonEmptyStringSchema,
   /** Absent when posting the status message failed; progress is then skipped. */
   statusMessage: z
     .strictObject({
-      id: nonEmptyStringSchema,
+      id: discordSnowflakeSchema,
       /** Epoch milliseconds the prompt was sent; the status line shows elapsed time. */
       startedAt: z.number().refine(Number.isFinite),
     })

@@ -3,7 +3,10 @@
 import { Hono, type Context } from "hono";
 import type { z } from "zod";
 import { getCallbackAuthRejection } from "@open-inspect/shared/callback-auth";
-import { extractAgentResponse } from "@open-inspect/shared/completion/extractor";
+import {
+  extractAgentResponse,
+  ProtectedReadError,
+} from "@open-inspect/shared/completion/extractor";
 import { resolveOutboundCredential } from "@open-inspect/shared/service-auth";
 import {
   discordCompletionCallbackSchema,
@@ -129,12 +132,14 @@ async function postCompletion(
   traceId: string
 ): Promise<void> {
   const { sessionId, messageId, context } = callback;
-  let response: AgentResponse | null = null;
+  const channelId = replyChannel(context);
+  let response: AgentResponse;
   try {
     response = await extractAgentResponse(
       {
         fetcher: env.CONTROL_PLANE,
         auth: resolveOutboundCredential("discord-bot", env),
+        readPurpose: "publish",
         log,
       },
       sessionId,
@@ -142,11 +147,21 @@ async function postCompletion(
       traceId
     );
   } catch (error) {
-    // Still report the outcome; the session link has the details.
     log.warn("callback.extract_failed", { trace_id: traceId, session_id: sessionId, error });
+    if (context.statusMessage && error instanceof ProtectedReadError && error.kind === "denied") {
+      try {
+        await stopPublication(env, { channelId, statusMessage: context.statusMessage });
+      } catch (error) {
+        log.error("callback.publication_stop_failed", {
+          trace_id: traceId,
+          session_id: sessionId,
+          error,
+        });
+      }
+    }
+    return;
   }
 
-  const channelId = replyChannel(context);
   if (context.statusMessage) {
     await finishProgress(env, {
       channelId,
