@@ -32,7 +32,7 @@ class MockHttpClient:
         self.post_urls.append(url)
         if self.post_responses:
             return self.post_responses.pop(0)
-        return MockResponse(204)
+        return MockResponse(200, {})
 
     async def get(self, url: str, timeout: float = 10.0) -> Any:
         self._get_call_count += 1
@@ -63,10 +63,9 @@ class MockSSEResponse:
         pass
 
 
-def create_sse_event(event_type: str, properties: dict) -> str:
+def create_sse_event(event_type: str, data: dict) -> str:
     """Create an SSE event string."""
-    data = {"type": event_type, "properties": properties}
-    return f"data: {json.dumps(data)}\n\n"
+    return f"data: {json.dumps({'type': event_type, 'data': data})}\n\n"
 
 
 @pytest.fixture
@@ -105,9 +104,9 @@ class TestHandleStop:
         # Should not raise
         await bridge._handle_stop()
 
-        # Still calls opencode abort (best-effort)
+        # Still interrupts the OpenCode session (best-effort)
         http_client = bridge.http_client
-        assert any(url.endswith("/abort") for url in http_client.post_urls)
+        assert any(url.endswith("/interrupt") for url in http_client.post_urls)
 
     @pytest.mark.asyncio
     async def test_handle_stop_with_completed_task(self, bridge: AgentBridge):
@@ -136,7 +135,7 @@ class TestHandleStop:
 
         http_client.sse_events = [
             create_sse_event("server.connected", {}),
-            create_sse_event("session.idle", {"sessionID": "oc-session-123"}),
+            create_sse_event("session.execution.succeeded", {"sessionID": "oc-session-123"}),
         ]
 
         # _handle_command returns None for prompts (decoupled from WS lifecycle)
@@ -169,7 +168,7 @@ class TestHandleStop:
         # SSE events that complete immediately
         http_client.sse_events = [
             create_sse_event("server.connected", {}),
-            create_sse_event("session.idle", {"sessionID": "oc-session-123"}),
+            create_sse_event("session.execution.succeeded", {"sessionID": "oc-session-123"}),
         ]
 
         result = await bridge._handle_command(

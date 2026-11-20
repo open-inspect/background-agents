@@ -1,7 +1,6 @@
 """Shared sandbox tool definitions and vendor-neutral handlers."""
 
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -533,13 +532,12 @@ async def test_child_status_empty_list_and_error_fallback(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("producer", ["python", "opencode"])
 @pytest.mark.parametrize(
     ("response_char", "response_chars"),
     [("x", MAX_EVENT_BYTES // 2), ("x", MAX_EVENT_BYTES - 20_000), ("🚀", 75_000)],
 )
 async def test_child_status_near_limit_response_survives_forwarding(
-    tmp_path: Path, producer: str, response_char: str, response_chars: int
+    tmp_path: Path, response_char: str, response_chars: int
 ) -> None:
     text = response_char * response_chars
     detail = {
@@ -547,35 +545,9 @@ async def test_child_status_near_limit_response_survives_forwarding(
         "finalResponse": {"success": True, "textContent": text},
     }
     args = {"childId": "c1", "includeResponse": True}
-    if producer == "python":
-        tools, _ = _tools(tmp_path, lambda _r: httpx.Response(200, json=detail))
-        output = _text(await tools.get_child_status(args))
-        legacy_output = tools._format_child_detail(detail, "c1", args)
-    else:
-        formatter = (
-            Path(__file__).parents[1] / "src/sandbox_runtime/tools/get-child-status-format.js"
-        ).as_uri()
-        result = subprocess.run(
-            [
-                "node",
-                "--input-type=module",
-                "-e",
-                f"""
-                import {{ readFileSync }} from 'node:fs';
-                import {{ childStatusDetailOutput, formatChildDetail }} from {json.dumps(formatter)};
-                const detail = JSON.parse(readFileSync(0, 'utf8'));
-                process.stdout.write(JSON.stringify([
-                    childStatusDetailOutput(detail, 'c1', {{ includeResponse: true }}),
-                    formatChildDetail(detail, 'c1', {{ includeResponse: true }}),
-                ]));
-            """,
-            ],
-            input=json.dumps(detail),
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        output, legacy_output = json.loads(result.stdout)
+    tools, _ = _tools(tmp_path, lambda _r: httpx.Response(200, json=detail))
+    output = _text(await tools.get_child_status(args))
+    legacy_output = tools._format_child_detail(detail, "c1", args)
 
     event = {
         "type": "tool_call",

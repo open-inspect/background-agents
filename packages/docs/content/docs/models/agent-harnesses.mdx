@@ -165,6 +165,20 @@ Codex never swaps a selection it cannot honor for a default. A model it cannot r
 
 Codex prices each model request from the model price list cached in the sandbox image. Under a ChatGPT subscription the figure is informational, but a session spend limit still applies to it as configured. A model missing from the price list is recorded at $0 with a timeline warning. See [Spend limits](/sessions/spend-limits).
 
+## OpenCode 2
+
+The OpenCode harness runs OpenCode 2. Models, integrations, the composer, and ChatGPT and SuperGrok subscriptions work as before.
+
+What changed for the agent and for repositories:
+
+- The session tools (child sessions, pull requests, media upload, Slack notifications, memories) come from the same MCP server the Claude Agent and Codex harnesses use. OpenCode 2 does not load `.opencode/tool`, so tools a repository defines there are ignored. Repository plugins must use the OpenCode 2 `export default { id, setup }` format; OpenCode 1.x plugins do not run.
+- Code Mode, the `question` tool, worktree tools, and moving the session are turned off. Every tool, MCP tools included, is offered to the model directly.
+- Subagents always run in the foreground. A background subagent would finish after the turn, when nothing relays its work to the session.
+- A reasoning effort the model has no variant for is ignored, and the model's default applies.
+- A session restored from a snapshot taken before the upgrade keeps running OpenCode 1.x until its sandbox is rebuilt.
+
+The timeline shows tools under their earlier names, for example `shell` as Bash and `subagent` as Task.
+
 ## Troubleshooting
 
 <Accordions>

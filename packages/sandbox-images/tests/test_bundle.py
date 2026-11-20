@@ -40,7 +40,15 @@ def test_image_bin_directory_heads_the_launch_path(provider):
     assert environment["PATH"].split(":")[0] == "/opt/openinspect/bin"
     tools = (REPO_ROOT / "packages/sandbox-images/install/tools.sh").read_text()
     languages = (REPO_ROOT / "packages/sandbox-images/install/languages.sh").read_text()
-    for command in ("agent-browser", "code-server", "ttyd", "rg", "google-chrome", "codex"):
+    for command in (
+        "agent-browser",
+        "code-server",
+        "ttyd",
+        "rg",
+        "google-chrome",
+        "codex",
+        "opencode",
+    ):
         assert f"/opt/openinspect/bin/{command}" in tools
     assert '"/opt/openinspect/bin/$command"' in languages
 
@@ -48,10 +56,14 @@ def test_image_bin_directory_heads_the_launch_path(provider):
 def test_binary_checksum_and_minimum_tool_version_are_required():
     tools = json.loads((REPO_ROOT / "packages/sandbox-images/toolchain.json").read_text())
     validate_toolchain(tools)
-    tools["opencode"] = "1.18.14"
-    with pytest.raises(ValueError, match="OpenCode"):
+    tools["opencode"] = "2.2.4"
+    with pytest.raises(ValueError, match="minimum"):
         validate_toolchain(tools)
-    tools["opencode"] = "1.18.29"
+    tools["opencode"] = "3.0.0"
+    tools["opencodeMinimum"] = "1.19.5"
+    with pytest.raises(ValueError, match="OpenCode 2 release"):
+        validate_toolchain(tools)
+    tools["opencode"] = tools["opencodeMinimum"] = "2.2.5"
     del tools["agentBrowserSha256"]
     with pytest.raises(ValueError, match="agent-browser"):
         validate_toolchain(tools)
@@ -59,7 +71,7 @@ def test_binary_checksum_and_minimum_tool_version_are_required():
 
 def test_npm_overrides_require_exact_versions():
     tools = json.loads((REPO_ROOT / "packages/sandbox-images/toolchain.json").read_text())
-    tools["npmOverrides"]["toml"] = "^5.0.1"
+    tools["npmOverrides"] = {"toml": "^5.0.1"}
     with pytest.raises(ValueError, match="exact release versions"):
         validate_toolchain(tools)
 
@@ -67,12 +79,15 @@ def test_npm_overrides_require_exact_versions():
 def test_lock_check_rejects_npm_lock_that_ignores_overrides(tmp_path):
     package = tmp_path / "packages/sandbox-images"
     shutil.copytree(REPO_ROOT / "packages/sandbox-images/locks", package / "locks")
-    shutil.copy(REPO_ROOT / "packages/sandbox-images/toolchain.json", package)
-    lock_path = package / "locks/tools/package-lock.json"
-    lock = json.loads(lock_path.read_text())
-    lock["packages"]["node_modules/toml"]["version"] = "4.3.0"
-    lock_path.write_text(json.dumps(lock))
-    with pytest.raises(ValueError, match=re.escape("tools npm lock resolves toml to 4.3.0")):
+    tools = json.loads((REPO_ROOT / "packages/sandbox-images/toolchain.json").read_text())
+    tools["npmOverrides"] = {"pnpm": "10.0.0"}
+    (package / "toolchain.json").write_text(json.dumps(tools))
+    manifest_path = package / "locks/tools/package.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["overrides"] = tools["npmOverrides"]
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    resolved = f"tools npm lock resolves pnpm to {tools['pnpm']}"
+    with pytest.raises(ValueError, match=re.escape(resolved)):
         update_locks(tmp_path, check=True)
 
 

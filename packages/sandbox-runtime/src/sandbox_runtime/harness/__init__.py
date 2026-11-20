@@ -13,6 +13,7 @@ from ..credentials.provider_credential_client import RuntimeCredentialClient
 from ..managed_mcp import ManagedMcpHarness, personal_names
 from ..memories import append_memory
 from ..model_prices import ModelPriceCatalog, default_catalog_path
+from ..opencode_auth import OPENCODE_PASSWORD_ENV_VAR
 from .base import (
     DEFAULT_HARNESS_ID,
     DETERMINISTIC_FAILURE_EXIT_CODE,
@@ -79,7 +80,11 @@ def build_agent_harness(
         case HarnessId.OPENCODE:
             return managed(
                 OpencodeHarness(
-                    client=OpenCodeClient(base_url=f"http://localhost:{opencode_port}", log=log),
+                    client=OpenCodeClient(
+                        base_url=f"http://localhost:{opencode_port}",
+                        password=os.environ.get(OPENCODE_PASSWORD_ENV_VAR, ""),
+                        log=log,
+                    ),
                     attachment_processor=attachment_processor,
                     log=log,
                     limits=limits,

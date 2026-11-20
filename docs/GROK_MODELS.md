@@ -66,13 +66,13 @@ The provider-account OAuth refresh token stays in the encrypted credential store
 1. Session creation pins a concrete xAI provider account, API-key mode, or legacy scoped-OAuth mode.
 2. In account mode, Open-Inspect removes `XAI_API_KEY` and legacy xAI OAuth fields from the sandbox
    environment and injects only the non-secret `XAI_OAUTH_MANAGED=1` marker.
-3. The sandbox runtime writes an xAI OAuth sentinel to OpenCode's `auth.json` and installs the xAI
-   auth proxy plugin.
-4. The plugin calls `POST /sessions/:id/provider-auth/xai/access-token` with the session's sandbox
-   credential.
+3. The sandbox runtime installs the `provider-auth.js` plugin and, once OpenCode is up, stores an
+   expired placeholder xAI credential through OpenCode's credential API.
+4. When the credential is about to expire, OpenCode refreshes it through the plugin, which calls
+   `POST /sessions/:id/provider-auth/xai/access-token` with the session's sandbox credential.
 5. The control plane returns a short-lived access token and atomically persists rotated account
    credentials.
-6. The plugin replaces OpenCode's dummy authorization header with the short-lived bearer token.
+6. OpenCode stores the short-lived access token and sends it as the bearer token.
 
 For a `legacy_scoped_oauth` binding, the generic broker delegates to the legacy scoped refresh path.
 If the resolved secrets contain no legacy xAI refresh token, sandbox preparation leaves
@@ -85,9 +85,9 @@ the endpoint rejects user and service credentials in favor of the matching sessi
 
 ## Deployment and Rollout
 
-The provider-account xAI proxy plugin is part of `packages/sandbox-runtime`. Before rollout, rebuild
-**every** sandbox runtime image, template, and provider snapshot. Existing images do not gain the
-generic provider-auth endpoint merely because the control plane was deployed.
+The provider-auth plugin is part of `packages/sandbox-runtime`. Before rollout, rebuild **every**
+sandbox runtime image, template, and provider snapshot. Existing images do not gain the generic
+provider-auth endpoint merely because the control plane was deployed.
 
 Before production rollout, run a staging session with an eligible SuperGrok account and verify:
 
@@ -124,8 +124,8 @@ provider account and complete xAI device authorization again.
 
 ### `Model not found: xai/grok-4.7`, `xai/grok-4.6`, `xai/grok-4.5`, or `xai/grok-build-0.1`
 
-Rebuild the sandbox image so it includes the xAI auth proxy plugin and confirm the deployment uses
-OpenCode 1.17.18 or newer.
+Rebuild the sandbox image so it includes the provider-auth plugin and the OpenCode release pinned in
+`packages/sandbox-images/toolchain.json`.
 
 ### xAI rejects the model or account
 

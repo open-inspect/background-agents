@@ -13,7 +13,7 @@ from .base import (
     TurnOutcome,
 )
 from .opencode_client import McpInitializationUnavailable
-from .opencode_stream import OpenCodePromptStream
+from .opencode_stream import ExecutionInterruptedError, OpenCodePromptStream
 
 if TYPE_CHECKING:
     from ..attachment_processor import AttachmentProcessor
@@ -139,6 +139,13 @@ class OpencodeHarness:
                 await emit(event)
         except asyncio.CancelledError:
             raise
+        except ExecutionInterruptedError as error:
+            return TurnOutcome(
+                success=False,
+                error=str(error),
+                cancelled=True,
+                message_cost_usd=message_cost_usd,
+            )
         except Exception as error:
             self.log.error("harness.prompt_error", exc=error, message_id=prompt.message_id)
             return TurnOutcome.failed(str(error), message_cost_usd=message_cost_usd)

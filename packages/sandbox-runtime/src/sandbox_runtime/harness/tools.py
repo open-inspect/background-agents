@@ -1,10 +1,11 @@
-"""Vendor-neutral Open Inspect tool registry and handlers for the native harnesses.
+"""Vendor-neutral Open Inspect tool registry and handlers for every harness.
 
-These are the same tools OpenCode gets as ``.opencode/tool/*.js`` plugins,
-ported over the same control-plane side channels (``/sessions/:id/children``,
-``/pr``, ``/slack-notify``, ``/media``, ``/sandbox-memory``). They run
-inside the bridge process, so they see the bridge's environment rather than
-the child's clean one, and no credential has to reach the agent process.
+The tools talk to the control plane's side channels (``/sessions/:id/children``,
+``/pr``, ``/slack-notify``, ``/media``, ``/sandbox-memory``). Claude and Codex
+run them inside the bridge process, so they see the bridge's environment
+rather than the child's clean one, and no credential has to reach the agent
+process. OpenCode reaches them through ``oi_mcp_server``, a subprocess of the
+OpenCode server.
 """
 
 from __future__ import annotations

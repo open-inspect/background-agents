@@ -1,6 +1,6 @@
 """Prove uncertain native connect cannot authorize another managed turn.
 
-The exact OpenCode pin may finish connecting after disconnect returned disabled.
+An OpenCode release may finish connecting after disconnect returned disabled.
 This canary exercises the production wrapper's fail-closed response to that race.
 No model inference or external server is required.
 """
@@ -27,6 +27,14 @@ from sandbox_runtime.managed_mcp import ManagedMcpHarness
 OPENCODE_VERSION = json.loads(
     (Path(__file__).resolve().parents[2] / "packages/sandbox-images/toolchain.json").read_text()
 )["opencode"]
+OPENCODE_PASSWORD = "canary"
+
+
+def mcp_status(response: httpx.Response, name: str) -> str | None:
+    response.raise_for_status()
+    return next(
+        (s["status"]["status"] for s in response.json()["data"] if s["name"] == name), None
+    )
 
 
 class DelayedMcpFixture(BaseHTTPRequestHandler):
@@ -93,6 +101,7 @@ async def check(binary: str, directory: str, origin: str, port: int) -> dict:
         "OPENCODE_CONFIG_CONTENT": json.dumps(config),
         "OPENCODE_DISABLE_AUTOUPDATE": "true",
         "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+        "OPENCODE_SERVER_PASSWORD": OPENCODE_PASSWORD,
     }
     with (Path(directory) / "opencode.log").open("w") as log:
         process = subprocess.Popen(
@@ -103,15 +112,22 @@ async def check(binary: str, directory: str, origin: str, port: int) -> dict:
             stderr=log,
         )
         client = OpenCodeClient(
-            base_url=f"http://127.0.0.1:{port}", log=None, request_timeout_seconds=0.1
+            base_url=f"http://127.0.0.1:{port}",
+            password=OPENCODE_PASSWORD,
+            log=None,
+            request_timeout_seconds=0.1,
         )
+        api = f"http://127.0.0.1:{port}/api"
         try:
-            async with httpx.AsyncClient(timeout=5) as http:
+            async with httpx.AsyncClient(
+                timeout=5, auth=httpx.BasicAuth("opencode", OPENCODE_PASSWORD)
+            ) as http:
                 async with asyncio.timeout(15):
                     while True:
                         try:
-                            ready = await http.get(f"http://127.0.0.1:{port}/mcp")
-                            if ready.is_success:
+                            # OpenCode loads the workspace's MCP servers after the first request.
+                            ready = await http.get(f"{api}/mcp")
+                            if ready.is_success and mcp_status(ready, "example"):
                                 break
                         except httpx.ConnectError:
                             pass
@@ -142,22 +158,23 @@ async def check(binary: str, directory: str, origin: str, port: int) -> dict:
                 else:
                     raise AssertionError("Expected uncertain native connect timeout")
                 assert DelayedMcpFixture.started.is_set()
-                before = (await http.get(f"http://127.0.0.1:{port}/mcp")).json()
-                assert before["example"]["status"] == "disabled"
+                assert mcp_status(await http.get(f"{api}/mcp"), "example") == "disabled"
                 assert wrapped.cleanup_failed
                 DelayedMcpFixture.release.set()
-                async with asyncio.timeout(5):
-                    while True:
-                        after = (await http.get(f"http://127.0.0.1:{port}/mcp")).json()
-                        if after["example"]["status"] == "connected":
-                            break
-                        await asyncio.sleep(0.05)
+                # Whether the late initialize still connects is the pin's business;
+                # the wrapper must refuse the next turn either way.
+                late = None
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 3
+                while loop.time() < deadline and late != "connected":
+                    late = mcp_status(await http.get(f"{api}/mcp"), "example")
+                    await asyncio.sleep(0.05)
                 following = await wrapped.run_prompt(prompt, None)
                 assert not following.success and "restart" in following.error
                 return {
                     "opencode": OPENCODE_VERSION,
                     "after_disconnect": "disabled",
-                    "after_late_initialize": "connected",
+                    "after_late_initialize": late,
                     "runtime_poisoned": wrapped.cleanup_failed,
                     "following_turn_refused": not following.success,
                 }
@@ -173,7 +190,8 @@ async def check(binary: str, directory: str, origin: str, port: int) -> dict:
 
 
 async def main(binary: str, port: int) -> None:
-    assert subprocess.check_output([binary, "--version"], text=True).strip() == OPENCODE_VERSION
+    version = subprocess.check_output([binary, "--version"], text=True).strip()
+    assert version == f"opencode v{OPENCODE_VERSION}", version
     with (
         tempfile.TemporaryDirectory(prefix="managed-mcp-cancel-") as directory,
         ThreadingHTTPServer(("127.0.0.1", 0), DelayedMcpFixture) as fixture,

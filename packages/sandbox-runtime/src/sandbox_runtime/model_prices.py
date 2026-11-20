@@ -1,8 +1,8 @@
 """Model prices and explicit context tiers from the shared models.dev catalog.
 
-``model_catalog`` publishes the persisted catalog and sets ``OPENCODE_MODELS_PATH``;
-``plugins/codex-auth-plugin.js`` reads the same file. Prices are model-price
-equivalents: under a ChatGPT subscription they describe usage, not a charge.
+``model_catalog`` publishes the persisted catalog and sets ``OPENCODE_MODELS_PATH``,
+which OpenCode reads too. Prices are model-price equivalents: under a ChatGPT
+subscription they describe usage, not a charge.
 """
 
 from __future__ import annotations

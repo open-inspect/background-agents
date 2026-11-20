@@ -4,8 +4,8 @@
  * This module is the single definition of the memory tools both sandbox harnesses expose. The
  * sandbox runtime cannot import TypeScript, so `npm run generate:memory-contract -w
  * @open-inspect/shared` writes the derived contract (tool specs, sandbox schema version, and
- * runtime limits) into the runtime package: a JSON file for Python, an ES module for the OpenCode
- * tools. `memory-tools.test.ts` fails when they are stale.
+ * runtime limits) into the runtime package as JSON. `memory-tools.test.ts` fails when it is
+ * stale.
  *
  * Tool inputs are the sandbox endpoint request schemas, so harnesses forward arguments verbatim
  * (after dropping unknown keys) and never reshape request bodies.
@@ -116,14 +116,11 @@ const GENERATED_HEADER =
 /** Repo-relative output paths for {@link formatMemoryContractFiles}. */
 export const MEMORY_CONTRACT_FILES = {
   json: "packages/sandbox-runtime/src/sandbox_runtime/memory_contract.json",
-  module: "packages/sandbox-runtime/src/sandbox_runtime/tools/_memory-contract.js",
 } as const;
 
 export function formatMemoryContractFiles(): Record<keyof typeof MEMORY_CONTRACT_FILES, string> {
   const contract = buildMemorySandboxContract();
-  const json = JSON.stringify(contract, null, 2);
   return {
     json: `${JSON.stringify({ $comment: GENERATED_HEADER, ...contract }, null, 2)}\n`,
-    module: `// ${GENERATED_HEADER}\nexport const MEMORY_CONTRACT = ${json};\n`,
   };
 }

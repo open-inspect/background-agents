@@ -12,6 +12,8 @@ dependencies = [
     # Exact pin: the wheel bundles the `claude` binary and its message shapes
     # are what harness/claude.py translates.
     "claude-agent-sdk==0.2.168",
+    # The OpenCode 2 harness serves the shared tools over MCP (harness/oi_mcp_server.py).
+    "mcp>=2.3,<3",
 ]
 
 [project.optional-dependencies]

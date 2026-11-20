@@ -27,19 +27,14 @@
     "version": "152.0.7977.82",
     "sha256": "0704631fb3e4f741092e08f55272f90abc3e307f991f05f332924364415b02e0"
   },
-  "opencode": "1.19.5",
-  "opencodeMinimum": "1.18.15",
-  "opencodeMinimumReason": "Earlier releases order turns by wrapped message IDs rather than creation time.",
+  "opencode": "2.2.5",
+  "opencodeMinimum": "2.2.5",
+  "opencodeMinimumReason": "The runtime drives OpenCode 2's /api server, session event stream and plugin format, and is tested against 2.2.5. OpenCode 1.x speaks none of them.",
   "agentBrowser": "0.37.0",
   "agentBrowserSha256": "78e0c5a14a7fa1f3d1ae2acdbdcc94a047b435b998a8c505fcc49d7fa4935a49",
   "pnpm": "10.34.5",
   "bun": "1.4.2",
-  "zod": "4.6.6",
-  "npmOverrides": {
-    "toml": "5.0.1",
-    "zod": "4.6.6"
-  },
-  "npmOverridesReason": "effect@4.0.0-beta.83, pinned by @opencode-ai/plugin, requires toml ^4, and toml before 5.0.1 has toml.parse() CPU DoS advisories. @opencode-ai/plugin pins zod 4.1.8, which is affected by a memory exhaustion advisory fixed in 4.6.6.",
+  "npmOverrides": {},
   "python": "3.12.12",
   "uv": {
     "version": "0.9.7",

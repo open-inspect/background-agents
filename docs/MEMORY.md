@@ -316,12 +316,7 @@ cd packages/sandbox-runtime
 uv sync --frozen --extra dev --python 3.12
 # A short disposable temp path avoids macOS Unix-socket path-length failures.
 uv run --frozen --extra dev pytest tests --basetemp=/tmp/oi-memory-pytest
-OPENCODE_TEST_BINARY=/path/to/opencode \
-  uv run --frozen --extra dev pytest tests/test_opencode_reasoning_contract.py -k memory_text
 ```
-
-The optional binary test uses isolated configuration, synthetic credentials and a localhost fake
-provider. It verifies actual OpenCode prompt/tool serialization, not a real model's behavior.
 
 ## Rollout and failure behavior
 

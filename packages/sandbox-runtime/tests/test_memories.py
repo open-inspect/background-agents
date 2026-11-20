@@ -295,8 +295,8 @@ async def test_both_harnesses_receive_exact_memory_and_empty_parity(tmp_path, mo
     )
     server = make_opencode_server({}, workspace_path=tmp_path)
     with (
-        patch.object(server, "_setup_managed_oauth"),
-        patch.object(server, "_prepare_opencode_filesystem", return_value=set()),
+        patch.object(server, "_seed_managed_credentials", new_callable=AsyncMock),
+        patch("sandbox_runtime.opencode_server.install_bin_scripts"),
         patch.object(server, "_wait_for_health", new_callable=AsyncMock),
         patch(
             "sandbox_runtime.opencode_server.asyncio.create_subprocess_exec",
