@@ -15,4 +15,5 @@ export const CONDITION_LABELS: Record<string, string> = {
   text_match: "Message Text",
   slack_channel: "Slack Channel",
   slack_actor: "Slack User",
+  slack_reaction: "Reaction emoji",
 };

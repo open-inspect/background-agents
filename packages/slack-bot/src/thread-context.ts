@@ -110,8 +110,10 @@ export interface ThreadContextRequest {
   channel: string;
   /** Thread root; absent for a top-level message, which has no history. */
   threadTs?: string;
-  /** The triggering message — excluded from its own context and used as the upper bound. */
+  /** The triggering message — excluded from its own context. */
   ts: string;
+  /** Upper bound for the window; defaults to `ts`. A reaction passes its own time. */
+  beforeTs?: string;
 }
 
 /**
@@ -141,7 +143,7 @@ export async function buildThreadContextForTrigger(
     excludeTs: request.ts,
     // Replies can land between the trigger and this fetch; presenting one as
     // prior context would be wrong and would leak later thread state.
-    beforeTs: request.ts,
+    beforeTs: request.beforeTs ?? request.ts,
     limit: THREAD_CONTEXT_MESSAGE_LIMIT,
     keepRootTs: request.threadTs,
   });

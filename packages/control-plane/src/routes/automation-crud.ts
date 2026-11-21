@@ -9,7 +9,8 @@ import {
 } from "@open-inspect/shared/cron";
 import {
   conditionRegistry,
-  normalizeSlackChannelConditions,
+  DEFAULT_SLACK_EVENT_TYPE,
+  normalizeSlackConditions,
   validateTriggerConditions,
   type TriggerConfig,
 } from "@open-inspect/shared/triggers";
@@ -244,6 +245,10 @@ async function handleCreateAutomation(
     }
   }
 
+  // Clients that predate Slack event types keep creating message automations.
+  if (triggerType === "slack_event" && body.eventType === undefined) {
+    body.eventType = DEFAULT_SLACK_EVENT_TYPE;
+  }
   const eventTypeError = getTriggerEventTypeError(triggerType, body.eventType);
   if (eventTypeError) return error(eventTypeError, 400);
   const triggerOptionsError = getTriggerOptionsError(triggerType, body.triggerConfig);
@@ -262,11 +267,11 @@ async function handleCreateAutomation(
 
   // Slack triggers require explicit scoping (at least one watched channel).
   if (triggerType === "slack_event") {
-    const slackError = validateSlackTriggerConfig(body.triggerConfig);
+    const slackError = validateSlackTriggerConfig(body.triggerConfig, body.eventType);
     if (slackError) return error(slackError, 400);
     body.triggerConfig = {
       ...body.triggerConfig!,
-      conditions: normalizeSlackChannelConditions(body.triggerConfig!.conditions),
+      conditions: normalizeSlackConditions(body.triggerConfig!.conditions),
     };
     if (
       !(await new SlackChannelStore(ctx.db).hasCompatibleBindings(
@@ -767,8 +772,10 @@ async function handleUpdateAutomation(
     updateFields.event_type = body.eventType;
   }
 
-  const effectiveEventType =
-    body.eventType !== undefined ? body.eventType : (existing.event_type ?? undefined);
+  const storedEventType =
+    existing.event_type ??
+    (existingTriggerType === "slack_event" ? DEFAULT_SLACK_EVENT_TYPE : undefined);
+  const effectiveEventType = body.eventType !== undefined ? body.eventType : storedEventType;
   const eventTypeError = getTriggerEventTypeError(existingTriggerType, effectiveEventType);
   if (eventTypeError) return error(eventTypeError, 400);
   const triggerOptionsError = getTriggerOptionsError(existingTriggerType, body.triggerConfig);
@@ -791,12 +798,20 @@ async function handleUpdateAutomation(
       400
     );
   }
-  if (body.triggerConfig && existingTriggerType === "slack_event") {
-    const slackError = validateSlackTriggerConfig(body.triggerConfig);
+  if (
+    existingTriggerType === "slack_event" &&
+    (body.triggerConfig || body.eventType !== undefined)
+  ) {
+    const slackError = validateSlackTriggerConfig(
+      body.triggerConfig ?? existingTriggerConfig,
+      effectiveEventType
+    );
     if (slackError) return error(slackError, 400);
+  }
+  if (body.triggerConfig && existingTriggerType === "slack_event") {
     body.triggerConfig = {
       ...body.triggerConfig,
-      conditions: normalizeSlackChannelConditions(body.triggerConfig.conditions),
+      conditions: normalizeSlackConditions(body.triggerConfig.conditions),
     };
     triggerConfigToValidate = body.triggerConfig;
   }

@@ -657,6 +657,53 @@ export async function getMessageDetails(
   return { ok: true, files: message?.files ?? [], attachments: message?.attachments ?? [] };
 }
 
+const messageLookupPayloadSchema = z.object({
+  messages: z.array(
+    z.object({
+      ts: z.string(),
+      text: z.string().optional(),
+      user: z.string().optional(),
+      bot_id: z.string().optional(),
+      thread_ts: z.string().optional(),
+    })
+  ),
+});
+
+export type SlackLookedUpMessage = z.infer<typeof messageLookupPayloadSchema>["messages"][number];
+
+/**
+ * Fetch one message by ts alone, as `reaction_added` events carry no
+ * thread_ts. Top-level messages come from `conversations.history`; a thread reply
+ * is not there, so `conversations.replies` (which accepts a reply's ts) is the
+ * fallback. `message` is null when neither returns it.
+ */
+export async function getMessage(
+  token: string,
+  channelId: string,
+  ts: string
+): Promise<SlackEnvelope<{ message: SlackLookedUpMessage | null }>> {
+  const history = await slackGet(token, "conversations.history", messageLookupPayloadSchema, {
+    channel: channelId,
+    latest: ts,
+    inclusive: "true",
+    limit: "1",
+  });
+  if (!history.ok) return history;
+  const top = history.messages.find((m) => m.ts === ts);
+  if (top) return { ok: true, message: top };
+
+  const replies = await slackGet(token, "conversations.replies", messageLookupPayloadSchema, {
+    channel: channelId,
+    ts,
+    // Same window as getMessageDetails: the thread root may come back beside the target.
+    oldest: ts,
+    inclusive: "true",
+    limit: "2",
+  });
+  if (!replies.ok) return replies;
+  return { ok: true, message: replies.messages.find((m) => m.ts === ts) ?? null };
+}
+
 const slackUserSchema = z.object({
   id: z.string(),
   name: z.string(),
