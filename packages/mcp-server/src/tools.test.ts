@@ -106,11 +106,13 @@ describe("tool surface", () => {
     const writes = tools.filter((entry) => entry.annotations?.readOnlyHint === false);
     expect(writes.map((entry) => entry.name).sort()).toEqual([
       "create_automation",
+      "create_session",
       "import_skill_from_git",
+      "send_prompt",
       "trigger_automation",
       "update_skill_from_git",
     ]);
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(15);
     // Re-import moves the skill's current revision, which is what later
     // sessions load; a client reads this to decide how hard to prompt.
     const hints = Object.fromEntries(
@@ -131,7 +133,7 @@ describe("tool surface", () => {
     await mcpClient.close();
   });
 
-  it("keeps the writes to these four, each behind a route that accepts tokens", () => {
+  it("keeps the writes to these six, each behind a route that accepts tokens", () => {
     // A new write tool needs a control-plane route to accept personal access tokens first,
     // which is the review this list stands in for.
     const writes = TOOLS.filter((candidate) => !candidate.readOnly).map(
@@ -140,7 +142,9 @@ describe("tool surface", () => {
 
     expect(writes.sort()).toEqual([
       "create_automation",
+      "create_session",
       "import_skill_from_git",
+      "send_prompt",
       "trigger_automation",
       "update_skill_from_git",
     ]);

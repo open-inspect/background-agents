@@ -11,7 +11,7 @@ import { AutomationStore } from "../../src/db/automation-store";
 import { PersonalAccessTokenStore } from "../../src/db/personal-access-tokens";
 import { SessionIndexStore } from "../../src/db/session-index";
 import { cleanD1Tables } from "./cleanup";
-import { initSession, seedActiveUser, seedEvents } from "./helpers";
+import { initSession, queryDO, seedActiveUser, seedEvents } from "./helpers";
 import { fetchRuns } from "./run-helpers";
 import { seedEnvironment } from "./ownership-test-helpers";
 
@@ -118,7 +118,6 @@ describe("reading sessions with a token", () => {
     for (const [method, path] of [
       ["GET", `/sessions/${sessionName}/tunnel-urls`],
       ["GET", `/sessions/${sessionName}/sandbox-access`],
-      ["POST", "/sessions"],
       ["POST", `/sessions/${sessionName}/archive`],
     ] as const) {
       await expectRefusal(
@@ -127,6 +126,54 @@ describe("reading sessions with a token", () => {
         "personal_access_token_not_accepted"
       );
     }
+  });
+});
+
+describe("starting and prompting sessions with a token", () => {
+  it("creates a session as its owner with sessions.create", async () => {
+    const reader = await issueToken(OWNER, ["sessions.read"]);
+    await expectRefusal(
+      await withToken(reader, "/sessions", { method: "POST", body: {} }),
+      403,
+      "permission_required"
+    );
+
+    const creator = await issueToken(OWNER, ["sessions.create"]);
+    const response = await withToken(creator, "/sessions", {
+      method: "POST",
+      body: { title: "From a token" },
+    });
+    expect(response.status).toBe(201);
+    const { sessionId } = await response.json<{ sessionId: string }>();
+    const row = await env.DB.prepare("SELECT user_id FROM sessions WHERE id = ?")
+      .bind(sessionId)
+      .first<{ user_id: string }>();
+    expect(row?.user_id).toBe(OWNER);
+  });
+
+  it("sends a prompt as its owner with sessions.collaborate", async () => {
+    const { stub, sessionName } = await initSession({ userId: OWNER });
+    const reader = await issueToken(OWNER, ["sessions.read"]);
+    await expectRefusal(
+      await withToken(reader, `/sessions/${sessionName}/prompt`, {
+        method: "POST",
+        body: { content: "hi" },
+      }),
+      403,
+      "permission_required"
+    );
+
+    const collaborator = await issueToken(OWNER, ["sessions.collaborate"]);
+    const response = await withToken(collaborator, `/sessions/${sessionName}/prompt`, {
+      method: "POST",
+      body: { content: "hi" },
+    });
+    expect(response.status).toBeLessThan(300);
+    const messages = await queryDO<{ author_canonical_user_id: string }>(
+      stub,
+      "SELECT author_canonical_user_id FROM messages"
+    );
+    expect(messages.map((message) => message.author_canonical_user_id)).toEqual([OWNER]);
   });
 });
 
