@@ -23,6 +23,7 @@ describe("inactivity timeout policy", () => {
     { source: "agent", timeoutMs: 120_000 },
     { source: "user", timeoutMs: 600_000 },
     { source: "linear-bot", timeoutMs: 600_000 },
+    { source: "discord-bot", timeoutMs: 600_000 },
     { source: "slack-bot", timeoutMs: 600_000 },
     { source: undefined, timeoutMs: 600_000 },
   ] as const)("$source sessions", ({ source, timeoutMs }) => {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const workflow = await readFile(
@@ -73,6 +75,48 @@ for (const [label, assignment] of [
   });
 }
 
+for (const [variable, input] of [
+  ["discord_bot_default_model", "DISCORD_BOT_DEFAULT_MODEL"],
+  ["discord_bot_harness", "DISCORD_BOT_HARNESS"],
+]) {
+  test(`${variable} leaves the default to Terraform and preserves Actions overrides`, () => {
+    assertInPlanAndApply(
+      `TF_VAR_${variable}: "\u0024{{ vars.${input} || secrets.${input} }}"`,
+      variable
+    );
+  });
+}
+
+test("plan and apply unset missing Discord overrides before invoking Terraform", () => {
+  assertInPlanAndApply(
+    'source "$GITHUB_WORKSPACE/scripts/terraform-unset-empty.sh" TF_VAR_discord_bot_default_model TF_VAR_discord_bot_harness',
+    "Discord Terraform defaults cleanup"
+  );
+  const script = fileURLToPath(new URL("./terraform-unset-empty.sh", import.meta.url));
+  const names = ["TF_VAR_discord_bot_default_model", "TF_VAR_discord_bot_harness"];
+  for (const values of [undefined, ["", ""], ["openai/gpt-5.5", "opencode"], ["  ", "codex"]]) {
+    const env = { ...process.env };
+    for (const [i, name] of names.entries()) {
+      delete env[name];
+      if (values) env[name] = values[i];
+    }
+    const result = spawnSync(
+      "bash",
+      [
+        "-eu",
+        "-c",
+        'source "$1" "${@:2}"; printf "%s\\n" "${TF_VAR_discord_bot_default_model-unset}" "${TF_VAR_discord_bot_harness-unset}"',
+        "test",
+        script,
+        ...names,
+      ],
+      { env, encoding: "utf8" }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, (values?.[0] ? values : ["unset", "unset"]).join("\n") + "\n");
+  }
+});
+
 // Inputs the workflow deliberately does not take from the environment:
 // control_plane_* values are staged per migration (the "Stage SchedulerDO
 // deletion migration" step writes them to an auto.tfvars.json file), and
@@ -86,10 +130,11 @@ const NOT_FROM_ENVIRONMENT = new Set([
 ]);
 
 test("Every production Terraform variable reaches plan and apply", async () => {
-  const variables = await readFile(
-    new URL("../terraform/environments/production/variables.tf", import.meta.url),
-    "utf8"
-  );
+  const directory = new URL("../terraform/environments/production/", import.meta.url);
+  const files = (await readdir(directory)).filter((name) => name.endsWith(".tf"));
+  const variables = (
+    await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))
+  ).join("\n");
   const declared = [...variables.matchAll(/^variable "([a-z0-9_]+)"/gm)].map((match) => match[1]);
   assert.ok(declared.length > 0, "expected variables in variables.tf");
 

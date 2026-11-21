@@ -262,6 +262,8 @@ can make HTTP requests and maintain WebSocket connections can participate.
 - **MCP server**: Local stdio server (`packages/mcp-server`) that lets Claude Code or another MCP
   client read sessions and automation runs, create and trigger automations, and import skills over
   HTTP with a personal access token
+- **Discord**: `/task` slash command that starts a session, streams progress into a thread, and
+  posts the result
 
 All clients see the same session state. Send a prompt from Slack or GitHub, watch the results on
 web. This works because state lives in the control plane, not the client.

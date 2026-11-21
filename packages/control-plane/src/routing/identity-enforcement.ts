@@ -9,10 +9,9 @@
  * can run the steps out of order or skip one.
  */
 
-import type { SpawnSource } from "@open-inspect/shared/types/sessions";
-import type { ServiceName } from "@open-inspect/shared/service-auth";
+import type { MessageSource, SpawnSource } from "@open-inspect/shared/types/sessions";
 import { createLogger } from "../logger";
-import { CALLBACK_DESTINATIONS } from "../auth/service/callback-signing";
+import { callbackDestinationForSource } from "../session/callback-routes";
 import type { Principal, ResolvedIdentity } from "../auth/principal";
 import { error } from "../http/responses";
 import type { RequestContext } from "../http/request-context";
@@ -200,15 +199,13 @@ export function requireAdmittedCanonicalUserId(
   return error("Failed to resolve session identity", 500);
 }
 
-/**
- * Whether this principal may attach a `callbackContext` to prompts. Bots
- * that own completion callbacks may; anyone else injecting one is a
- * notification-forgery vector.
- */
-export function mayAttachCallbackContext(ctx: RequestContext): boolean {
+/** Attaching a callback requires ownership of the explicitly requested source. */
+export function mayAttachCallbackContext(
+  ctx: RequestContext,
+  source: MessageSource | undefined
+): boolean {
   const principal = ctx.principal;
   return (
-    principal?.kind === "service" &&
-    (CALLBACK_DESTINATIONS as readonly ServiceName[]).includes(principal.service)
+    principal?.kind === "service" && principal.service === callbackDestinationForSource(source)
   );
 }

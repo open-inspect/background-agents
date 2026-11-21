@@ -127,6 +127,7 @@ App 安装范围限定了工作区能够访问的仓库。沙箱 git 凭据仅�
 | [github-bot](packages/github-bot)           | GitHub 集成（自动审查、@提及）       |
 | [linear-bot](packages/linear-bot)           | Linear 集成（议题 → 编程会话）       |
 | [mcp-server](packages/mcp-server)           | 本地 MCP 服务器（个人访问令牌）      |
+| [discord-bot](packages/discord-bot)         | Discord 集成（`/task` → 会话）       |
 | [shared](packages/shared)                   | 共享类型与工具函数                   |
 
 ## 入门
