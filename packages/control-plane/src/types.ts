@@ -110,6 +110,8 @@ export interface EnvConfig {
   EC2_SANDBOX_SECURITY_GROUP_ID?: string; // Security group for sandboxes
   EC2_SANDBOX_INSTANCE_PROFILE_ARN?: string; // Instance profile for sandboxes; its role grants nothing
   EC2_SANDBOX_CONTROL_PLANE_PRIVATE_HOST?: string; // DNS name resolving, inside the sandboxes' VPC, to the control plane's private address
+  // Image builds
+  IMAGE_BUILD_MIN_REBUILD_INTERVAL_MS?: string; // Deployment default minimum interval (ms) between rebuilds caused only by base-branch commits; whole ms; unset or 0 rebuilds whenever the branch moves
 
   // Sandbox lifecycle configuration
   SANDBOX_INACTIVITY_TIMEOUT_MS?: string; // Inactivity timeout in ms; defaults to DEFAULT_INACTIVITY_CONFIG.timeoutMs
