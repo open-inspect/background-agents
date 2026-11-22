@@ -940,7 +940,7 @@ def test_boat_launcher_matches_the_control_plane_contract():
     )
 
 
-def _run_boat_ensure_link(tmp_path, rmdir_race):
+def _run_boat_ensure_link(tmp_path, rmdir_race="", initial="empty_dir"):
     """Run the Boat launcher's ensure_link with a fake sudo whose rmdir can play the other launcher."""
     launcher = (ROOT / "packages/boat-infra/launcher.sh").read_text()
     functions = "\n".join(
@@ -961,7 +961,16 @@ def _run_boat_ensure_link(tmp_path, rmdir_race):
     )
     sudo.chmod(0o755)
     link, target = tmp_path / "app", tmp_path / "install" / "app"
-    link.mkdir()
+    if initial == "empty_dir":
+        link.mkdir()
+    elif initial == "non_empty_dir":
+        link.mkdir()
+        (link / "data").write_text("keep")
+    elif initial == "file":
+        link.write_text("keep")
+    elif initial == "other_link":
+        (tmp_path / "elsewhere").mkdir()
+        link.symlink_to(tmp_path / "elsewhere")
     result = subprocess.run(
         ["bash", "-c", f'set -euo pipefail\n{functions}\nensure_link "$LINK" "$TARGET"'],
         env={
@@ -976,17 +985,33 @@ def _run_boat_ensure_link(tmp_path, rmdir_race):
     return result, link, target
 
 
-@pytest.mark.parametrize("rmdir_race", ["", "linked", "removed"])
-def test_boat_launcher_links_app_when_another_launcher_races_it(tmp_path, rmdir_race):
-    result, link, target = _run_boat_ensure_link(tmp_path, rmdir_race)
+@pytest.mark.parametrize(
+    ("initial", "rmdir_race"),
+    [
+        ("empty_dir", ""),
+        # The other launcher removes or links /app first, so this rmdir fails.
+        ("empty_dir", "linked"),
+        ("empty_dir", "removed"),
+        ("missing", ""),
+        ("other_link", ""),
+    ],
+)
+def test_boat_launcher_links_app_when_another_launcher_races_it(tmp_path, initial, rmdir_race):
+    result, link, target = _run_boat_ensure_link(tmp_path, rmdir_race, initial)
 
     assert result.returncode == 0, result.stderr
     assert link.is_symlink() and link.readlink() == target
 
 
-def test_boat_launcher_fails_when_it_cannot_replace_an_empty_directory(tmp_path):
-    result, link, _ = _run_boat_ensure_link(tmp_path, "failed")
+@pytest.mark.parametrize(
+    ("initial", "rmdir_race"),
+    [("non_empty_dir", ""), ("file", ""), ("empty_dir", "failed")],
+)
+def test_boat_launcher_refuses_to_replace_anything_but_an_empty_directory(
+    tmp_path, initial, rmdir_race
+):
+    result, link, _ = _run_boat_ensure_link(tmp_path, rmdir_race, initial)
 
     assert result.returncode == 1
-    assert "could not replace" in result.stderr
-    assert link.is_dir() and not link.is_symlink()
+    assert "refusing to replace" in result.stderr
+    assert link.exists() and not link.is_symlink()
