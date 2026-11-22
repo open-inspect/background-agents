@@ -11,7 +11,8 @@ install -d -m 1777 /tmp
 # candidate". OI_UBUNTU_MIRROR (e.g. a cloud-local archive) replaces
 # archive.ubuntu.com; security.ubuntu.com is left alone. A repository that only
 # renames its Label (as the ondrej/php PPA on Boat's Ubuntu machines did when it
-# was marked deprecated) must not fail the update; other Release changes still do.
+# was marked deprecated) must not fail the update. A changed Origin or Codename
+# still does; apt already accepts Suite and Version changes by default.
 cat > /etc/apt/apt.conf.d/80openinspect-network <<'APT'
 Acquire::Retries "5";
 Acquire::http::Timeout "30";
