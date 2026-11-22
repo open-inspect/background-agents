@@ -12,6 +12,9 @@ import { applySandboxRecovery } from "../sandbox-recovery";
 const SANDBOX_INTERRUPTED_ERROR =
   "Execution interrupted because the sandbox stopped or became unavailable.";
 
+/** A pending prompt older than this is failed, not retried, after a failed launch. */
+const FAILED_LAUNCH_RETRY_MAX_PROMPT_AGE_MS = 30 * 60 * 1000;
+
 export interface AlarmHandlerDeps {
   preserveBeforeWatchdogs?: (allowCaptureRetry: boolean) => Promise<"continue" | "hold_watchdogs">;
   repository: Pick<
@@ -28,6 +31,10 @@ export interface AlarmHandlerDeps {
   alarmScheduler: AlarmScheduler;
   /** Wakes queued work for a live runtime that nothing else will; idempotent. */
   redriveIdleQueue?: () => Promise<void>;
+  /** Retries queued work after a failed launch; arms the alarm while the circuit breaker is open. */
+  retryAfterFailedLaunch?: () => Promise<void>;
+  /** Why the last launch failed, while the sandbox is failed and nothing is launching. */
+  failedLaunchReason?: () => string | null;
   /** Resolved per use so it honors settings persisted after construction. */
   getExecutionTimeoutMs: () => number;
   now: () => number;
@@ -113,6 +120,22 @@ export function createAlarmHandler(deps: AlarmHandlerDeps): AlarmHandler {
       // Last, so the watchdogs have already fenced any runtime they found
       // stale: a lost queue kick is repeated only for a live runtime.
       if (lifecycleResult === "no_action") await deps.redriveIdleQueue?.();
+      // A prompt a failed launch held back is retried once the circuit breaker
+      // allows, but only while it is recent: a launch that keeps failing must
+      // not retry forever. After that the prompt fails with the launch's
+      // reason, so the person or bot that sent it hears why.
+      const pending = deps.repository.getNextPendingMessage();
+      if (pending && deps.now() - pending.created_at < FAILED_LAUNCH_RETRY_MAX_PROMPT_AGE_MS) {
+        await deps.retryAfterFailedLaunch?.();
+      } else if (pending) {
+        const reason = deps.failedLaunchReason?.();
+        if (reason) {
+          await deps.messageQueue.failPendingMessage(
+            pending.id,
+            `Could not start a sandbox: ${reason}`
+          );
+        }
+      }
       if (projectionFailure) throw projectionFailure.error;
     },
   };
