@@ -158,12 +158,14 @@ function exportHeaders({ url, secret, actor, method = "GET", body = "" }) {
   };
 }
 
-const url = `${CONTROL_PLANE_URL}/sessions/export?scope=runs&include=messages,events,usage&limit=5`;
-const headers = exportHeaders({
-  url,
-  secret: process.env.EXPORT_SERVICE_SECRET,
-  actor: "github:12345",
-});
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL; // e.g. https://control-plane.example.com
+const secret = process.env.EXPORT_SERVICE_SECRET;
+if (!controlPlaneUrl || !secret) {
+  throw new Error("Set CONTROL_PLANE_URL and EXPORT_SERVICE_SECRET");
+}
+
+const url = `${controlPlaneUrl}/sessions/export?scope=runs&include=messages,events,usage&limit=5`;
+const headers = exportHeaders({ url, secret, actor: "github:12345" });
 const ndjson = await (await fetch(url, { headers })).text();
 ```
 
