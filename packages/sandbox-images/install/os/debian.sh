@@ -9,11 +9,14 @@ install -d -m 1777 /tmp
 # Retry transient archive failures, and make `apt-get update` fail when an index
 # cannot be fetched instead of warning and failing later with "no installation
 # candidate". OI_UBUNTU_MIRROR (e.g. a cloud-local archive) replaces
-# archive.ubuntu.com; security.ubuntu.com is left alone.
+# archive.ubuntu.com; security.ubuntu.com is left alone. A repository that only
+# renames its Label (as the ondrej/php PPA on Boat's Ubuntu machines did when it
+# was marked deprecated) must not fail the update; other Release changes still do.
 cat > /etc/apt/apt.conf.d/80openinspect-network <<'APT'
 Acquire::Retries "5";
 Acquire::http::Timeout "30";
 Acquire::https::Timeout "30";
+Acquire::AllowReleaseInfoChange::Label "true";
 APT::Update::Error-Mode "any";
 APT
 if [[ "$ID" == ubuntu && -n "${OI_UBUNTU_MIRROR:-}" ]]; then
