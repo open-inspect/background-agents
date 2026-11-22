@@ -580,8 +580,9 @@ export class BoatSandboxLifecycle {
     for (;;) {
       const sandbox = await this.client.getSandbox(boatSandboxId);
       if (sandbox.setupStatus === "failed" || sandbox.setupStatus === "done") {
-        const detail = (sandbox.setupError ?? "").trim().slice(-400);
-        if (detail.startsWith(BOAT_SETUP_START_UNCONFIRMED)) {
+        const setupError = (sandbox.setupError ?? "").trim();
+        const detail = setupError.slice(-400);
+        if (setupError.startsWith(BOAT_SETUP_START_UNCONFIRMED)) {
           // Boat's box agent timed out starting the script, so it may or may
           // not be running. The launcher holds a lock, so start it directly:
           // it exits as already running if the script got there first.
