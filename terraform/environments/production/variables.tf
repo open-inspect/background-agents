@@ -966,8 +966,8 @@ variable "export_service_actor" {
   default     = ""
 
   validation {
-    condition     = var.export_service_actor == "" || can(regex("^github:[0-9]+$", var.export_service_actor))
-    error_message = "export_service_actor must be empty or github:<numeric GitHub user id>."
+    condition     = var.export_service_actor == "" || can(regex("^github:[1-9][0-9]*$", var.export_service_actor))
+    error_message = "export_service_actor must be empty or github:<GitHub user id>, a positive number without leading zeros."
   }
 }
 

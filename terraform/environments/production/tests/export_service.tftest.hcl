@@ -103,3 +103,27 @@ run "rejects_a_user_id_without_an_actor" {
 
   expect_failures = [var.export_service_user_id]
 }
+
+# GitHub user ids are stored as canonical decimal strings, so `github:042` or
+# `github:0` would never match an identity and every export would be refused.
+run "rejects_a_non_canonical_github_user_id" {
+  command = plan
+
+  variables {
+    export_service_actor   = "github:042"
+    export_service_user_id = "0123456789abcdef0123456789abcdef"
+  }
+
+  expect_failures = [var.export_service_actor]
+}
+
+run "rejects_a_zero_github_user_id" {
+  command = plan
+
+  variables {
+    export_service_actor   = "github:0"
+    export_service_user_id = "0123456789abcdef0123456789abcdef"
+  }
+
+  expect_failures = [var.export_service_actor]
+}
