@@ -2,8 +2,8 @@
 name: onboarding
 description:
   Deploy your own Open-Inspect instance. Use when the user wants to set up, deploy, or onboard to
-  Open-Inspect. Guides through repository setup, credential collection, Terraform deployment, and
-  verification with user handoffs.
+  Open-Inspect. Guides through repository setup, credential collection, Terraform provisioning, the
+  Cloudflare Worker deploy, and verification with user handoffs.
 user-invocable: true
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, TodoWrite
 ---
@@ -59,7 +59,19 @@ Use AskUserQuestion to gather:
    Validate the chosen providers and admission mode against the compatibility table and allowlist
    rules in Step 5 of `docs/GETTING_STARTED.md` before proceeding.
 9. **Prerequisites confirmation** - Confirm they have Cloudflare, Modal, Anthropic, and GitHub
-   accounts, plus Vercel only if selected above.
+   accounts, plus Vercel only if selected above. Check the tools too, and install what is missing:
+
+```bash
+node --version       # must match .nvmrc (24 or newer): the deploy uses `node --env-file`
+terraform version    # 1.14.0 or newer
+uv --version         # Python tooling for the Modal and sandbox steps
+gh auth status       # creates the repository and, later, Actions secrets
+wrangler --version   # used below to create the Terraform state bucket
+```
+
+This guide deploys one environment, production. The repository also contains
+`terraform/environments/staging` and `.github/workflows/branch-deploy-staging.yml`; ignore them.
+Staging stays inert unless the repository variable `CLOUDFLARE_STAGING_ENABLED` is set to `true`.
 
 ## Phase 2: Repository Setup
 
@@ -225,6 +237,18 @@ credentials, bot tokens and secrets, classifier settings, encryption keys, allow
 and subdomain, web platform, sandbox provider and its credentials, Modal settings,
 `MODAL_API_SECRET`, `ENABLE_*_BOT`) go in both. See Step 5 of `docs/GETTING_STARTED.md`.
 
+Start both files from their examples (`terraform/environments/production/terraform.tfvars.example`
+and `scripts/cloudflare-deploy/deploy.env.example`) and fill in the collected answers. Never commit
+or paste `deploy.env`: it is gitignored and holds every secret in the deployment.
+
+These values appear in both files and must be identical, because the deploy names the sandbox
+artifact Terraform builds from them: `deployment_name`/`DEPLOYMENT_NAME`,
+`cloudflare_account_id`/`CLOUDFLARE_ACCOUNT_ID`,
+`cloudflare_worker_subdomain`/`CLOUDFLARE_WORKER_SUBDOMAIN`, `web_platform`/`WEB_PLATFORM`,
+`sandbox_provider`/`SANDBOX_PROVIDER`, the Modal settings and `MODAL_API_SECRET`, the
+`enable_*_bot`/`ENABLE_*_BOT` flags, and the provider-specific names and sizes for Daytona, E2B and
+Boat.
+
 Create `terraform/environments/production/backend.tfvars`. The bucket is already fixed as
 `open-inspect-terraform-state` in `backend.tf`; do not override it here:
 
@@ -266,7 +290,15 @@ GH_BOT_USERNAME="{app-slug}[bot]"
 
 ## Phase 8: Provision and Deploy
 
-Provision infrastructure:
+Check `deploy.env` before provisioning anything. A dry run validates every setting and builds the
+Wrangler configs without contacting Cloudflare:
+
+```bash
+npm install
+node --env-file=deploy.env scripts/cloudflare-deploy/deploy.mjs --dry-run
+```
+
+Fix every problem it lists, then provision infrastructure:
 
 ```bash
 cd terraform/environments/production
@@ -386,6 +418,14 @@ curl "$(terraform -chdir=terraform/environments/production output -raw modal_hea
 curl -I "$(terraform -chdir=terraform/environments/production output -raw web_app_url)"
 ```
 
+If Phase 1 chose a Cloudflare custom domain, `web_app_url` still prints the workers.dev address,
+which is disabled for the web Worker in that case. Check `https://{CLOUDFLARE_CUSTOM_DOMAIN}`
+instead:
+
+```bash
+curl -I https://{custom_domain}
+```
+
 Present a deployment summary table. Instruct the user to test: visit the web app, sign in with each
 configured provider, create a session, and send a prompt.
 
@@ -394,8 +434,21 @@ configured provider, create a session, and send a prompt.
 Ask if user wants GitHub Actions CI/CD. If yes, follow the "Set Up CI/CD (Optional)" section of
 `docs/GETTING_STARTED.md` for the required variables and secrets, including the Phase 1 admission
 mode and allowlists. CI uses the same `open-inspect-terraform-state` R2 bucket as local Terraform.
-Copy the Terraform-generated secrets into the `production` GitHub Environment once with
-`node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment production`.
+
+Two workflows then run on pushes to `main`: `terraform-production.yml` provisions, and
+`deploy-production.yml` uploads the Workers. Both read the same setting names as `deploy.env` and
+`terraform.tfvars`, from the `production` GitHub Environment or repository-level variables and
+secrets (`SANDBOX_PROVIDER` may live on the Environment). Nothing uploads `deploy.env` for the user:
+walk through entering each value in GitHub, as the Variables/Secrets split in
+`docs/GETTING_STARTED.md` describes.
+
+Create the `production` GitHub Environment first (repo Settings → Environments; required reviewers
+are optional): `gh secret set --env` fails while it does not exist. Then copy the
+Terraform-generated secrets into it once, from the repository root:
+
+```bash
+node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment production
+```
 
 ## Error Handling
 
@@ -405,6 +458,14 @@ Copy the Terraform-generated secrets into the `production` GitHub Environment on
 - **"At least one access control allowlist must be configured"**: Set an appropriate `ALLOWED_*`
   deploy value or the explicit Phase 1 open-access choice; check Step 5 of `docs/GETTING_STARTED.md`
   and the corresponding CI variables/secrets.
+- **"KV namespaces not found" or "D1 database ... was not found"**: Terraform has not provisioned
+  this deployment yet, or `DEPLOYMENT_NAME` differs from `deployment_name`. Run `terraform apply`
+  first and make the two match.
+- **"Terraform-generated secrets are not in the environment"**: add the values from
+  `terraform -chdir=terraform/environments/production output -json generated_worker_secrets` to
+  `deploy.env` (or run the sync script for CI).
+- **"The ... sandbox artifact ... was not found"**: the Terraform apply that builds it has not
+  finished or failed; rerun `terraform apply`, and check the shared values in Phase 7 match.
 - **Queue creation or binding permission errors**: Grant Account | Queues | Edit to the Cloudflare
   API token and rerun `terraform apply`.
 - **Slack bot not responding**: Check Event Subscriptions URL verified, bot invited to channel,
@@ -419,7 +480,7 @@ Copy the Terraform-generated secrets into the `production` GitHub Environment on
 ## Important Notes
 
 - Track all collected credentials securely throughout the process
-- Never log sensitive values
+- Never log sensitive values, and never commit `deploy.env`
 - The callback URL MUST match the actual deployed web app URL
 - The first Cloudflare deploy uses `ENABLE_SERVICE_BINDINGS=false`, then `true`, because the bots
   and control plane bind each other

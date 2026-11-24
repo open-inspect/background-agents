@@ -145,7 +145,7 @@ output "verification_commands" {
     # 2. Health check sandbox backend
     ${local.use_modal_backend ? "curl ${module.modal_app[0].api_health_url}" : local.use_vercel_backend ? "# Vercel sandboxes use the Vercel Sandbox API directly. Base snapshot: ${var.vercel_base_snapshot_id != "" ? var.vercel_base_snapshot_id : module.vercel_sandbox_infra[0].snapshot_name}" : local.use_boat_backend ? "# Boat sandboxes use the REST API directly. Saved snapshot: ${module.boat_infra[0].snapshot_name}" : "# Daytona and E2B sandboxes use their REST APIs directly — no health endpoint to check"}
 
-    # 3. Verify web app deployment
+    # 3. Verify web app deployment (with a Cloudflare custom domain, curl that hostname instead)
     curl ${local.effective_web_app_url}
 
     # 4. Test authenticated endpoint (should return 401)
