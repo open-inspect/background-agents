@@ -310,7 +310,7 @@ GitHub OAuth sign-in, but its client pair is optional when Google is the only si
    Your web app URL depends on `web_platform`:
    - **Vercel**: `https://open-inspect-{deployment_name}.vercel.app`
    - **Cloudflare**: `https://open-inspect-web-{deployment_name}.{your-subdomain}.workers.dev`
-   - **Cloudflare with `cloudflare_custom_domain` set**: `https://{your-custom-domain}`
+   - **Cloudflare with `CLOUDFLARE_CUSTOM_DOMAIN` set**: `https://{your-custom-domain}`
 
    > **Important**: The callback URL must match your deployed web app URL exactly. The
    > `{deployment_name}` is the unique value you set in `terraform.tfvars` (e.g., your GitHub
@@ -332,7 +332,7 @@ GitHub OAuth sign-in, but its client pair is optional when Google is the only si
    - Metadata: **Read-only**
    - If enabling the GitHub bot, also grant Actions: **Read-only** _(workflow-run automations)_,
      Checks: **Read-only** _(check-suite automations)_, and Issues: **Read & Write**.
-6. If using `ALLOWED_GITHUB_ORGS`/`allowed_github_orgs`, set **Organization permissions**:
+6. If using `ALLOWED_GITHUB_ORGS`, set **Organization permissions**:
    - Members: **Read-only**
    - For existing GitHub Apps, republish the permission change and request/approve installation
      updates before testing org membership sign-in.
@@ -596,8 +596,8 @@ The core path uses GitHub sign-in. To add or switch to Google, see
 > `ALLOWED_GITHUB_ORGS` carefully — these control who can sign in. The deploy fails if all are empty
 > unless you explicitly set `UNSAFE_ALLOW_ALL_USERS=true`. **Allowlists use OR semantics**: matching
 > any configured username, email domain, exact email, or active GitHub org membership grants access.
-> Use `allowed_emails` for individual users on shared domains (e.g. a specific `person@gmail.com`)
-> where `allowed_email_domains` would admit too many. `allowed_github_orgs` checks membership at
+> Use `ALLOWED_EMAILS` for individual users on shared domains (e.g. a specific `person@gmail.com`)
+> where `ALLOWED_EMAIL_DOMAINS` would admit too many. `ALLOWED_GITHUB_ORGS` checks membership at
 > sign-in only with the signing-in user's OAuth token; existing sessions last until session expiry.
 > Org rules request no new OAuth scopes or `read:org`; GitHub Apps using org rules need Organization
 > permissions: Members read-only. After deployment, Owners and Administrators can add rules under
@@ -993,15 +993,15 @@ GitHub attribution unless the same verified email is also a linked GitHub identi
    URL exactly.
 3. On the OAuth consent screen, request only the `openid`, `email`, and `profile` scopes — these are
    non-sensitive, so Google requires no app-verification review.
-4. Set `google_client_id` and `google_client_secret` (both required together). For restricted
-   access, admit Google users through `allowed_emails` (exact addresses) or `allowed_email_domains`;
-   for intentionally open access with no allowlists, set `unsafe_allow_all_users = true`. Leave the
+4. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (both required together). For restricted
+   access, admit Google users through `ALLOWED_EMAILS` (exact addresses) or `ALLOWED_EMAIL_DOMAINS`;
+   for intentionally open access with no allowlists, set `UNSAFE_ALLOW_ALL_USERS=true`. Leave the
    GitHub client pair empty for Google-only sign-in, or keep it configured to offer both providers.
    The next request to `/login` reflects the deployed pair without a web flag or rebuild.
 
 > **Security note**: Under restricted access, Google sign-in is admitted only for **verified**
 > emails that match an allowlist. Because addresses on shared domains like `gmail.com` are generic,
-> prefer `allowed_emails` (exact match) over `allowed_email_domains` for those users.
+> prefer `ALLOWED_EMAILS` (exact match) over `ALLOWED_EMAIL_DOMAINS` for those users.
 
 ---
 
@@ -1568,7 +1568,8 @@ Once configured, the GitHub Actions workflows will:
 
 - Run `terraform plan` on pull requests (with PR comment), using repository-level settings
 - Run `terraform apply` in the `production` GitHub Environment when merged to main
-  (`terraform-production.yml`)
+  (`terraform-production.yml`). Do not add required reviewers to `production`: merging is the
+  approval, and reviewers would hold every merge's Terraform and deploy jobs for manual approval
 - Deploy the Workers with `deploy-production.yml` on pushes that change Worker, web, or shared
   packages, D1 migrations, or `scripts/cloudflare-deploy`. When Terraform will apply for the push,
   the deploy waits for that apply to finish.
@@ -1711,7 +1712,7 @@ URL to match your web app URL:
 GitHub refused the `/user/emails` request, and the control plane logs
 `auth.github_email_lookup_failed` with `status: 403`. Every GitHub sign-in reads verified emails, so
 the GitHub App needs the **Account permissions > Email addresses: Read-only** permission even when
-admission uses only `allowed_users` or `allowed_github_orgs`. Add the permission, save, and sign in
+admission uses only `ALLOWED_USERS` or `ALLOWED_GITHUB_ORGS`. Add the permission, save, and sign in
 again; GitHub asks the user to approve the added permission.
 
 ### Modal deployment fails

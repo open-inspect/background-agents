@@ -148,7 +148,7 @@ Workspace fallback does not bypass `requireTeamOnCreate` or other creation check
 
 ## Keeping a deployment current
 
-On the Cloudflare/Vercel path, updating means pulling the latest code, rebuilding the shared package if it changed, and applying Terraform again; it only changes what differs. If the web app is on Vercel it is redeployed separately; on Cloudflare, Terraform rebuilds it. The self-hosting guide also documents an optional GitHub Actions workflow for applying deployments from CI. For the AWS control plane, follow the [AWS bring-up guide](https://github.com/open-inspect/background-agents/blob/main/docs/AWS_BRING_UP.md).
+On the Cloudflare/Vercel path, updating means pulling the latest code and rebuilding the shared package if it changed. Terraform applies only when infrastructure or sandbox inputs changed, and the Cloudflare deploy uploads the Workers (and, on Cloudflare, the web app) from the new code; the GitHub Actions workflows in the self-hosting guide run both on merge. If the web app is on Vercel it is redeployed separately. The self-hosting guide also documents an optional GitHub Actions workflow for applying deployments from CI. For the AWS control plane, follow the [AWS bring-up guide](https://github.com/open-inspect/background-agents/blob/main/docs/AWS_BRING_UP.md).
 
 ## Where the runbooks are
 

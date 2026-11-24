@@ -244,8 +244,53 @@ replaced by a newer one compares only against its own base commit. Run `workflow
 `terraform-<environment>` and then `deploy-<environment>` to reconcile.
 
 Production applies and deploys in the `production` GitHub Environment, and PR plans use
-repository-level settings, as before. Staging is not deployed from pushes to `main`: a pull request
-deploys to it, after approval, so a change can be tried there first (see [Staging](#staging)).
+repository-level settings, as before. Do not add required reviewers to `production`: Terraform and
+the deploy are meant to run on merge, merging is the approval, and reviewers would hold every
+production job (the change check, apply, deploy gate and deploy) for manual approval. Staging is not
+deployed from pushes to `main`: a pull request deploys to it, after approval, so a change can be
+tried there first (see [Staging](#staging)).
+
+### One-time setup
+
+Nothing has to be initialized or planned outside the workflows. Each one runs `terraform init`
+against the R2 backend itself, and the first apply of a new environment creates its state. What must
+exist first:
+
+1. **State bucket and credentials.** The `open-inspect-terraform-state` R2 bucket (an existing
+   deployment already has it) and the `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` secrets.
+   Production reads these at repository level: its secret check runs without the Environment, and a
+   push whose secrets are missing skips the apply.
+2. **The GitHub Environments.** `production` (no required reviewers) and, for staging, `staging`.
+   The settings each one needs are listed below.
+3. **Once per environment, locally, to copy the generated secrets.** The sync script reads
+   `terraform output`, so the root must be initialized against that environment's backend (staging's
+   state exists only after its first apply):
+
+   ```bash
+   cd terraform/environments/<environment>
+   cp backend.tfvars.example backend.tfvars   # fill in the R2 credentials; never commit it
+   terraform init -backend-config=backend.tfvars
+   cd ../../..
+   node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment <environment>
+   ```
+
+   This needs Terraform 1.14 or newer and `gh` authenticated with admin access to the repository.
+
+4. **An existing production, before merging the split.** The first apply on merge is `-auto-approve`
+   and performs the state handoff, so look at it first. The pull request's own plan job only helps
+   when the repository-level settings are complete (it does not read the `production` Environment).
+   Run a plan from your machine with production's real settings, after saving a copy of the state
+   with `terraform state pull`:
+
+   ```bash
+   cd terraform/environments/production
+   terraform state pull > production-state-backup.json
+   terraform plan
+   ```
+
+   Expect resources "moved" into `module.environment`, Worker versions, deployments and crons "no
+   longer managed by Terraform", and **0 to destroy**. Anything else is worth understanding before
+   merging.
 
 ### GitHub Actions Secrets and Variables
 

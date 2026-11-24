@@ -415,7 +415,7 @@ Important limitations:
 ### The bot does not respond to a PR
 
 Check that the GitHub App is installed on the repository and that the GitHub Bot worker is enabled.
-Then confirm the webhook URL, webhook secret, subscribed events, and `github_bot_username` in
+Then confirm the webhook URL, webhook secret, subscribed events, and `GH_BOT_USERNAME` in
 [Complete GitHub Bot Setup](../GETTING_STARTED.md#github-bot-optional).
 
 Also check **Settings > Integrations > GitHub**. For direct GitHub Bot workflows, the repository may

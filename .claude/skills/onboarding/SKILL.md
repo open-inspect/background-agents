@@ -177,7 +177,7 @@ cat /tmp/github-app-key-pkcs8.pem
 ## Phase 4b: Google OAuth Setup (If Enabled)
 
 Only if the user selected Google sign-in. Skip for GitHub-only deployments and leave
-`google_client_id` and `google_client_secret` empty.
+`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` empty.
 
 Guide user:
 
@@ -442,9 +442,10 @@ secrets (`SANDBOX_PROVIDER` may live on the Environment). Nothing uploads `deplo
 walk through entering each value in GitHub, as the Variables/Secrets split in
 `docs/GETTING_STARTED.md` describes.
 
-Create the `production` GitHub Environment first (repo Settings → Environments; required reviewers
-are optional): `gh secret set --env` fails while it does not exist. Then copy the
-Terraform-generated secrets into it once, from the repository root:
+Create the `production` GitHub Environment first (repo Settings → Environments):
+`gh secret set --env` fails while it does not exist. Do not add required reviewers to it: Terraform
+and the deploy run on every merge, and reviewers would hold each of those jobs for approval. Then
+copy the Terraform-generated secrets into it once, from the repository root:
 
 ```bash
 node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment production
