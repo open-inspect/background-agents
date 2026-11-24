@@ -213,9 +213,10 @@ Critical notes before deploy:
   `TEAMS_ENFORCEMENT=on`. Runtime and Terraform defaults remain `shadow`. Existing deployments must
   review production `shadow_denied:*` authorization audit entries before opting in; no completed
   default-flip audit gate is established by this guide.
-- Build workers before running Terraform apply.
+- The Cloudflare deploy builds the Workers; Terraform builds none.
 - Build `@open-inspect/shared` first.
-- Use two-phase Terraform deploy for DO/service bindings.
+- On a first Cloudflare deploy, set `ENABLE_SERVICE_BINDINGS=false`, then `true` (Durable Object
+  migrations need no extra step).
 - For Modal deployments, eagerly build the Sandbox image with
   `uv run python deploy.py --build-sandbox-image`, then deploy with `uv run modal deploy deploy.py`
   (not `src/app.py`).

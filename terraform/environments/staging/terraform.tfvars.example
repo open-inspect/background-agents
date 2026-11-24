@@ -60,13 +60,19 @@ modal_token_secret = ""
 # Modal workspace, environment, and endpoint web suffix
 # Only required when sandbox_provider = "modal" or "modal-vm"
 # workspace: your Modal username (e.g., "myworkspace")
-# environment: Modal environment name used by the CLI
+# environment: Modal environment name used by the CLI. Staging must NOT share
+#   production's: both roots deploy the same `open-inspect` app and
+#   `internal-api` secret into it, so staging's apply would replace the
+#   secret's ALLOWED_CONTROL_PLANE_HOSTS with only staging's control-plane host
+#   and production's apply would not restore it. Create a dedicated Modal
+#   environment and set the same name as MODAL_ENVIRONMENT in the staging
+#   GitHub Environment.
 # environment_web_suffix: Modal web suffix used in endpoint URLs:
 #   empty suffix:      https://myworkspace--app.modal.run
 #   "production":      https://myworkspace-production--app.modal.run
 modal_workspace               = ""
-modal_environment             = "main"
-modal_environment_web_suffix  = ""
+modal_environment             = "staging"
+modal_environment_web_suffix  = "staging" # also MODAL_ENVIRONMENT_WEB_SUFFIX in the staging GitHub Environment
 
 # Daytona REST API
 # Only required when sandbox_provider = "daytona"

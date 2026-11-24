@@ -593,6 +593,23 @@ Workers are deployed by `scripts/cloudflare-deploy/deploy.mjs`, not Terraform.
 deploy) so every resource name differs from production's, then initialize, apply and deploy it as in
 the quick start. In CI, see [CI/CD Pipeline](#cicd-pipeline).
 
+**In CI, anything the `staging` GitHub Environment does not set falls back to the repository-level
+value, which is production's.** A staging Environment that misses `DEPLOYMENT_NAME` would plan,
+apply and deploy onto production's Workers, KV namespaces and D1 database whenever both share a
+Cloudflare account. Set at least these on the `staging` Environment, and give it its own credentials
+wherever production's would be wrong for staging (OAuth apps and their callback URLs, GitHub App,
+bot tokens, allowlists):
+
+- `DEPLOYMENT_NAME` (every resource name derives from it) and `R2_MEDIA_BUCKET_NAME` if production
+  sets one.
+- With Modal: its own `MODAL_ENVIRONMENT` and `MODAL_ENVIRONMENT_WEB_SUFFIX`. Both environments
+  deploy the same `open-inspect` app and `internal-api` secret into a Modal environment, so sharing
+  one makes staging's apply replace the secret's `ALLOWED_CONTROL_PLANE_HOSTS` with only staging's
+  control-plane host, and production's apply does not restore it.
+- With Daytona, E2B or Boat: a unique `DAYTONA_BASE_SNAPSHOT`, `E2B_TEMPLATE_ID` or
+  `BOAT_BASE_SNAPSHOT` prefix per deployment (Boat pruning deletes other bases under a shared
+  prefix).
+
 ## Upgrading from a single Terraform apply
 
 Earlier releases built and uploaded every Worker from one `terraform apply` of
