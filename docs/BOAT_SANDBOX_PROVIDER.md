@@ -165,7 +165,11 @@ untouched and there is no rollback base in the new scope. When pruning proceeds,
 two applicable bases, not necessarily two on a first deployment or scope change. Only exact
 `<prefix>-<16 lowercase hex>` names are candidates. The deployed base and any nonempty replaced base
 must both be `ready` names under that prefix; otherwise pruning fails without deleting anything.
-Pruning skips `saving` snapshots and deletes the remaining `ready` or `failed` candidates. Manual
+Pruning skips `saving` snapshots and deletes the remaining `ready` or `failed` candidates, except
+that a `ready` base younger than a few hours (`PRUNE_GRACE_SECONDS` in `build-template.py`), or one
+with no usable creation time, is kept: Terraform publishes a base before the deploy that binds it
+runs, and the two workflows are not serialized, so a prune for an earlier deploy must not delete a
+base a concurrent apply just published. It is pruned by a later deploy once it is older. Manual
 names (`<prefix>-<12 hex>-<timestamp>`), prebuilt images, other names and snapshots under other or
 longer prefixes are untouched.
 

@@ -143,6 +143,9 @@ deployed bot token if Slack issued a replacement before deploying this version.
 
 ## Quick Start
 
+The commands below name the production root, `terraform/environments/production`. For staging, use
+`terraform/environments/staging` in every command, including the `terraform output` ones.
+
 ### 1. Configure Variables
 
 ```bash
@@ -570,7 +573,7 @@ After deployment, verify with:
 
 ```bash
 # Get verification commands from Terraform output (after the Cloudflare deploy)
-terraform output verification_commands
+terraform -chdir=terraform/environments/production output verification_commands
 
 # Or manually:
 
@@ -585,7 +588,7 @@ curl https://${MODAL_WORKSPACE_SLUG}--open-inspect-api-health.modal.run
 # Daytona, Vercel, E2B and Boat use their provider APIs directly, so there is no Open-Inspect shim health URL.
 
 # 3. Verify the web deployment
-curl -I "$(terraform output -raw web_app_url)"
+curl -I "$(terraform -chdir=terraform/environments/production output -raw web_app_url)"
 
 # 4. Test authenticated endpoint (should return 401)
 curl https://open-inspect-control-plane-prod.<subdomain>.workers.dev/sessions
@@ -635,7 +638,7 @@ Workers are deployed by `scripts/cloudflare-deploy/deploy.mjs`, not Terraform.
 [environments/staging](environments/staging/) is the same module with its own state
 (`staging/terraform.tfstate`). Give it its own `deployment_name` (and `DEPLOYMENT_NAME` for the
 deploy) so every resource name differs from production's, then initialize, apply and deploy it as in
-the quick start.
+the quick start, using `terraform/environments/staging` in place of the production root.
 
 In CI, `deploy-staging.yml` deploys a pull request to staging when it is opened or pushed to, once a
 reviewer approves the run, so a change can be tried on staging before it merges and reaches
@@ -645,12 +648,18 @@ production, from the pull request's head commit.
 The approval is the `staging` GitHub Environment's: every run waits at its required reviewers, and
 no staging secret is released until one approves. To enable it:
 
-1. Set the repository variable `CLOUDFLARE_STAGING_ENABLED=true`. This also turns staging on for
+1. Create the `staging` GitHub Environment first, holding the staging values (see below), with
+   **required reviewers**, and consider **Prevent self-review** so whoever pushed needs a second
+   person to approve. This is mandatory, not optional: see the warning below. Do it before the next
+   step, because GitHub creates a missing Environment with no protection rules, and the variable
+   below starts runs immediately.
+2. Set the repository variable `CLOUDFLARE_STAGING_ENABLED=true`. This also turns staging on for
    pull requests from forks.
-2. Create a `staging` GitHub Environment holding the staging values (see below), add **required
-   reviewers**, and consider **Prevent self-review** so whoever pushed needs a second person to
-   approve. This is mandatory, not optional: see the warning below.
-3. After the first run provisions the environment, copy its Terraform-generated secrets with
+3. If the staging environment enables Slack or Linear, set `ENABLE_SERVICE_BINDINGS=false` as a
+   variable on the `staging` Environment for the first successful deploy, then `true` for the next:
+   the control plane binds a bot that has no code yet. The workflow does not read a local
+   `deploy.env`.
+4. After the first run provisions the environment, copy its Terraform-generated secrets with
    `node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment staging`, then re-run
    the workflow (and approve it again). Until then the first deploy stops at "These
    Terraform-generated secrets are not in the environment".

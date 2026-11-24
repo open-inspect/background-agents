@@ -70,10 +70,12 @@ LINEAR_WEBHOOK_SECRET=your-webhook-signing-secret
 
 The worker also requires these secrets, which the deploy binds from the same settings:
 
-- Exactly one classifier credential selected by `CLASSIFICATION_MODEL`: **`ANTHROPIC_API_KEY`** for
-  an Anthropic model (the default), **`OPENAI_API_KEY`** for an OpenAI model, or
-  **`BEDROCK_API_KEY`** for a `bedrock/<aws-region>/<inference-profile-id>` model on Claude in
-  Amazon Bedrock (see
+- Exactly one classifier credential selected by `CLASSIFICATION_MODEL`. Set the deploy setting
+  **`ANTHROPIC_API_KEY`** (or `CLASSIFICATION_ANTHROPIC_API_KEY`) for an Anthropic model (the
+  default), **`CLASSIFICATION_OPENAI_API_KEY`** for an OpenAI model, or
+  **`CLASSIFICATION_BEDROCK_API_KEY`** for a `bedrock/<aws-region>/<inference-profile-id>` model on
+  Claude in Amazon Bedrock; the deploy binds it to the Worker as `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY` or `BEDROCK_API_KEY` (see
   [Classify on Amazon Bedrock (Optional)](../../docs/GETTING_STARTED.md#classify-on-amazon-bedrock-optional))
 - **`SERVICE_AUTH_SECRET`** — per-service sig1 signing secret; also verifies CP callbacks
 

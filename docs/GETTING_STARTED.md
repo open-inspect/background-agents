@@ -1076,10 +1076,14 @@ still create the image-build finalization Queue and dead-letter Queue.
 #### Enable the Slack Bot
 
 Set `enable_slack_bot = true` in `terraform.tfvars` and run `terraform apply` from
-`terraform/environments/production`, then set these in `deploy.env` and run the
-[Cloudflare deploy](#deploy-the-workers):
+`terraform/environments/production`. Then set these in `deploy.env` and run the
+[Cloudflare deploy](#deploy-the-workers). The control plane binds the Slack bot, which has no code
+yet, so keep service bindings off for this first deploy; after it succeeds, set
+`ENABLE_SERVICE_BINDINGS=true` (or remove it) and deploy again. In GitHub Actions, set
+`ENABLE_SERVICE_BINDINGS` as a variable on the environment for that run.
 
 ```bash
+ENABLE_SERVICE_BINDINGS=false # first deploy only
 ENABLE_SLACK_BOT=true
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_SIGNING_SECRET=your-signing-secret
@@ -1185,9 +1189,11 @@ Skip this section if you don't need the Linear Agent integration.
      `https://open-inspect-linear-bot-{deployment_name}.YOUR-SUBDOMAIN.workers.dev/webhook`
 5. Record the client ID, client secret, and webhook signing secret for `deploy.env`.
 6. Set `enable_linear_bot = true` in `terraform.tfvars` and run `terraform apply`, then set
-   `ENABLE_LINEAR_BOT=true`, `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`, and `LINEAR_WEBHOOK_SECRET`
-   in `deploy.env` and run the Cloudflare deploy. Like Slack, the Linear classifier needs an
-   Anthropic key unless `CLASSIFICATION_MODEL` points at an OpenAI or Bedrock model; see
+   `ENABLE_SERVICE_BINDINGS=false` (first deploy only, because the control plane binds the Linear
+   bot before it has code), `ENABLE_LINEAR_BOT=true`, `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET`,
+   and `LINEAR_WEBHOOK_SECRET` in `deploy.env` and run the Cloudflare deploy. After it succeeds, set
+   `ENABLE_SERVICE_BINDINGS=true` (or remove it) and deploy again. Like Slack, the Linear classifier
+   needs an Anthropic key unless `CLASSIFICATION_MODEL` points at an OpenAI or Bedrock model; see
    [Anthropic (Optional)](#anthropic-optional).
 
 The app is installed after deployment in [Install the Linear Agent](#install-the-linear-agent).
@@ -1225,7 +1231,9 @@ For configuration and troubleshooting, see [Linear Integration](./integrations/L
 
 The GitHub bot handles PR review assignments and @mention commands. To deploy it, set
 `enable_github_bot = true` in `terraform.tfvars` and run `terraform apply`, then set these in
-`deploy.env` and run the Cloudflare deploy:
+`deploy.env` and run the Cloudflare deploy. Unlike Slack and Linear, this needs no
+`ENABLE_SERVICE_BINDINGS` step: only the GitHub bot binds the control plane, which is already
+deployed.
 
 ```bash
 ENABLE_GITHUB_BOT=true
@@ -1661,8 +1669,11 @@ npm run build -w @open-inspect/shared
 
 # Re-run Terraform (it only changes what's needed), then redeploy the Workers
 terraform -chdir=terraform/environments/production apply
-node --env-file=deploy.env scripts/cloudflare-deploy/deploy.mjs
+CLOUDFLARE_API_TOKEN=your-cloudflare-api-token \
+  node --env-file=deploy.env scripts/cloudflare-deploy/deploy.mjs
 ```
+
+The deploy reads the token from the environment, not from `deploy.env` or `terraform.tfvars`.
 
 Upgrading from a release where Terraform deployed the Workers? See
 [Upgrading from a single Terraform apply](../terraform/README.md#upgrading-from-a-single-terraform-apply).
@@ -1843,8 +1854,11 @@ first deploy, because the bots and control plane bind each other:
   tfvars files are not tracked
 
 - Use GitHub Secrets for CI/CD, not hardcoded values
-- Rotate secrets periodically by updating `deploy.env` (or the GitHub secrets) and rerunning the
-  deploy
+- Rotate credentials periodically (API tokens, bot tokens, webhook secrets) by updating `deploy.env`
+  (or the GitHub secrets) and rerunning the deploy. Do not do this for `TOKEN_ENCRYPTION_KEY`,
+  `REPO_SECRETS_ENCRYPTION_KEY` or `PROVIDER_ACCOUNTS_ENCRYPTION_KEY`: replacing one makes the data
+  already encrypted with it unreadable. Changing an encryption key needs the stored data
+  re-encrypted first; keep the old key until that is done.
 - Review the [Security Model](../README.md#security-model-single-tenant-only) - this system is
   designed for single-tenant deployment
 

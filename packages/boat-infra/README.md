@@ -108,7 +108,10 @@ A provider, Boat API URL, organization or prefix change ends the history search:
 untouched and the wrapper passes an explicit empty `BOAT_REPLACED_SNAPSHOT`, with no rollback base
 in the new scope. When pruning proceeds, it retains at most two applicable bases, not necessarily
 two on a first deployment or scope change. Only exact `<prefix>-<16 lowercase hex>` names are
-candidates. It skips `saving` snapshots and deletes remaining `ready` or `failed` candidates. Manual
+candidates. It skips `saving` snapshots and deletes remaining `ready` or `failed` candidates, except
+that a `ready` base younger than a few hours (`PRUNE_GRACE_SECONDS` in `build-template.py`), or one
+with no usable creation time, is kept: a concurrent Terraform apply may have just published it and
+its deploy has not run yet. A later deploy prunes it once it is older. Manual
 `<prefix>-<12 hex>-<timestamp>` names, prebuilt images, other names and snapshots under other or
 longer prefixes are untouched.
 
