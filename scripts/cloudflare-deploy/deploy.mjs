@@ -21,13 +21,15 @@
 // Requires CLOUDFLARE_API_TOKEN (except with --dry-run) plus the settings.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { createCloudflareApi } from "./cloudflare-api.mjs";
+import { allowlistedEnv } from "./child-env.mjs";
+import { verifySandboxArtifact } from "./sandbox-artifacts.mjs";
 import {
   ConfigError,
   planWeb,
@@ -53,7 +55,7 @@ function run(command, args, { cwd = ROOT, env = {} } = {}) {
   const result = spawnSync(command, args, {
     cwd,
     stdio: "inherit",
-    env: { ...process.env, ...env },
+    env: allowlistedEnv(process.env, env),
   });
   if (result.status !== 0) {
     throw new Error(`${command} ${args[0] ?? ""} exited with ${result.status ?? result.signal}`);
@@ -120,13 +122,30 @@ async function checkPreservedSecrets(targets, api) {
   }
 }
 
-function deployTarget(target, { accountId, dryRun }) {
+/** The credentials a step needs to reach Cloudflare; no other step receives them. */
+function cloudflareEnv(settings, apiToken) {
+  return { CLOUDFLARE_ACCOUNT_ID: settings.accountId, CLOUDFLARE_API_TOKEN: apiToken ?? "" };
+}
+
+/** The version id Wrangler reports for the version it just uploaded. */
+function uploadedVersionId(outputFile) {
+  for (const line of readFileSync(outputFile, "utf8").split("\n")) {
+    if (line.trim() === "") continue;
+    const entry = JSON.parse(line);
+    if (entry.type === "deploy" && entry.version_id) return entry.version_id;
+  }
+  throw new Error("Wrangler did not report the version it uploaded.");
+}
+
+/** Deploy one Worker; returns the version id it uploaded (null on a dry run). */
+function deployTarget(target, { accountId, cloudflare, dryRun }) {
   const cwd = join(ROOT, target.packageDir);
   const config = { account_id: accountId, ...target.wrangler };
   writeFileSync(join(cwd, GENERATED_CONFIG), `${JSON.stringify(config, null, 2)}\n`);
   const { upload } = secretActions(target);
   const secretsDir = mkdtempSync(join(tmpdir(), "open-inspect-secrets-"));
   const secretsFile = join(secretsDir, "secrets.json");
+  const outputFile = join(secretsDir, "wrangler-output.ndjson");
   try {
     writeFileSync(secretsFile, JSON.stringify(upload), { mode: 0o600 });
     run(
@@ -140,8 +159,9 @@ function deployTarget(target, { accountId, dryRun }) {
         secretsFile,
         ...(dryRun ? ["--dry-run"] : []),
       ],
-      { cwd }
+      { cwd, env: { ...cloudflare, WRANGLER_OUTPUT_FILE_PATH: outputFile } }
     );
+    return dryRun ? null : uploadedVersionId(outputFile);
   } finally {
     rmSync(secretsDir, { recursive: true, force: true });
   }
@@ -157,20 +177,36 @@ async function removeStaleSecrets(target, api) {
   }
 }
 
-async function pruneBoatSnapshots(settings, api, sandboxArtifact) {
+/**
+ * Prune Boat bases once the control plane serves the new one. The prune script
+ * refuses to delete unless the deployment it is given is still the Worker's
+ * newest, as proof that a deployment referencing the new snapshot is live, so
+ * that deployment must be the one serving the version this run uploaded. When
+ * another deployment has landed since (a rollback, a manual deploy, another
+ * environment), pruning waits for the next deploy.
+ */
+async function pruneBoatSnapshots(settings, api, cloudflare, sandboxArtifact, versionId) {
   const worker = resourceNames(settings).controlPlane;
+  const deployment = await api.latestDeployment(worker);
+  const serving = deployment.versions.filter((entry) => entry.percentage > 0);
+  if (serving.length !== 1 || serving[0].version_id !== versionId) {
+    console.warn(
+      `::warning::${worker}'s active deployment does not serve the version this deploy uploaded; skipping Boat pruning until the next deploy.`
+    );
+    return;
+  }
   run("uv", ["sync", "--frozen"], { cwd: join(ROOT, "packages/boat-infra") });
   run("uv", ["run", "--frozen", "python", "prune-deployed-snapshots.py"], {
     cwd: join(ROOT, "packages/boat-infra"),
     env: {
+      ...cloudflare,
       BOAT_API_KEY: settings.boatApiKey,
       BOAT_API_URL: settings.boatApiUrl,
       BOAT_ORG: settings.boatOrg,
       BOAT_BASE_SNAPSHOT: settings.boatBaseSnapshot,
       BOAT_DEPLOYED_SNAPSHOT: sandboxArtifact,
-      CLOUDFLARE_ACCOUNT_ID: settings.accountId,
       CLOUDFLARE_WORKER_NAME: worker,
-      CLOUDFLARE_DEPLOYMENT_ID: await api.latestDeploymentId(worker),
+      CLOUDFLARE_DEPLOYMENT_ID: deployment.id,
     },
   });
 }
@@ -188,6 +224,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     ? null
     : createCloudflareApi({ accountId: settings.accountId, apiToken: env.CLOUDFLARE_API_TOKEN });
 
+  const cloudflare = cloudflareEnv(settings, env.CLOUDFLARE_API_TOKEN);
   const resources = await lookUpResources(settings, api, dryRun);
   const { workers, sandboxArtifact } = planWorkers(settings, resources);
   const web = planWeb(settings);
@@ -195,7 +232,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
 
   console.log(`Deploying ${targets.map((t) => t.wrangler.name).join(", ")}`);
   if (sandboxArtifact) console.log(`Sandbox artifact: ${sandboxArtifact}`);
-  if (!dryRun) await checkPreservedSecrets(targets, api);
+  if (!dryRun) {
+    await checkPreservedSecrets(targets, api);
+    await verifySandboxArtifact(settings, sandboxArtifact);
+  }
 
   if (!flags["skip-build"]) {
     run("npm", ["run", "build", "-w", "@open-inspect/shared"]);
@@ -207,16 +247,21 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     run(
       "bash",
       ["scripts/d1-migrate.sh", resourceNames(settings).d1Database, "terraform/d1/migrations"],
-      {
-        env: { CLOUDFLARE_ACCOUNT_ID: settings.accountId },
-      }
+      { env: cloudflare }
     );
   }
 
-  for (const worker of workers) deployTarget(worker, { accountId: settings.accountId, dryRun });
+  const deployed = {};
+  for (const worker of workers) {
+    deployed[worker.key] = deployTarget(worker, {
+      accountId: settings.accountId,
+      cloudflare,
+      dryRun,
+    });
+  }
 
   if (!dryRun && settings.sandboxProvider === "boat") {
-    await pruneBoatSnapshots(settings, api, sandboxArtifact);
+    await pruneBoatSnapshots(settings, api, cloudflare, sandboxArtifact, deployed["control-plane"]);
   }
 
   if (web) {
@@ -224,7 +269,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     run("npm", ["run", "build:cloudflare", "-w", "@open-inspect/web"], {
       env: webBuildEnv(settings),
     });
-    deployTarget(web, { accountId: settings.accountId, dryRun });
+    deployTarget(web, { accountId: settings.accountId, cloudflare, dryRun });
   }
 
   if (!dryRun) {

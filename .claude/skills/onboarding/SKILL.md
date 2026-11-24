@@ -275,7 +275,8 @@ terraform apply
 cd ../../..
 ```
 
-Add the Terraform-generated secrets (`terraform output -json generated_worker_secrets`) to
+Add the Terraform-generated secrets
+(`terraform -chdir=terraform/environments/production output -json generated_worker_secrets`) to
 `deploy.env` as `SERVICE_AUTH_SECRET_WEB`, `SERVICE_AUTH_SECRET_SLACK_BOT`,
 `SERVICE_AUTH_SECRET_GITHUB_BOT`, `SERVICE_AUTH_SECRET_LINEAR_BOT`, `IMAGE_CALLBACK_TOKEN_PEPPER`,
 and `PROVIDER_ACCOUNTS_ENCRYPTION_KEY`. Then deploy the Workers (D1 and Durable Object migrations

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { DEPLOY_PATHS, TERRAFORM_PATHS } from "./cloudflare-deploy/changes.mjs";
+import { DEFAULTS } from "./cloudflare-deploy/config.mjs";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
@@ -155,5 +156,79 @@ test("every deploy setting reaches the deploy step", async () => {
     missing,
     [],
     "each setting needs exactly one env entry in the Deploy Workers step"
+  );
+});
+
+// A setting both workflows read must resolve to the same value in each. The
+// Terraform workflow builds sandbox artifacts from some of them and the deploy
+// binds the control plane to artifact names derived from the same inputs, so a
+// setting read from different sources (`vars` only vs `vars || secrets`) or with
+// a different fallback names an artifact that was never built. The deploy
+// workflow carries no fallbacks: config.mjs DEFAULTS apply, so each Terraform
+// fallback is held equal to the matching default instead.
+function expressions(text, pattern) {
+  const found = new Map();
+  for (const match of text.matchAll(pattern)) {
+    const expression = match[2];
+    const refs = [...expression.matchAll(/\b(?:vars|secrets)\.([A-Z0-9_]+)/g)].map((ref) => ref[0]);
+    const fallback = /\|\|\s*'([^']*)'/.exec(expression)?.[1] ?? null;
+    for (const ref of refs) {
+      const name = ref.split(".")[1];
+      if (!found.has(name)) found.set(name, { refs, fallback });
+    }
+  }
+  return found;
+}
+
+test("settings shared by the Terraform and deploy workflows resolve identically", () => {
+  const terraform = expressions(terraformWorkflow, /^ {10}TF_VAR_([a-z0-9_]+): (.*)$/gm);
+  const deployStep = deployWorkflow.slice(deployWorkflow.indexOf("- name: Deploy Workers"));
+  const deploy = expressions(deployStep, /^ {10}([A-Z0-9_]+): (.*)$/gm);
+  const shared = [...terraform.keys()].filter((name) => deploy.has(name));
+  assert.ok(shared.length > 15, "expected many settings shared by both workflows");
+  const mismatched = shared.filter((name) => {
+    const a = terraform.get(name);
+    const b = deploy.get(name);
+    return a.refs.join(",") !== b.refs.join(",");
+  });
+  assert.deepEqual(
+    mismatched.map((name) => ({ name, terraform: terraform.get(name), deploy: deploy.get(name) })),
+    []
+  );
+
+  const differingDefaults = shared.filter((name) => {
+    const fallback = terraform.get(name).fallback;
+    return fallback !== null && fallback !== (DEFAULTS[name] ?? null);
+  });
+  assert.deepEqual(
+    differingDefaults,
+    [],
+    "Terraform workflow fallbacks must equal config.mjs DEFAULTS"
+  );
+});
+
+test("the deploy gate waits only for an applying Terraform run, and deploys anyway if none starts", () => {
+  assert.match(deployWorkflow, /--sandbox-provider "\$SANDBOX_PROVIDER"/);
+  assert.match(deployWorkflow, /sed -n 's\/\^terraform=\/\/p'/);
+  assert.match(
+    deployWorkflow,
+    /workflows\/terraform-\$ENVIRONMENT\.yml\/runs\?head_sha=\$GITHUB_SHA/
+  );
+  assert.match(
+    deployWorkflow,
+    /No Terraform run started for this commit; deploying without waiting/
+  );
+  assert.match(deployWorkflow, /endswith\("Apply"\)/);
+  assert.match(deployWorkflow, /\[ "\$apply" = "success" \]/);
+});
+
+test("pushes classify with the apply Environment, pull requests with the plan Environment", () => {
+  assert.match(
+    terraformWorkflow,
+    /environment: \$\{\{ github\.event_name == 'pull_request' && inputs\.plan-environment \|\| \(github\.event_name != 'pull_request' && inputs\.environment\) \|\| '' \}\}/
+  );
+  assert.match(
+    deployWorkflow,
+    /environment: \$\{\{ github\.event_name == 'push' && inputs\.environment \|\| '' \}\}/
   );
 });

@@ -98,12 +98,12 @@ export function createCloudflareApi({ accountId, apiToken, fetchImpl = fetch }) 
       );
     },
 
-    /** ID of the Worker's active (most recent) deployment. */
-    async latestDeploymentId(scriptName) {
+    /** The Worker's active (most recent) deployment: its id and the versions it serves. */
+    async latestDeployment(scriptName) {
       const body = await request(`/workers/scripts/${encodeURIComponent(scriptName)}/deployments`);
       const [latest] = body.result.deployments;
       if (!latest) throw new Error(`Worker ${scriptName} has no deployment.`);
-      return latest.id;
+      return { id: latest.id, versions: latest.versions ?? [] };
     },
   };
 }

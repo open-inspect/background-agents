@@ -220,12 +220,27 @@ Four workflows automate each Cloudflare environment:
 | `terraform-production.yml` / `terraform-staging.yml` | PR or push to `main` touching `terraform/**` (not D1 migrations) or the sandbox packages                                                          | `terraform plan` with PR comment; `terraform apply` on `main` |
 | `deploy-production.yml` / `deploy-staging.yml`       | Push to `main` touching the Worker, web or shared packages, D1 migrations or the deploy script; and after every completed Terraform run on `main` | `scripts/cloudflare-deploy/deploy.mjs`                        |
 
-A push that also triggers Terraform is deployed after the apply finishes, so a new queue, KV
-namespace or sandbox snapshot always exists before the code that uses it. The path lists live in
-[`scripts/cloudflare-deploy/changes.mjs`](../scripts/cloudflare-deploy/changes.mjs). A Vercel
+A push that Terraform will apply for is deployed after the apply finishes, so a new queue, KV
+namespace or sandbox snapshot exists before the code that uses it: the deploy gate waits for the
+Terraform run for that commit, and the deploy then runs when that run's apply succeeds. A Vercel
 sandbox snapshot also hashes the control-plane and shared sources and `package-lock.json`, so those
-trigger the Terraform workflow too; when the repository-level `SANDBOX_PROVIDER` variable names
-another provider, it skips plan and apply for them and the deploy follows straight away.
+trigger the Terraform workflow too, but they count as provisioning only when `SANDBOX_PROVIDER` is
+`vercel` (read from the `production` GitHub Environment on pushes). For any other provider a
+code-only push deploys immediately. If the Terraform run never starts (GitHub evaluates `paths`
+filters for at most 300 changed files, and a forced push has no usable base), the gate deploys after
+a short wait instead of leaving the commit undeployed. The path lists live in
+[`scripts/cloudflare-deploy/changes.mjs`](../scripts/cloudflare-deploy/changes.mjs).
+
+Before binding the control plane to a sandbox artifact (Daytona, E2B, Boat or a managed Vercel
+snapshot), the deploy checks with the provider that the artifact Terraform builds for this commit
+exists and is ready, and stops with "run Terraform first" otherwise.
+
+Known limits: workflows are serialized per environment but not ordered. If a push that needs
+provisioning is still applying when a later push merges, the later deploy may bind artifacts that
+earlier apply has not finished (the artifact check stops it), and a Terraform completion for an
+older commit can redeploy that commit over a newer one until the next push. A pending Terraform run
+replaced by a newer one compares only against its own base commit. Run `workflow_dispatch` on
+`terraform-<environment>` and then `deploy-<environment>` to reconcile.
 
 Production applies and deploys in the `production` GitHub Environment, and PR plans use
 repository-level settings, as before. Staging is opt-in: set the repository variable

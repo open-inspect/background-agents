@@ -3,10 +3,13 @@
 //
 // The terraform-<environment> workflows trigger on TERRAFORM_PATHS and the
 // deploy-<environment> workflows on DEPLOY_PATHS (workflow-contract.test.mjs
-// holds the `on.paths` lists to these). A push that touches TERRAFORM_PATHS
-// is deployed after the Terraform workflow finishes (`workflow_run`), so the
-// control plane never points at a sandbox artifact Terraform has not built;
-// the deploy's own push run then stands down.
+// holds the `on.paths` lists to these). Both workflows start for a push that
+// touches either list; `terraform` says whether Terraform will actually apply
+// for the deployment's sandbox provider. When it will, the deploy gate waits and
+// the deploy follows the apply (`workflow_run`), so the control plane never
+// points at a sandbox artifact Terraform has not built. When it will not (for
+// example control-plane sources on a Modal deployment, which only a Vercel
+// snapshot hashes), the deploy runs at once.
 //
 // Usage (prints key=value lines for $GITHUB_OUTPUT):
 //   node scripts/cloudflare-deploy/changes.mjs --base <sha> --head <sha> [--sandbox-provider <name>]

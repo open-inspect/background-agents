@@ -33,7 +33,10 @@ jobs:
     name: Changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment: ${{ inputs.plan-environment }}
+    # Pushes and manual runs classify with the apply Environment's settings, so a
+    # SANDBOX_PROVIDER set only there is the one seen; pull requests keep to
+    # plan-environment, which never gates on Environment approval.
+    environment: ${{ github.event_name == 'pull_request' && inputs.plan-environment || (github.event_name != 'pull_request' && inputs.environment) || '' }}
     outputs:
       terraform: ${{ steps.classify.outputs.terraform }}
     steps:

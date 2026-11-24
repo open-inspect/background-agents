@@ -23,7 +23,13 @@ jobs:
   gate:
     name: Gate
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    # A push is classified with the deployment's own SANDBOX_PROVIDER, which may
+    # be set only on the Environment. Other triggers read no Environment values.
+    environment: ${{ github.event_name == 'push' && inputs.environment || '' }}
+    permissions:
+      contents: read
+      actions: read
     outputs:
       deploy: ${{ steps.decide.outputs.deploy }}
       sha: ${{ steps.decide.outputs.sha }}
@@ -34,19 +40,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      # - workflow_run: deploy what a successful Terraform run on main applied
-      #   (pull-request plans also complete, and are ignored).
-      # - push: deploy now unless the push also triggered the Terraform
-      #   workflow, whose completion deploys it once the apply is done.
+      # - workflow_run: deploy what a Terraform run on main applied. Only an
+      #   apply that ran and succeeded counts: a run that skipped its apply
+      #   (nothing to provision, or no secrets) deployed on its own push, and
+      #   pull-request plans are ignored.
+      # - push: deploy now, unless Terraform will apply for this provider and a
+      #   Terraform run for this commit exists, whose completion deploys it once
+      #   the apply is done. If that run never appears (GitHub's path filter
+      #   evaluates at most 300 changed files, and a forced push has no usable
+      #   base), deploy anyway rather than leave the commit undeployed.
       # - workflow_dispatch: deploy the dispatched ref.
       - name: Decide
         id: decide
         env:
+          GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_EVENT: ${{ github.event.workflow_run.event }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           BASE_SHA: ${{ github.event.before }}
+          SANDBOX_PROVIDER: ${{ vars.SANDBOX_PROVIDER || secrets.SANDBOX_PROVIDER }}
         run: |
           set -euo pipefail
           deploy=false
@@ -55,15 +70,31 @@ jobs:
             workflow_run)
               sha="$RUN_SHA"
               if [ "$RUN_CONCLUSION" = "success" ] && { [ "$RUN_EVENT" = "push" ] || [ "$RUN_EVENT" = "workflow_dispatch" ]; }; then
-                deploy=true
+                apply="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name | endswith("Apply")) | .conclusion')"
+                if [ "$apply" = "success" ]; then
+                  deploy=true
+                else
+                  echo "::notice::Terraform did not apply for this run; nothing to deploy after it."
+                fi
               fi
               ;;
             push)
-              triggered="$(node scripts/cloudflare-deploy/changes.mjs --base "$BASE_SHA" --head "$GITHUB_SHA" | sed -n 's/^terraform-triggered=//p')"
-              if [ "$triggered" = "true" ]; then
-                echo "::notice::This push also runs Terraform; the deploy follows its apply."
-              else
+              terraform="$(node scripts/cloudflare-deploy/changes.mjs --base "$BASE_SHA" --head "$GITHUB_SHA" --sandbox-provider "$SANDBOX_PROVIDER" | sed -n 's/^terraform=//p')"
+              if [ "$terraform" != "true" ]; then
                 deploy=true
+              else
+                runs=0
+                for attempt in $(seq 1 12); do
+                  runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/terraform-$ENVIRONMENT.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=1" --jq .total_count)"
+                  [ "$runs" -gt 0 ] && break
+                  sleep 10
+                done
+                if [ "$runs" -gt 0 ]; then
+                  echo "::notice::This push also applies Terraform; the deploy follows its apply."
+                else
+                  echo "::warning::No Terraform run started for this commit; deploying without waiting."
+                  deploy=true
+                fi
               fi
               ;;
             workflow_dispatch)
@@ -183,7 +214,7 @@ jobs:
           DAYTONA_API_URL: ${{ vars.DAYTONA_API_URL || secrets.DAYTONA_API_URL }}
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
           DAYTONA_BASE_SNAPSHOT: ${{ vars.DAYTONA_BASE_SNAPSHOT || secrets.DAYTONA_BASE_SNAPSHOT }}
-          DAYTONA_BASE_SNAPSHOT_MEMORY_GIB: ${{ vars.DAYTONA_BASE_SNAPSHOT_MEMORY_GIB || secrets.DAYTONA_BASE_SNAPSHOT_MEMORY_GIB }}
+          DAYTONA_BASE_SNAPSHOT_MEMORY_GIB: ${{ vars.DAYTONA_BASE_SNAPSHOT_MEMORY_GIB }}
           DAYTONA_TARGET: ${{ vars.DAYTONA_TARGET || secrets.DAYTONA_TARGET }}
           DAYTONA_TOOLBOX_API_URL: ${{ vars.DAYTONA_TOOLBOX_API_URL || secrets.DAYTONA_TOOLBOX_API_URL }}
           DAYTONA_PREBUILDS_ENABLED: ${{ vars.DAYTONA_PREBUILDS_ENABLED || secrets.DAYTONA_PREBUILDS_ENABLED }}

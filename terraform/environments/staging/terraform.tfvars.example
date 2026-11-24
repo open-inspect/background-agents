@@ -201,7 +201,7 @@ project_root = "../../../"
 
 # Name of the R2 media bucket Terraform creates and manages (optional)
 # Defaults to "open-inspect-media-<deployment_name>" when left empty.
-# This selects the name of the managed cloudflare_r2_bucket.media resource; it
+# This selects the name of the managed module.environment.cloudflare_r2_bucket.media resource; it
 # does not select an externally managed bucket. Import a pre-created bucket into
 # state before applying. Changing the name of a bucket Terraform already manages
 # plans replacement, not an in-place rename, as described below.
@@ -220,9 +220,9 @@ project_root = "../../../"
 # Set r2_media_bucket_name to the pre-created bucket's name, then import it so
 # Terraform manages the bucket without trying to recreate it. Run from this
 # directory with the deployment's initialized backend, workspace, and variables.
-# If cloudflare_r2_bucket.media already tracks a bucket, use the migration below
+# If module.environment.cloudflare_r2_bucket.media already tracks a bucket, use the migration below
 # instead of importing over the occupied address:
-#   terraform import cloudflare_r2_bucket.media <cloudflare_account_id>/<bucket-name>/default
+#   terraform import module.environment.cloudflare_r2_bucket.media <cloudflare_account_id>/<bucket-name>/default
 #
 # WARNING - changing an existing Terraform-managed bucket's name:
 # Terraform plans to delete the old bucket and create a new one. It does not empty
@@ -238,8 +238,8 @@ project_root = "../../../"
 #   3. Set r2_media_bucket_name to the destination name in local variables and in
 #      the CI configuration (R2_MEDIA_BUCKET_NAME) if CI manages the deployment.
 #   4. Replace the occupied state entry; do not plan/apply between these commands:
-#        terraform state rm cloudflare_r2_bucket.media
-#        terraform import cloudflare_r2_bucket.media <cloudflare_account_id>/<new-bucket-name>/default
+#        terraform state rm module.environment.cloudflare_r2_bucket.media
+#        terraform import module.environment.cloudflare_r2_bucket.media <cloudflare_account_id>/<new-bucket-name>/default
 #      If import fails, resolve it before any apply; the address is now untracked.
 #   5. Run terraform plan and confirm the destination bucket is not being created,
 #      replaced, or deleted. Apply, then run the Cloudflare deploy so the Worker binds the new bucket (R2_MEDIA_BUCKET_NAME), verify media access,

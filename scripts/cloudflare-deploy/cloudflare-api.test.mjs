@@ -76,10 +76,19 @@ test("a never-deployed Worker has no secrets; other failures surface", async () 
   );
 });
 
-test("latest deployment id", async () => {
+test("latest deployment carries the versions it serves", async () => {
   const { fetchImpl } = fakeFetch({
-    "/workers/scripts/cp/deployments": () => ok({ deployments: [{ id: "d2" }, { id: "d1" }] }),
+    "/workers/scripts/cp/deployments": () =>
+      ok({
+        deployments: [
+          { id: "d2", versions: [{ version_id: "v2", percentage: 100 }] },
+          { id: "d1", versions: [{ version_id: "v1", percentage: 100 }] },
+        ],
+      }),
   });
   const api = createCloudflareApi({ accountId: "acct", apiToken: "tok", fetchImpl });
-  assert.equal(await api.latestDeploymentId("cp"), "d2");
+  assert.deepEqual(await api.latestDeployment("cp"), {
+    id: "d2",
+    versions: [{ version_id: "v2", percentage: 100 }],
+  });
 });

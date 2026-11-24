@@ -632,8 +632,9 @@ The deploy needs the secrets Terraform generated (service-auth secrets, image ca
 provider accounts key) as `SERVICE_AUTH_SECRET_WEB`, `SERVICE_AUTH_SECRET_SLACK_BOT`,
 `SERVICE_AUTH_SECRET_GITHUB_BOT`, `SERVICE_AUTH_SECRET_LINEAR_BOT`, `IMAGE_CALLBACK_TOKEN_PEPPER`,
 and `PROVIDER_ACCOUNTS_ENCRYPTION_KEY`. Add the values from
-`terraform output -json generated_worker_secrets` to `deploy.env`. If you will use the GitHub
-Actions deploy, copy them once into the `production` GitHub Environment:
+`terraform -chdir=terraform/environments/production output -json generated_worker_secrets` to
+`deploy.env`. If you will use the GitHub Actions deploy, copy them once into the `production` GitHub
+Environment:
 
 ```bash
 node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment production
@@ -1471,27 +1472,26 @@ Secrets for credentials:
 | `CLASSIFICATION_ANTHROPIC_API_KEY`         | Optional classifier-only Anthropic key; never reaches sandboxes                                                                   |
 | `CLASSIFICATION_OPENAI_API_KEY`            | Classifier OpenAI key (required when `CLASSIFICATION_MODEL` is an OpenAI id)                                                      |
 | `CLASSIFICATION_BEDROCK_API_KEY`           | Classifier Amazon Bedrock API key (required when `CLASSIFICATION_MODEL` is a Bedrock id)                                          |
-
-| `OPENAI_API_KEY` | Optional OpenAI API key used when a session selects API-key authentication | |
-`XAI_API_KEY` | Optional xAI API key used when a session selects API-key authentication | |
-`DEEPSEEK_API_KEY` | DeepSeek API key (optional, required only for DeepSeek models) | |
-`TOKEN_ENCRYPTION_KEY` | Generated encryption key (OAuth tokens) | | `REPO_SECRETS_ENCRYPTION_KEY` |
-Generated encryption key (repo secrets) | | `PROVIDER_ACCOUNTS_ENCRYPTION_KEY` | Optional existing
-provider-account key override; Terraform generates one when omitted | | `MODAL_API_SECRET` |
-Generated Modal API secret | | `NEXTAUTH_SECRET` | Generated browser-auth secret (legacy Actions
-secret name) | | `ALLOWED_USERS` | Comma-separated GitHub usernames (empty = list unused; see note
-below) | | `ALLOWED_EMAIL_DOMAINS` | Comma-separated email domains (empty = list unused; see note
-below) | | `ALLOWED_EMAILS` | Comma-separated exact email addresses (for individual users on shared
-domains) | | `ALLOWED_GITHUB_ORGS` | Comma-separated GitHub orgs whose active members can sign in |
-| `UNSAFE_ALLOW_ALL_USERS` | `true` to allow any authenticated user when every allowlist is empty
-(defaults to `false`) | | `ENABLE_SERVICE_BINDINGS` | Optional deploy flag; `false` only for the
-first deploy (defaults to `true`) | | `CLOUDFLARE_STAGING_ENABLED` | Repository variable; `true`
-enables the staging Terraform and deploy workflows | | `ENABLE_GITHUB_BOT` | `true` to deploy GitHub
-bot worker (or empty to skip) | | `GH_WEBHOOK_SECRET` | GitHub webhook secret (required if GitHub
-bot enabled) | | `GH_BOT_USERNAME` | GitHub App bot username, e.g., `my-app[bot]` (required if
-GitHub bot enabled) | | `APP_NAME` | Optional display name for whitelabeling (default:
-`Open-Inspect`) | | `APP_ICON_URL` | Optional URL to a custom logo/favicon (default: built-in icon)
-|
+| `OPENAI_API_KEY`                           | Optional OpenAI API key used when a session selects API-key authentication                                                        |
+| `XAI_API_KEY`                              | Optional xAI API key used when a session selects API-key authentication                                                           |
+| `DEEPSEEK_API_KEY`                         | DeepSeek API key (optional, required only for DeepSeek models)                                                                    |
+| `TOKEN_ENCRYPTION_KEY`                     | Generated encryption key (OAuth tokens)                                                                                           |
+| `REPO_SECRETS_ENCRYPTION_KEY`              | Generated encryption key (repo secrets)                                                                                           |
+| `PROVIDER_ACCOUNTS_ENCRYPTION_KEY`         | Optional existing provider-account key override; Terraform generates one when omitted                                             |
+| `MODAL_API_SECRET`                         | Generated Modal API secret                                                                                                        |
+| `NEXTAUTH_SECRET`                          | Generated browser-auth secret (legacy Actions secret name)                                                                        |
+| `ALLOWED_USERS`                            | Comma-separated GitHub usernames (empty = list unused; see note below)                                                            |
+| `ALLOWED_EMAIL_DOMAINS`                    | Comma-separated email domains (empty = list unused; see note below)                                                               |
+| `ALLOWED_EMAILS`                           | Comma-separated exact email addresses (for individual users on shared domains)                                                    |
+| `ALLOWED_GITHUB_ORGS`                      | Comma-separated GitHub orgs whose active members can sign in                                                                      |
+| `UNSAFE_ALLOW_ALL_USERS`                   | `true` to allow any authenticated user when every allowlist is empty (defaults to `false`)                                        |
+| `ENABLE_SERVICE_BINDINGS`                  | Optional deploy flag; `false` only for the first deploy (defaults to `true`)                                                      |
+| `CLOUDFLARE_STAGING_ENABLED`               | Repository variable; `true` enables the staging Terraform and deploy workflows                                                    |
+| `ENABLE_GITHUB_BOT`                        | `true` to deploy GitHub bot worker (or empty to skip)                                                                             |
+| `GH_WEBHOOK_SECRET`                        | GitHub webhook secret (required if GitHub bot enabled)                                                                            |
+| `GH_BOT_USERNAME`                          | GitHub App bot username, e.g., `my-app[bot]` (required if GitHub bot enabled)                                                     |
+| `APP_NAME`                                 | Optional display name for whitelabeling (default: `Open-Inspect`)                                                                 |
+| `APP_ICON_URL`                             | Optional URL to a custom logo/favicon (default: built-in icon)                                                                    |
 
 For sessions with source `automation`, `github-bot`, or `agent` (including nested agent children),
 the effective idle timeout is
@@ -1570,12 +1570,14 @@ Once configured, the GitHub Actions workflows will:
 - Run `terraform apply` in the `production` GitHub Environment when merged to main
   (`terraform-production.yml`)
 - Deploy the Workers with `deploy-production.yml` on pushes that change Worker, web, or shared
-  packages, D1 migrations, or `scripts/cloudflare-deploy`. When a push also triggers Terraform, the
-  deploy runs after the Terraform workflow completes.
+  packages, D1 migrations, or `scripts/cloudflare-deploy`. When Terraform will apply for the push,
+  the deploy waits for that apply to finish.
 
-Terraform paths include the Vercel snapshot inputs; for other sandbox providers the Terraform
-workflow skips plan/apply for those changes when `SANDBOX_PROVIDER` is a repository-level variable
-(otherwise it runs a no-op plan).
+Control-plane and shared sources are Terraform inputs only when `SANDBOX_PROVIDER` is `vercel` (they
+hash the managed Vercel snapshot); for other providers a code-only push deploys immediately. The
+deploy also checks that the sandbox artifact Terraform built exists before it binds the control
+plane to it. See [terraform/README.md](../terraform/README.md#cicd-pipeline) for the ordering
+limits.
 
 After the first apply, copy the Terraform-generated secrets (`SERVICE_AUTH_SECRET_WEB`,
 `SERVICE_AUTH_SECRET_SLACK_BOT`, `SERVICE_AUTH_SECRET_GITHUB_BOT`, `SERVICE_AUTH_SECRET_LINEAR_BOT`,
@@ -1736,7 +1738,8 @@ This installs all Modal deployment dependencies including `sandbox_runtime` (res
 The Cloudflare deploy builds the Workers itself unless you pass `--skip-build`; with that flag,
 build them first (`npm run build -w @open-inspect/shared`, then the Worker packages). Run the deploy
 with `--dry-run` to check its configuration without changing anything. If it reports a missing
-generated secret, supply it from `terraform output -json generated_worker_secrets` or run
+generated secret, supply it from
+`terraform -chdir=terraform/environments/production output -json generated_worker_secrets` or run
 `scripts/cloudflare-deploy/sync-generated-secrets.mjs`.
 
 ### Slack bot not responding
