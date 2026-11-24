@@ -15,7 +15,6 @@ import { TeamMembershipStore } from "../db/team-memberships";
 import type { RequestContext } from "../http/request-context";
 import type { Env } from "../types";
 import { auditPrivateSessionBreakGlass } from "./request-audit";
-import { slackPostGate } from "./slack-post-gate";
 import {
   legacyPermissionForAction,
   parseTeamsEnforcementMode,
@@ -93,8 +92,7 @@ export async function evaluateSessionAdmission(
   // These scope checks remain enforced during rollback and shadow modes.
   if (
     (ctx.serviceTeamId === null && row.ownerTeamId !== null) ||
-    (ctx.serviceReadPurpose === "slack-post" &&
-      slackPostGate(row, ctx.serviceTeamId ? { teamId: ctx.serviceTeamId } : null))
+    ctx.servicePublicationGate?.(row, ctx.serviceTeamId ?? null)
   ) {
     const admission = {
       row: { ...row, ownerUserId: row.userId ?? null, collaboratorIds: [] },

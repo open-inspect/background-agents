@@ -221,15 +221,22 @@ describe("requireAdmittedCanonicalUserId", () => {
 });
 
 describe("mayAttachCallbackContext", () => {
-  it("restricts callbackContext to callback-owning bots", () => {
-    expect(mayAttachCallbackContext(createCtx(SLACK_BOT_PRINCIPAL))).toBe(true);
-    expect(
-      mayAttachCallbackContext(createCtx({ kind: "service", service: "linear-bot", actor: null }))
-    ).toBe(true);
-    expect(mayAttachCallbackContext(createCtx(USER_PRINCIPAL))).toBe(false);
-    expect(
-      mayAttachCallbackContext(createCtx({ kind: "service", service: "github-bot", actor: null }))
-    ).toBe(false);
-    expect(mayAttachCallbackContext(createCtx(undefined))).toBe(false);
-  });
+  it.each(["slack", "linear", "discord"] as const)(
+    "requires a %s callback to come from its owning service",
+    (source) => {
+      for (const service of ["slack-bot", "linear-bot", "discord-bot", "github-bot"] as const) {
+        const ctx = createCtx({ kind: "service", service, actor: null });
+        expect(mayAttachCallbackContext(ctx, source)).toBe(service === `${source}-bot`);
+      }
+      expect(mayAttachCallbackContext(createCtx(USER_PRINCIPAL), source)).toBe(false);
+      expect(mayAttachCallbackContext(createCtx(undefined), source)).toBe(false);
+    }
+  );
+
+  it.each(["web", "automation", undefined] as const)(
+    "does not authorize the Slack delivery fallback for %s",
+    (source) => {
+      expect(mayAttachCallbackContext(createCtx(SLACK_BOT_PRINCIPAL), source)).toBe(false);
+    }
+  );
 });

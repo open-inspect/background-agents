@@ -12,6 +12,7 @@ import type { SessionEntry } from "../db/session-index";
 import type { RequestMetrics } from "../db/instrumented-sql-database";
 import type { BackgroundTasks } from "../platform-ports";
 import type { TeamsEnforcementMode } from "../authorization/teams-enforcement";
+import type { PublicationReadPolicy } from "../authorization/publication-read-policy";
 
 /** Automation resource admitted for the current mutation. */
 export interface AutomationRouteAdmission {
@@ -40,7 +41,7 @@ export type RequestContext = AuthenticationRequestServices & {
   sessionMemberships?: ReadonlyMap<string, TeamRole>;
   /** Undefined means no coordinate; null means a supplied coordinate is unbound. */
   serviceTeamId?: string | null;
-  serviceReadPurpose?: "slack-post";
+  servicePublicationGate?: PublicationReadPolicy["gate"];
   teamsEnforcementMode?: TeamsEnforcementMode;
   shadowSessionDenial?: string;
   /** Per-session evidence for explicit body-ID action batches, not collection reads. */

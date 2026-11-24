@@ -81,6 +81,7 @@ jobs:
             packages/control-plane/src/session/contracts.ts \
             packages/control-plane/src/session/runtime-client.ts
           detect other-ts "${gate[@]}" "${typescript[@]}" \
+            packages/discord-bot \
             packages/github-bot \
             packages/linear-bot \
             packages/slack-bot \
@@ -222,7 +223,7 @@ jobs:
         run: node --test scripts/check-coverage.test.mjs
       - name: Enforce TypeScript coverage
         run: |
-          for package in shared slack-bot linear-bot github-bot; do
+          for package in shared slack-bot linear-bot github-bot discord-bot; do
             npm run test:coverage -w "@open-inspect/$package"
             node scripts/check-coverage.mjs "$package" "packages/$package/coverage/coverage-summary.json"
           done
@@ -235,6 +236,7 @@ jobs:
             packages/shared/coverage/
             packages/slack-bot/coverage/
             packages/linear-bot/coverage/
+            packages/discord-bot/coverage/
             packages/github-bot/coverage/
           if-no-files-found: error
 

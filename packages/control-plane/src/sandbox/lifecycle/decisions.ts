@@ -486,6 +486,7 @@ const SPAWN_SOURCE_ATTENDANCE: Record<SpawnSource, "attended" | "unattended"> = 
   user: "attended",
   "slack-bot": "attended",
   "linear-bot": "attended",
+  "discord-bot": "attended",
   "github-bot": "unattended",
   agent: "unattended",
   automation: "unattended",

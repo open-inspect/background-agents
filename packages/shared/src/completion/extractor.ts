@@ -29,6 +29,9 @@ import {
   type OutboundServiceCredential,
 } from "../service-auth";
 
+import { toolCallFilePath } from "./tool-status";
+
+export { toolCallFilePath } from "./tool-status";
 export type { ControlPlaneFetcher };
 
 /** Failed purpose-protected reads must never fall back to previously collected content. */
@@ -67,8 +70,8 @@ export interface ExtractorDeps {
    * Signatures are request-bound, so headers are built per URL.
    */
   auth: OutboundServiceCredential;
-  /** Revalidate outbound Slack delivery authority; protected read failures must abort delivery. */
-  readPurpose?: "slack-post";
+  /** Revalidate outbound publication authority; protected read failures must abort delivery. */
+  readPurpose?: "publish" | "slack-post";
   /** Throw on any failed read, as purpose-protected reads do, without sending a purpose. */
   failClosed?: boolean;
   /** Structured logger. Falls back to a silent no-op if not provided. */
@@ -436,24 +439,26 @@ function isArtifactInEventRange(
 }
 
 /**
- * Summarize a tool call for display.
+ * Summarize a tool call for display. Tool names are matched case-insensitively
+ * because Claude Agent reports `Read` where OpenCode reports `read`.
  */
 export function summarizeToolCall(data: Record<string, unknown>): ToolCallSummary {
   const tool = String(data.tool ?? "Unknown");
   const args = recordOrUndefined(data.args) ?? {};
+  const file = toolCallFilePath(args) ?? "file";
 
-  switch (tool) {
-    case "Read":
-      return { tool, summary: `Read ${args.file_path ?? "file"}` };
-    case "Edit":
-      return { tool, summary: `Edited ${args.file_path ?? "file"}` };
-    case "Write":
-      return { tool, summary: `Created ${args.file_path ?? "file"}` };
-    case "Bash": {
+  switch (tool.toLowerCase()) {
+    case "read":
+      return { tool, summary: `Read ${file}` };
+    case "edit":
+      return { tool, summary: `Edited ${file}` };
+    case "write":
+      return { tool, summary: `Created ${file}` };
+    case "bash": {
       const cmd = String(args.command ?? "").slice(0, 40);
       return { tool, summary: `Ran: ${cmd}${cmd.length >= 40 ? "..." : ""}` };
     }
-    case "Grep":
+    case "grep":
       return { tool, summary: `Searched for "${args.pattern ?? ""}"` };
     default:
       return { tool, summary: `Used ${tool}` };
