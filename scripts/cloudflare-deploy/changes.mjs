@@ -62,6 +62,18 @@ export const DEPLOY_PATHS = Object.freeze([
   ".github/workflows/deploy-production.yml",
 ]);
 
+// The pull-request paths that deserve a staging deploy: everything either
+// production workflow reacts to, in the same order (so the D1 migrations the
+// Terraform list excludes are re-included), without production's own workflow
+// files, plus the staging workflow. deploy-staging.yml holds its `on.paths` to
+// this list.
+export const STAGING_PATHS = Object.freeze([
+  ...[...TERRAFORM_PATHS, ...DEPLOY_PATHS].filter(
+    (path, index, all) => all.indexOf(path) === index && !path.startsWith(".github/workflows/")
+  ),
+  ".github/workflows/deploy-staging.yml",
+]);
+
 function matchesPattern(file, pattern) {
   return pattern.endsWith("/**") ? file.startsWith(pattern.slice(0, -2)) : file === pattern;
 }

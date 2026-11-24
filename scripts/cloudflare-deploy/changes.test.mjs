@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classify, matchesPaths, TERRAFORM_PATHS } from "./changes.mjs";
+import { classify, matchesPaths, STAGING_PATHS, TERRAFORM_PATHS } from "./changes.mjs";
 
 test("D1 migrations deploy without running Terraform", () => {
   assert.equal(matchesPaths("terraform/d1/migrations/0100_x.sql", TERRAFORM_PATHS), false);
@@ -48,4 +48,25 @@ test("sandbox runtime changes run Terraform for every provider", () => {
 
 test("unknown history means everything", () => {
   assert.deepEqual(classify(null), { terraform: true, deploy: true, terraformTriggered: true });
+});
+
+test("staging deploys pull requests that change anything either production workflow reacts to", () => {
+  for (const file of [
+    "terraform/modules/cloudflare-environment/kv.tf",
+    "terraform/d1/migrations/0100_x.sql",
+    "packages/slack-bot/src/index.ts",
+    "packages/modal-infra/src/web_api.py",
+    "scripts/cloudflare-deploy/deploy.mjs",
+    ".github/workflows/deploy-staging.yml",
+  ]) {
+    assert.equal(matchesPaths(file, STAGING_PATHS), true, file);
+  }
+  for (const file of [
+    "docs/GETTING_STARTED.md",
+    "terraform/d1/other.sql",
+    ".github/workflows/terraform-production.yml",
+    ".github/workflows/deploy-production.yml",
+  ]) {
+    assert.equal(matchesPaths(file, STAGING_PATHS), false, file);
+  }
 });

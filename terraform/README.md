@@ -215,11 +215,11 @@ binding in one upload.
 
 Production uses two workflows and staging one:
 
-| Workflow                    | Trigger                                                                                                                                           | Action                                                        |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `terraform-production.yml`  | PR or push to `main` touching `terraform/**` (not D1 migrations) or the sandbox packages                                                          | `terraform plan` with PR comment; `terraform apply` on `main` |
-| `deploy-production.yml`     | Push to `main` touching the Worker, web or shared packages, D1 migrations or the deploy script; and after every completed Terraform run on `main` | `scripts/cloudflare-deploy/deploy.mjs`                        |
-| `branch-deploy-staging.yml` | A maintainer comments `.deploy` on a pull request (opt-in; see [Staging](#staging))                                                               | staging `terraform apply`, then the same deploy               |
+| Workflow                   | Trigger                                                                                                                                           | Action                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `terraform-production.yml` | PR or push to `main` touching `terraform/**` (not D1 migrations) or the sandbox packages                                                          | `terraform plan` with PR comment; `terraform apply` on `main` |
+| `deploy-production.yml`    | Push to `main` touching the Worker, web or shared packages, D1 migrations or the deploy script; and after every completed Terraform run on `main` | `scripts/cloudflare-deploy/deploy.mjs`                        |
+| `deploy-staging.yml`       | A pull request to `main` touching the same paths, once a reviewer approves the `staging` Environment (opt-in; see [Staging](#staging))            | staging `terraform apply`, then the same deploy               |
 
 A push that Terraform will apply for is deployed after the apply finishes, so a new queue, KV
 namespace or sandbox snapshot exists before the code that uses it: the deploy gate waits for the
@@ -244,8 +244,8 @@ replaced by a newer one compares only against its own base commit. Run `workflow
 `terraform-<environment>` and then `deploy-<environment>` to reconcile.
 
 Production applies and deploys in the `production` GitHub Environment, and PR plans use
-repository-level settings, as before. Staging is not deployed from pushes: a maintainer comments
-`.deploy` on a pull request to try it there first (see [Staging](#staging)).
+repository-level settings, as before. Staging is not deployed from pushes to `main`: a pull request
+deploys to it, after approval, so a change can be tried there first (see [Staging](#staging)).
 
 ### GitHub Actions Secrets and Variables
 
@@ -381,10 +381,8 @@ IMAGE_CALLBACK_TOKEN_PEPPER
 # First deploy only (see "Durable Objects" below)
 ENABLE_SERVICE_BINDINGS # Optional; defaults to true
 
-# Staging branch deploys (see "Staging")
-CLOUDFLARE_STAGING_ENABLED # Repository variable; "true" enables branch-deploy-staging.yml
-BRANCH_DEPLOY_ADMINS # Optional repository variable; defaults to <owner>/maintainers
-BRANCH_DEPLOY_ADMINS_PAT # Secret; read:org token, needed when BRANCH_DEPLOY_ADMINS names a team
+# Staging pull-request deploys (see "Staging")
+CLOUDFLARE_STAGING_ENABLED # Repository variable; "true" enables deploy-staging.yml
 
 # Branding
 APP_NAME # Optional; defaults to Open-Inspect
@@ -594,36 +592,51 @@ Workers are deployed by `scripts/cloudflare-deploy/deploy.mjs`, not Terraform.
 deploy) so every resource name differs from production's, then initialize, apply and deploy it as in
 the quick start.
 
-In CI, staging is deployed on demand with
-[github/branch-deploy](https://github.com/github/branch-deploy) by `branch-deploy-staging.yml`, so a
-change can be tried on staging before it merges and reaches production. Comment on a pull request:
+In CI, `deploy-staging.yml` deploys a pull request to staging when it is opened or pushed to, once a
+reviewer approves the run, so a change can be tried on staging before it merges and reaches
+production. It applies `terraform/environments/staging`, then runs the same Worker deploy as
+production, from the pull request's head commit.
 
-| Comment                                 | Effect                                                                                                   |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `.deploy`                               | `terraform apply` of `terraform/environments/staging`, then the Worker deploy, from the PR's head commit |
-| `.deploy main`                          | The same for `main`, e.g. to roll staging back                                                           |
-| `.noop`                                 | `terraform plan` and a Wrangler dry run; nothing changes                                                 |
-| `.lock` / `.unlock` / `.wcid` / `.help` | branch-deploy's environment lock and help commands                                                       |
+The approval is the `staging` GitHub Environment's: every run waits at its required reviewers, and
+no staging secret is released until one approves. To enable it:
 
-To enable it:
+1. Set the repository variable `CLOUDFLARE_STAGING_ENABLED=true`. This also turns staging on for
+   pull requests from forks.
+2. Create a `staging` GitHub Environment holding the staging values (see below), add **required
+   reviewers**, and consider **Prevent self-review** so whoever pushed needs a second person to
+   approve. This is mandatory, not optional: see the warning below.
+3. After the first run provisions the environment, copy its Terraform-generated secrets with
+   `node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment staging`, then re-run
+   the workflow (and approve it again). Until then the first deploy stops at "These
+   Terraform-generated secrets are not in the environment".
 
-1. Set the repository variable `CLOUDFLARE_STAGING_ENABLED=true`.
-2. Create a `staging` GitHub Environment holding the staging values (see below). Do not put required
-   reviewers on it: the workflow runs when a maintainer asks for a deploy.
-3. Add the secret `BRANCH_DEPLOY_ADMINS_PAT`, a token with `read:org`, if `BRANCH_DEPLOY_ADMINS`
-   names a team. That repository variable lists usernames and `org/team` slugs whose members may
-   deploy without the approvals branch protection asks for, and defaults to the repository owner's
-   `maintainers` team (`open-inspect/maintainers` here).
-4. After the first `.deploy` provisions the environment, copy its Terraform-generated secrets with
-   `node scripts/cloudflare-deploy/sync-generated-secrets.mjs --environment staging` and comment
-   `.deploy` again; until then the first deploy stops at "These Terraform-generated secrets are not
-   in the environment".
+Things to know:
 
-Only people with write access can trigger a deploy, and the pull request's code then runs with the
-staging Environment's secrets, so keep write access to people who may use them. Pull requests from
-forks are refused. Drafts can be deployed, and CI does not have to have passed, so a change can be
-tried while it is still being worked on. The workflow runs from `main`, so a pull request cannot
-change it to loosen these rules.
+- Pull requests from forks run too. The workflow uses `pull_request_target`, because a plain
+  `pull_request` run from a fork gets no secrets even after approval. Drafts wait until they are
+  marked ready for review. Only changes under the paths in `STAGING_PATHS`
+  (`scripts/cloudflare-deploy/changes.mjs`) run it.
+- The commit deployed is the pull request's head commit, pinned when the event fired, so a later
+  push is a new run and needs a new approval.
+- All pull requests share one staging environment. Runs are serialized, but there is no lock: the
+  last approved run wins, and staging keeps the last deployed pull request after it merges until the
+  next one is approved.
+- The workflow file comes from `main`, so a pull request cannot edit it to skip the Environment; a
+  change to `deploy-staging.yml` takes effect only after it merges.
+- It runs with no npm or uv cache, because a `pull_request_target` run saves caches under `main`'s
+  scope, where a fork could plant one that production's workflows would restore.
+- Environment deployment-branch rules cannot restrict these runs, because their ref is the base
+  branch, not the pull request.
+
+> **The approval is the only gate.** After a reviewer approves, the pull request's code runs with
+> the `staging` Environment's secrets: its Terraform files and external data sources, deploy
+> scripts, `package.json` and lockfile (npm lifecycle scripts) and the Modal deploy. Without
+> required reviewers on `staging`, any fork's code would run with those secrets as soon as a pull
+> request opens. Approving means having read the whole diff, dependency changes included.
+> Credentials `staging` inherits from repository-level settings (the Cloudflare token and Modal
+> tokens, if you keep them there) are readable by that code, so give `staging` its own where you
+> can. A Cloudflare token covers the whole account, so staging's token can still reach production's
+> resources when both share an account; a separate Cloudflare account for staging removes that.
 
 **In CI, anything the `staging` GitHub Environment does not set falls back to the repository-level
 value, which is production's.** A staging Environment that misses `DEPLOYMENT_NAME` would plan,

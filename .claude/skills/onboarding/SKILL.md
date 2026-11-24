@@ -70,8 +70,8 @@ wrangler --version   # used below to create the Terraform state bucket
 ```
 
 This guide deploys one environment, production. The repository also contains
-`terraform/environments/staging` and `.github/workflows/branch-deploy-staging.yml`; ignore them.
-Staging stays inert unless the repository variable `CLOUDFLARE_STAGING_ENABLED` is set to `true`.
+`terraform/environments/staging` and `.github/workflows/deploy-staging.yml`; ignore them. Staging
+stays inert unless the repository variable `CLOUDFLARE_STAGING_ENABLED` is set to `true`.
 
 ## Phase 2: Repository Setup
 

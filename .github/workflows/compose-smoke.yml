@@ -86,7 +86,7 @@ jobs:
             ':(exclude,glob).github/workflows/terraform-*.yml'
             ':(exclude).github/workflows/deploy-cloudflare.yml'
             ':(exclude).github/workflows/deploy-production.yml'
-            ':(exclude).github/workflows/branch-deploy-staging.yml'
+            ':(exclude).github/workflows/deploy-staging.yml'
             ':(exclude)eslint.config.js'
             ':(exclude)knip.json'
             ':(exclude)ruff.toml'

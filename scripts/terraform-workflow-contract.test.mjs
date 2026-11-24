@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { DEPLOY_PATHS, TERRAFORM_PATHS } from "./cloudflare-deploy/changes.mjs";
+import { DEPLOY_PATHS, STAGING_PATHS, TERRAFORM_PATHS } from "./cloudflare-deploy/changes.mjs";
 import { DEFAULTS } from "./cloudflare-deploy/config.mjs";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
@@ -234,10 +234,10 @@ test("pushes classify with the apply Environment, pull requests with the plan En
 });
 
 // ---------------------------------------------------------------------------
-// Staging: github/branch-deploy
+// Staging: pull requests, approved through the staging Environment
 // ---------------------------------------------------------------------------
 
-const branchDeploy = await read(".github/workflows/branch-deploy-staging.yml");
+const stagingWorkflow = await read(".github/workflows/deploy-staging.yml");
 
 function stepEnv(workflow, stepName, endMarker) {
   const start = workflow.indexOf(`- name: ${stepName}`);
@@ -248,63 +248,46 @@ function stepEnv(workflow, stepName, endMarker) {
   return body.slice(envStart, end === -1 ? undefined : end).trimEnd();
 }
 
-test("staging is deployed by a maintainer's .deploy comment, not by pushes", () => {
-  assert.match(branchDeploy, /^on:\n {2}issue_comment:\n {4}types: \[created\]\n/m);
-  assert.doesNotMatch(branchDeploy, /^ {2}(push|pull_request|pull_request_target|workflow_run):/m);
-  assert.match(branchDeploy, /uses: github\/branch-deploy@v\d+\.\d+\.\d+\n/);
-  assert.match(branchDeploy, /vars\.CLOUDFLARE_STAGING_ENABLED == 'true'/);
-  assert.match(branchDeploy, /github\.event\.issue\.pull_request/);
-  assert.match(branchDeploy, /environment: staging\n {4}steps:/);
-});
-
-test("branch-deploy is scoped to the maintainers and refuses forks", () => {
-  assert.match(branchDeploy, /allow_forks: "false"/);
+test("staging deploys pull requests that touch deployable paths", () => {
   assert.match(
-    branchDeploy,
-    /admins: \$\{\{ vars\.BRANCH_DEPLOY_ADMINS \|\| format\('\{0\}\/maintainers', github\.repository_owner\) \}\}/
+    stagingWorkflow,
+    /^on:\n {2}pull_request_target:\n {4}branches: \[main\]\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/m
   );
-  assert.match(
-    branchDeploy,
-    /admins_pat: \$\{\{ secrets\.BRANCH_DEPLOY_ADMINS_PAT \|\| 'false' \}\}/
+  assert.deepEqual(triggerPaths(stagingWorkflow, "pull_request_target"), [...STAGING_PATHS]);
+  assert.doesNotMatch(
+    stagingWorkflow,
+    /^ {2}(push|issue_comment|pull_request|workflow_run|workflow_dispatch):/m
   );
-  assert.match(branchDeploy, /environment_targets: staging\n/);
 });
 
-test("the pull request's code is checked out at the commit branch-deploy approved", () => {
-  assert.match(branchDeploy, /ref: \$\{\{ steps\.branch-deploy\.outputs\.sha \}\}/);
-  assert.match(branchDeploy, /persist-credentials: false/);
-  const gated = branchDeploy.split("if: steps.branch-deploy.outputs.continue == 'true'").length - 1;
-  const steps = branchDeploy.split("\n      - name: ").length - 1;
-  assert.equal(gated, steps - 1, "every step after branch-deploy waits for its approval");
+test("staging waits for the staging Environment and runs only where secrets exist", () => {
+  assert.match(stagingWorkflow, /environment: staging\n {4}steps:/);
+  assert.match(stagingWorkflow, /vars\.CLOUDFLARE_STAGING_ENABLED == 'true'/);
+  assert.match(stagingWorkflow, /!github\.event\.pull_request\.draft/);
+  assert.doesNotMatch(
+    stagingWorkflow,
+    /CLOUDFLARE_STAGING_ALLOW_FORKS|full_name == github\.repository/
+  );
+  assert.match(stagingWorkflow, /^permissions:\n {2}contents: read\n/m);
+  assert.match(stagingWorkflow, /persist-credentials: false/);
 });
 
-test("terraform and the deploy are steps of the job that started branch-deploy", () => {
-  // Its post step completes the deployment status, reaction and lock when that job ends.
-  assert.doesNotMatch(branchDeploy, /^ {4}uses: \.\/\.github\/workflows\//m);
-  assert.match(branchDeploy, /terraform plan -no-color/);
-  assert.match(branchDeploy, /--dry-run/);
-  assert.match(branchDeploy, /working-directory: terraform\/environments\/staging/);
-  assert.match(branchDeploy, /group: branch-deploy-staging\n {2}cancel-in-progress: false/);
+test("staging runs Terraform then the deploy in one serialized job, never interrupted", () => {
+  assert.match(stagingWorkflow, /working-directory: terraform\/environments\/staging/);
+  assert.match(stagingWorkflow, /run: terraform apply -auto-approve/);
+  assert.match(stagingWorkflow, /run: node scripts\/cloudflare-deploy\/deploy\.mjs\n/);
+  assert.match(stagingWorkflow, /group: deploy-staging\n {2}cancel-in-progress: false/);
+  assert.doesNotMatch(stagingWorkflow, /github\/branch-deploy/);
 });
 
 test("staging gets the same Terraform and deploy settings as production", () => {
-  const stagingTerraform = stepEnv(branchDeploy, "Terraform Apply", "\n\n      - name");
-  const productionTerraform = stepEnv(terraformWorkflow, "Terraform Apply", "\n\n      - name");
   assert.equal(
-    stagingTerraform
-      .split("\n")
-      .filter((line) => !line.includes("NOOP:"))
-      .join("\n"),
-    productionTerraform
+    stepEnv(stagingWorkflow, "Terraform Apply", "\n\n      - name"),
+    stepEnv(terraformWorkflow, "Terraform Apply", "\n\n      - name")
   );
-  const stagingDeploy = stepEnv(branchDeploy, "Deploy Workers", "\n\n      - name");
-  const productionDeploy = stepEnv(deployWorkflow, "Deploy Workers", "\n\n      - name");
   assert.equal(
-    stagingDeploy
-      .split("\n")
-      .filter((line) => !line.includes("DEPLOY_FLAGS:"))
-      .join("\n"),
-    productionDeploy
+    stepEnv(stagingWorkflow, "Deploy Workers", "\n\n      - name"),
+    stepEnv(deployWorkflow, "Deploy Workers", "\n\n      - name")
   );
 });
 
@@ -313,7 +296,21 @@ test("every staging Terraform variable reaches its apply", async () => {
   const declared = [...variables.matchAll(/^variable "([a-z0-9_]+)"/gm)].map((match) => match[1]);
   const missing = declared.filter(
     (name) =>
-      !NOT_FROM_ENVIRONMENT.has(name) && branchDeploy.split(`TF_VAR_${name}:`).length - 1 !== 1
+      !NOT_FROM_ENVIRONMENT.has(name) && stagingWorkflow.split(`TF_VAR_${name}:`).length - 1 !== 1
   );
   assert.deepEqual(missing, []);
+});
+
+test("staging checks out the head commit the event named, from a fork if need be", () => {
+  assert.match(
+    stagingWorkflow,
+    /repository: \$\{\{ github\.event\.pull_request\.head\.repo\.full_name \}\}\n\s+ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/
+  );
+  assert.doesNotMatch(stagingWorkflow, /github\.head_ref|refs\/pull|merge_commit_sha/);
+});
+
+test("staging, which runs fork code with secrets, writes no caches that main could restore", () => {
+  assert.doesNotMatch(stagingWorkflow, /^\s+cache: /m);
+  assert.match(stagingWorkflow, /uses: astral-sh\/setup-uv@v\d+\n\s+with:\n\s+enable-cache: false/);
+  assert.doesNotMatch(stagingWorkflow, /actions\/cache/);
 });

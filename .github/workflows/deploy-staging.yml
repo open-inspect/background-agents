@@ -1,57 +1,87 @@
-name: Branch Deploy Staging
+name: Deploy Staging
 
-# Deploys a pull request to the staging Cloudflare environment when a maintainer
-# comments `.deploy` on it (https://github.com/github/branch-deploy):
+# Deploys a pull request to the staging Cloudflare environment: Terraform
+# (terraform/environments/staging), then the Worker deploy. Production still
+# deploys from main (terraform-production.yml, deploy-production.yml), so a
+# change can be tried on staging first.
 #
-#   .deploy         Terraform apply (terraform/environments/staging), then the Worker deploy
-#   .deploy main    redeploy main to staging, e.g. to roll a bad change back
-#   .noop           terraform plan and a Wrangler dry run; nothing changes
-#   .lock / .unlock / .wcid / .help   branch-deploy's own commands
-#
-# Staging is no longer deployed from pushes. Production still deploys from main
-# (terraform-production.yml, deploy-production.yml), so a change can be tried on
-# staging first.
+# Approval is the `staging` GitHub Environment's: add required reviewers to it
+# (Settings -> Environments -> staging) and every run waits there, with no secret
+# released, until one approves. Enable "Prevent self-review" to make the person
+# who pushed ask someone else. The Environment also lists each run as a
+# deployment on the pull request.
 #
 # Opt-in: set the repository variable CLOUDFLARE_STAGING_ENABLED=true and
-# configure a "staging" GitHub Environment. Anything that Environment does not
-# set falls back to the repository-level value, which is production's: set at
+# configure the "staging" Environment. Anything that Environment does not set
+# falls back to the repository-level value, which is production's: set at
 # least DEPLOYMENT_NAME, and a MODAL_ENVIRONMENT of its own, on it. See
 # terraform/README.md#staging.
 #
-# Who may deploy: branch-deploy only accepts a comment from someone with write
-# access, which on this repository is the maintainers team. BRANCH_DEPLOY_ADMINS
-# (a comma-separated list of usernames and `org/team` slugs; default: the
-# repository owner's `maintainers` team) names the users who may also deploy
-# without the approvals branch protection asks for. Resolving a team needs the
-# secret BRANCH_DEPLOY_ADMINS_PAT, a token with read:org. The pull request's
-# code runs here with the staging Environment's secrets, so keep write access
-# to people who may use them.
+# Pull requests from forks run too (pull_request_target: a plain pull_request
+# run from a fork gets no secrets, even after approval), so enabling staging
+# enables it for every fork. Drafts wait until they are marked ready.
 #
-# issue_comment runs the workflow definition on main, so a pull request cannot
-# change this file to get around the check. Pull requests from forks are refused.
+# THE APPROVAL IS THE ONLY GATE. Once a reviewer approves, the pull request's
+# code runs with the staging Environment's secrets: its Terraform files and
+# external data sources, deploy scripts, package.json and lockfile (npm
+# lifecycle scripts), and the Modal deploy. Required reviewers must therefore
+# be configured on the Environment, and approving means having read the whole
+# diff, dependency changes included. Without reviewers this workflow runs any
+# fork's code with those secrets as soon as a pull request opens.
 #
-# Terraform and the Worker deploy are steps of this one job, not reusable
-# workflows, because branch-deploy completes the deployment (status, reaction,
-# lock) in a post step when the job that started it ends.
+# The workflow file itself comes from main, not from the pull request, so a
+# pull request cannot edit it to skip the Environment; a change to this file
+# takes effect only after it merges. The commit deployed is the pull request's
+# head (what the reviewer read, pinned at the time of the event), not its merge
+# with main. Repository-level secrets are not released to the checked-out code
+# before approval, but credentials that staging inherits from them are
+# readable after it: give the staging Environment its own Cloudflare and Modal
+# credentials where possible.
 #
 # The Terraform and deploy settings below are held identical to
 # terraform-cloudflare.yml and deploy-cloudflare.yml by
-# scripts/terraform-workflow-contract.test.mjs.
+# scripts/terraform-workflow-contract.test.mjs, and the paths to STAGING_PATHS
+# in scripts/cloudflare-deploy/changes.mjs.
 
 on:
-  issue_comment:
-    types: [created]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "terraform/**"
+      - "!terraform/d1/**"
+      - "packages/boat-infra/**"
+      - "packages/daytona-infra/**"
+      - "packages/e2b-infra/**"
+      - "packages/modal-infra/**"
+      - "packages/sandbox-images/**"
+      - "packages/sandbox-runtime/**"
+      - "packages/vercel-infra/**"
+      - "package-lock.json"
+      - "packages/control-plane/scripts/build-vercel-base-snapshot.ts"
+      - "packages/control-plane/src/**"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "packages/shared/tsconfig.json"
+      - ".nvmrc"
+      - "package.json"
+      - "packages/control-plane/**"
+      - "packages/github-bot/**"
+      - "packages/linear-bot/**"
+      - "packages/shared/**"
+      - "packages/slack-bot/**"
+      - "packages/web/**"
+      - "scripts/cloudflare-deploy/**"
+      - "scripts/d1-migrate.sh"
+      - "terraform/d1/migrations/**"
+      - ".github/workflows/deploy-staging.yml"
 
 permissions:
-  contents: write # branch-deploy keeps its environment lock on a branch
-  pull-requests: write
-  deployments: write
-  checks: read
-  statuses: read
+  contents: read
 
 concurrency:
-  group: branch-deploy-staging
-  cancel-in-progress: false
+  group: deploy-staging
+  cancel-in-progress: false # Don't interrupt a Terraform apply
 
 jobs:
   staging:
@@ -60,64 +90,43 @@ jobs:
     timeout-minutes: 90
     if: >-
       vars.CLOUDFLARE_STAGING_ENABLED == 'true' &&
-      github.event.issue.pull_request &&
-      (startsWith(github.event.comment.body, '.deploy') ||
-      startsWith(github.event.comment.body, '.noop') ||
-      startsWith(github.event.comment.body, '.lock') ||
-      startsWith(github.event.comment.body, '.unlock') ||
-      startsWith(github.event.comment.body, '.wcid') ||
-      startsWith(github.event.comment.body, '.help'))
+      !github.event.pull_request.draft
     environment: staging
     steps:
-      - name: Branch deploy
-        id: branch-deploy
-        uses: github/branch-deploy@v12.0.1
-        with:
-          environment: staging
-          environment_targets: staging
-          # Try a change before it is reviewed, and while CI is still running.
-          draft_permitted_targets: staging
-          skip_ci: staging
-          allow_forks: "false"
-          permissions: "write,maintain,admin"
-          admins: ${{ vars.BRANCH_DEPLOY_ADMINS || format('{0}/maintainers', github.repository_owner) }}
-          admins_pat: ${{ secrets.BRANCH_DEPLOY_ADMINS_PAT || 'false' }}
-
+      # The head commit the event named, from the fork if need be. This is the
+      # code the reviewer approved; a later push is a new run and a new approval.
       - name: Checkout pull request
-        if: steps.branch-deploy.outputs.continue == 'true'
         uses: actions/checkout@v7
         with:
-          ref: ${{ steps.branch-deploy.outputs.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      # No caches: a pull_request_target run saves them under main's scope, so
+      # code from a fork could plant a cache that production's workflows restore.
       - name: Setup Node.js
-        if: steps.branch-deploy.outputs.continue == 'true'
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-          cache: "npm"
 
       - name: Install dependencies
-        if: steps.branch-deploy.outputs.continue == 'true'
         run: npm ci
 
       - name: Setup uv
-        if: steps.branch-deploy.outputs.continue == 'true'
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
 
       - name: Install Modal and Python dependencies
-        if: steps.branch-deploy.outputs.continue == 'true'
         run: uv sync --frozen
         working-directory: packages/modal-infra
 
       - name: Setup Terraform
-        if: steps.branch-deploy.outputs.continue == 'true'
         uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.14.8"
 
       - name: Terraform Init
-        if: steps.branch-deploy.outputs.continue == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
@@ -128,16 +137,9 @@ jobs:
         working-directory: terraform/environments/staging
 
       - name: Terraform Apply
-        if: steps.branch-deploy.outputs.continue == 'true'
-        run: |
-          if [ "$NOOP" = "true" ]; then
-            terraform plan -no-color
-          else
-            terraform apply -auto-approve
-          fi
+        run: terraform apply -auto-approve
         working-directory: terraform/environments/staging
         env:
-          NOOP: ${{ steps.branch-deploy.outputs.noop }}
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_worker_subdomain: ${{ vars.CLOUDFLARE_WORKER_SUBDOMAIN || secrets.CLOUDFLARE_WORKER_SUBDOMAIN }}
@@ -190,10 +192,8 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
       - name: Deploy Workers
-        if: steps.branch-deploy.outputs.continue == 'true'
-        run: node scripts/cloudflare-deploy/deploy.mjs ${DEPLOY_FLAGS}
+        run: node scripts/cloudflare-deploy/deploy.mjs
         env:
-          DEPLOY_FLAGS: ${{ steps.branch-deploy.outputs.noop == 'true' && '--dry-run' || '' }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           DEPLOYMENT_NAME: ${{ vars.DEPLOYMENT_NAME || secrets.DEPLOYMENT_NAME }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -286,3 +286,11 @@ jobs:
           SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS: ${{ vars.SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS || secrets.SANDBOX_UNATTENDED_INACTIVITY_TIMEOUT_MS }}
           SANDBOX_BOOT_TIMEOUT_MS: ${{ vars.SANDBOX_BOOT_TIMEOUT_MS || secrets.SANDBOX_BOOT_TIMEOUT_MS }}
           TEAMS_ENFORCEMENT: ${{ vars.TEAMS_ENFORCEMENT || secrets.TEAMS_ENFORCEMENT }}
+
+      - name: Post Deploy Results
+        if: always()
+        run: |
+          echo "### Staging Deploy Results"
+          echo "Status: ${{ job.status }}"
+          echo "Commit: ${{ github.event.pull_request.head.sha }}"
+          echo "Pull request: #${{ github.event.pull_request.number }}"

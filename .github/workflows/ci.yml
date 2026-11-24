@@ -34,7 +34,7 @@ on:
       - ".github/workflows/terraform-*.yml"
       - ".github/workflows/deploy-cloudflare.yml"
       - ".github/workflows/deploy-production.yml"
-      - ".github/workflows/branch-deploy-staging.yml"
+      - ".github/workflows/deploy-staging.yml"
       - "vitest.config.ts"
       - "!**/*.md"
       # Keep README translation checks active for documentation-only changes.
@@ -80,7 +80,7 @@ on:
       - ".github/workflows/terraform-*.yml"
       - ".github/workflows/deploy-cloudflare.yml"
       - ".github/workflows/deploy-production.yml"
-      - ".github/workflows/branch-deploy-staging.yml"
+      - ".github/workflows/deploy-staging.yml"
       - "vitest.config.ts"
       - "!**/*.md"
       # Keep README translation checks active for documentation-only changes.
