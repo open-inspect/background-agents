@@ -254,10 +254,7 @@ test("staging deploys pull requests that touch deployable paths", () => {
     /^on:\n {2}pull_request_target:\n {4}branches: \[main\]\n {4}types: \[opened, synchronize, reopened, ready_for_review\]\n/m
   );
   assert.deepEqual(triggerPaths(stagingWorkflow, "pull_request_target"), [...STAGING_PATHS]);
-  assert.doesNotMatch(
-    stagingWorkflow,
-    /^ {2}(push|issue_comment|pull_request|workflow_run|workflow_dispatch):/m
-  );
+  assert.doesNotMatch(stagingWorkflow, /^ {2}(push|issue_comment|pull_request|workflow_run):/m);
 });
 
 test("staging waits for the staging Environment and runs only where secrets exist", () => {
@@ -304,7 +301,7 @@ test("every staging Terraform variable reaches its apply", async () => {
 test("staging checks out the head commit the event named, from a fork if need be", () => {
   assert.match(
     stagingWorkflow,
-    /repository: \$\{\{ github\.event\.pull_request\.head\.repo\.full_name \}\}\n\s+ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/
+    /repository: \$\{\{ github\.event\.pull_request\.head\.repo\.full_name \|\| github\.repository \}\}\n\s+ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/
   );
   assert.doesNotMatch(stagingWorkflow, /github\.head_ref|refs\/pull|merge_commit_sha/);
 });
@@ -313,4 +310,14 @@ test("staging, which runs fork code with secrets, writes no caches that main cou
   assert.doesNotMatch(stagingWorkflow, /^\s+cache: /m);
   assert.match(stagingWorkflow, /uses: astral-sh\/setup-uv@v\d+\n\s+with:\n\s+enable-cache: false/);
   assert.doesNotMatch(stagingWorkflow, /actions\/cache/);
+});
+
+test("staging can be run by hand, but only from main, so the secrets workflow always comes from main", () => {
+  assert.match(stagingWorkflow, /^ {2}workflow_dispatch:\n/m);
+  assert.doesNotMatch(stagingWorkflow, /workflow_dispatch:\n\s+inputs:/);
+  assert.match(
+    stagingWorkflow,
+    /\(github\.event_name != 'workflow_dispatch' \|\| github\.ref == 'refs\/heads\/main'\)/
+  );
+  assert.match(stagingWorkflow, /environment: staging\n {4}steps:/);
 });

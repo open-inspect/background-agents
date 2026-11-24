@@ -5,6 +5,12 @@ name: Deploy Staging
 # deploys from main (terraform-production.yml, deploy-production.yml), so a
 # change can be tried on staging first.
 #
+# It can also be run by hand (Actions -> Deploy Staging -> Run workflow, branch
+# main), which deploys main: the first bring-up of a new staging environment, or
+# putting staging back on main after a pull request. A manual run from any other
+# branch is skipped, so the workflow that holds the secrets always comes from
+# main. It waits for the same Environment approval.
+#
 # Approval is the `staging` GitHub Environment's: add required reviewers to it
 # (Settings -> Environments -> staging) and every run waits there, with no secret
 # released, until one approves. Enable "Prevent self-review" to make the person
@@ -76,6 +82,8 @@ on:
       - "terraform/d1/migrations/**"
       - ".github/workflows/deploy-staging.yml"
 
+  workflow_dispatch:
+
 permissions:
   contents: read
 
@@ -90,16 +98,18 @@ jobs:
     timeout-minutes: 90
     if: >-
       vars.CLOUDFLARE_STAGING_ENABLED == 'true' &&
-      !github.event.pull_request.draft
+      !github.event.pull_request.draft &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
     environment: staging
     steps:
-      # The head commit the event named, from the fork if need be. This is the
-      # code the reviewer approved; a later push is a new run and a new approval.
-      - name: Checkout pull request
+      # The head commit the event named, from the fork if need be (main's tip for
+      # a manual run). This is the code the reviewer approved; a later push is a
+      # new run and a new approval.
+      - name: Checkout
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       # No caches: a pull_request_target run saves them under main's scope, so
@@ -292,5 +302,5 @@ jobs:
         run: |
           echo "### Staging Deploy Results"
           echo "Status: ${{ job.status }}"
-          echo "Commit: ${{ github.event.pull_request.head.sha }}"
-          echo "Pull request: #${{ github.event.pull_request.number }}"
+          echo "Commit: ${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "Trigger: ${{ github.event_name }}"

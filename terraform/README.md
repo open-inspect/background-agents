@@ -218,11 +218,11 @@ binding in one upload.
 
 Production uses two workflows and staging one:
 
-| Workflow                   | Trigger                                                                                                                                           | Action                                                        |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `terraform-production.yml` | PR or push to `main` touching `terraform/**` (not D1 migrations) or the sandbox packages                                                          | `terraform plan` with PR comment; `terraform apply` on `main` |
-| `deploy-production.yml`    | Push to `main` touching the Worker, web or shared packages, D1 migrations or the deploy script; and after every completed Terraform run on `main` | `scripts/cloudflare-deploy/deploy.mjs`                        |
-| `deploy-staging.yml`       | A pull request to `main` touching the same paths, once a reviewer approves the `staging` Environment (opt-in; see [Staging](#staging))            | staging `terraform apply`, then the same deploy               |
+| Workflow                   | Trigger                                                                                                                                                             | Action                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `terraform-production.yml` | PR or push to `main` touching `terraform/**` (not D1 migrations) or the sandbox packages                                                                            | `terraform plan` with PR comment; `terraform apply` on `main` |
+| `deploy-production.yml`    | Push to `main` touching the Worker, web or shared packages, D1 migrations or the deploy script; and after every completed Terraform run on `main`                   | `scripts/cloudflare-deploy/deploy.mjs`                        |
+| `deploy-staging.yml`       | A pull request to `main` touching the same paths, or a manual run from `main`, once a reviewer approves the `staging` Environment (opt-in; see [Staging](#staging)) | staging `terraform apply`, then the same deploy               |
 
 A push that Terraform will apply for is deployed after the apply finishes, so a new queue, KV
 namespace or sandbox snapshot exists before the code that uses it: the deploy gate waits for the
@@ -644,6 +644,12 @@ In CI, `deploy-staging.yml` deploys a pull request to staging when it is opened 
 reviewer approves the run, so a change can be tried on staging before it merges and reaches
 production. It applies `terraform/environments/staging`, then runs the same Worker deploy as
 production, from the pull request's head commit.
+
+It can also be run by hand: **Actions → Deploy Staging → Run workflow**, branch `main`. That deploys
+`main`, which is how to bring up a brand-new staging environment without a pull request, or put
+staging back on `main` after trying a pull request. It waits for the same approval. A manual run
+from any other branch is skipped, so the workflow that holds the staging secrets always comes from
+`main`; to try a branch, open a pull request.
 
 The approval is the `staging` GitHub Environment's: every run waits at its required reviewers, and
 no staging secret is released until one approves. To enable it:

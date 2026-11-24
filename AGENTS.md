@@ -183,8 +183,8 @@ Pushing to `main` auto-deploys changed services:
   manually on `main` (requires the dedicated docs project secrets described in
   `packages/docs/README.md`)
 - **Modal** → data plane (triggers: `packages/modal-infra/`, deployed via Terraform apply)
-- **Staging** → deployed from pull requests after `staging` Environment approval
-  (`deploy-staging.yml`); see [terraform/README.md](terraform/README.md#staging)
+- **Staging** → deployed from pull requests, or a manual run on `main`, after `staging` Environment
+  approval (`deploy-staging.yml`); see [terraform/README.md](terraform/README.md#staging)
 
 CI runs lint, typecheck, and tests for all TypeScript and Python packages on every push and PR.
 

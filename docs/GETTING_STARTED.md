@@ -1604,10 +1604,11 @@ and the deploy only fails if a needed generated secret is neither supplied nor a
 `staging` GitHub Environment with required reviewers, its own `DEPLOYMENT_NAME` and its own Modal
 environment (anything it leaves unset falls back to production's repository-level value). Each pull
 request that changes deployable paths then applies `terraform/environments/staging` and deploys to
-staging with `deploy-staging.yml`, after a reviewer approves the run. Pull requests from forks are
-included, so the approval is the only gate: the fork's code runs with the staging secrets. Sync its
-generated secrets once with `--environment staging`. See
-[terraform/README.md](../terraform/README.md#staging).
+staging with `deploy-staging.yml`, after a reviewer approves the run; **Run workflow** on `main`
+deploys `main` the same way, for the first bring-up. Pull requests from forks are included, so the
+approval is the only gate: the fork's code runs with the staging secrets. Sync its generated secrets
+once with `--environment staging`, unless you have already set all six in the `staging` Environment.
+See [terraform/README.md](../terraform/README.md#staging).
 
 Terraform generates and persists `PROVIDER_ACCOUNTS_ENCRYPTION_KEY` when no override is configured.
 Existing local Terraform installations retain an existing key through the
