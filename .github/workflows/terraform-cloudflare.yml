@@ -1,9 +1,10 @@
 name: Terraform (Cloudflare environment)
 
 # Reusable: provisions one Cloudflare environment root under
-# terraform/environments/. Called by terraform-production.yml and
-# terraform-staging.yml, which own the triggers. Terraform builds and uploads no
-# Worker code; deploy-<environment>.yml does, after this workflow finishes.
+# terraform/environments/. Called by terraform-production.yml, which owns the
+# triggers. Terraform builds and uploads no Worker code; deploy-<environment>.yml
+# does, after this workflow finishes. Staging does not use it: see
+# branch-deploy-staging.yml.
 
 on:
   workflow_call:

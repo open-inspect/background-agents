@@ -32,7 +32,6 @@ on:
       - "packages/shared/tsconfig.json"
       - ".github/workflows/terraform-cloudflare.yml"
       - ".github/workflows/terraform-production.yml"
-      - ".github/workflows/terraform-staging.yml"
   pull_request:
     branches: [main]
     paths:
@@ -53,7 +52,6 @@ on:
       - "packages/shared/tsconfig.json"
       - ".github/workflows/terraform-cloudflare.yml"
       - ".github/workflows/terraform-production.yml"
-      - ".github/workflows/terraform-staging.yml"
   workflow_dispatch: # Allow manual trigger
 
 permissions:

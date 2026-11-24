@@ -28,7 +28,6 @@ on:
       - "terraform/d1/migrations/**"
       - ".github/workflows/deploy-cloudflare.yml"
       - ".github/workflows/deploy-production.yml"
-      - ".github/workflows/deploy-staging.yml"
   workflow_run:
     workflows: ["Terraform Production"]
     types: [completed]

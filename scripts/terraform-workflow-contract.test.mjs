@@ -45,7 +45,7 @@ test("web function region reaches Terraform plan and apply with the default", ()
 // project_root is a path inside the checkout.
 const NOT_FROM_ENVIRONMENT = new Set(["project_root"]);
 
-for (const root of ["production", "staging"]) {
+for (const root of ["production"]) {
   test(`Every ${root} Terraform variable reaches plan and apply`, async () => {
     const variables = await read(`terraform/environments/${root}/variables.tf`);
     const declared = [...variables.matchAll(/^variable "([a-z0-9_]+)"/gm)].map((match) => match[1]);
@@ -111,7 +111,7 @@ function triggerPaths(workflow, event) {
   return entries;
 }
 
-for (const env of ["production", "staging"]) {
+for (const env of ["production"]) {
   test(`terraform-${env} triggers on exactly TERRAFORM_PATHS`, async () => {
     const workflow = await read(`.github/workflows/terraform-${env}.yml`);
     assert.deepEqual(triggerPaths(workflow, "push"), [...TERRAFORM_PATHS]);
@@ -231,4 +231,89 @@ test("pushes classify with the apply Environment, pull requests with the plan En
     deployWorkflow,
     /environment: \$\{\{ github\.event_name == 'push' && inputs\.environment \|\| '' \}\}/
   );
+});
+
+// ---------------------------------------------------------------------------
+// Staging: github/branch-deploy
+// ---------------------------------------------------------------------------
+
+const branchDeploy = await read(".github/workflows/branch-deploy-staging.yml");
+
+function stepEnv(workflow, stepName, endMarker) {
+  const start = workflow.indexOf(`- name: ${stepName}`);
+  assert.notEqual(start, -1, `expected the ${stepName} step`);
+  const body = workflow.slice(start);
+  const envStart = body.indexOf("        env:\n") + "        env:\n".length;
+  const end = body.indexOf(endMarker, envStart);
+  return body.slice(envStart, end === -1 ? undefined : end).trimEnd();
+}
+
+test("staging is deployed by a maintainer's .deploy comment, not by pushes", () => {
+  assert.match(branchDeploy, /^on:\n {2}issue_comment:\n {4}types: \[created\]\n/m);
+  assert.doesNotMatch(branchDeploy, /^ {2}(push|pull_request|pull_request_target|workflow_run):/m);
+  assert.match(branchDeploy, /uses: github\/branch-deploy@v\d+\.\d+\.\d+\n/);
+  assert.match(branchDeploy, /vars\.CLOUDFLARE_STAGING_ENABLED == 'true'/);
+  assert.match(branchDeploy, /github\.event\.issue\.pull_request/);
+  assert.match(branchDeploy, /environment: staging\n {4}steps:/);
+});
+
+test("branch-deploy is scoped to the maintainers and refuses forks", () => {
+  assert.match(branchDeploy, /allow_forks: "false"/);
+  assert.match(
+    branchDeploy,
+    /admins: \$\{\{ vars\.BRANCH_DEPLOY_ADMINS \|\| format\('\{0\}\/maintainers', github\.repository_owner\) \}\}/
+  );
+  assert.match(
+    branchDeploy,
+    /admins_pat: \$\{\{ secrets\.BRANCH_DEPLOY_ADMINS_PAT \|\| 'false' \}\}/
+  );
+  assert.match(branchDeploy, /environment_targets: staging\n/);
+});
+
+test("the pull request's code is checked out at the commit branch-deploy approved", () => {
+  assert.match(branchDeploy, /ref: \$\{\{ steps\.branch-deploy\.outputs\.sha \}\}/);
+  assert.match(branchDeploy, /persist-credentials: false/);
+  const gated = branchDeploy.split("if: steps.branch-deploy.outputs.continue == 'true'").length - 1;
+  const steps = branchDeploy.split("\n      - name: ").length - 1;
+  assert.equal(gated, steps - 1, "every step after branch-deploy waits for its approval");
+});
+
+test("terraform and the deploy are steps of the job that started branch-deploy", () => {
+  // Its post step completes the deployment status, reaction and lock when that job ends.
+  assert.doesNotMatch(branchDeploy, /^ {4}uses: \.\/\.github\/workflows\//m);
+  assert.match(branchDeploy, /terraform plan -no-color/);
+  assert.match(branchDeploy, /--dry-run/);
+  assert.match(branchDeploy, /working-directory: terraform\/environments\/staging/);
+  assert.match(branchDeploy, /group: branch-deploy-staging\n {2}cancel-in-progress: false/);
+});
+
+test("staging gets the same Terraform and deploy settings as production", () => {
+  const stagingTerraform = stepEnv(branchDeploy, "Terraform Apply", "\n\n      - name");
+  const productionTerraform = stepEnv(terraformWorkflow, "Terraform Apply", "\n\n      - name");
+  assert.equal(
+    stagingTerraform
+      .split("\n")
+      .filter((line) => !line.includes("NOOP:"))
+      .join("\n"),
+    productionTerraform
+  );
+  const stagingDeploy = stepEnv(branchDeploy, "Deploy Workers", "\n\n      - name");
+  const productionDeploy = stepEnv(deployWorkflow, "Deploy Workers", "\n\n      - name");
+  assert.equal(
+    stagingDeploy
+      .split("\n")
+      .filter((line) => !line.includes("DEPLOY_FLAGS:"))
+      .join("\n"),
+    productionDeploy
+  );
+});
+
+test("every staging Terraform variable reaches its apply", async () => {
+  const variables = await read("terraform/environments/staging/variables.tf");
+  const declared = [...variables.matchAll(/^variable "([a-z0-9_]+)"/gm)].map((match) => match[1]);
+  const missing = declared.filter(
+    (name) =>
+      !NOT_FROM_ENVIRONMENT.has(name) && branchDeploy.split(`TF_VAR_${name}:`).length - 1 !== 1
+  );
+  assert.deepEqual(missing, []);
 });

@@ -58,7 +58,7 @@ const unrelated = [
   ".github/workflows/terraform-production.yml",
   ".github/workflows/terraform-cloudflare.yml",
   ".github/workflows/deploy-cloudflare.yml",
-  ".github/workflows/deploy-staging.yml",
+  ".github/workflows/branch-deploy-staging.yml",
   "eslint.config.js",
   "knip.json",
   "ruff.toml",

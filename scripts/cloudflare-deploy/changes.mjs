@@ -43,7 +43,6 @@ export const TERRAFORM_PATHS = Object.freeze([
   ...VERCEL_SNAPSHOT_PATHS,
   ".github/workflows/terraform-cloudflare.yml",
   ".github/workflows/terraform-production.yml",
-  ".github/workflows/terraform-staging.yml",
 ]);
 
 export const DEPLOY_PATHS = Object.freeze([
@@ -61,7 +60,6 @@ export const DEPLOY_PATHS = Object.freeze([
   "terraform/d1/migrations/**",
   ".github/workflows/deploy-cloudflare.yml",
   ".github/workflows/deploy-production.yml",
-  ".github/workflows/deploy-staging.yml",
 ]);
 
 function matchesPattern(file, pattern) {

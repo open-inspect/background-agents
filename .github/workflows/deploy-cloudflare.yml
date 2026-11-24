@@ -2,7 +2,7 @@ name: Deploy (Cloudflare environment)
 
 # Reusable: uploads Worker code and configuration for one Cloudflare
 # environment with scripts/cloudflare-deploy/deploy.mjs. Called by
-# deploy-production.yml and deploy-staging.yml, which own the triggers.
+# deploy-production.yml, which owns the triggers.
 #
 # Settings come from the GitHub Environment (falling back to repository-level
 # variables and secrets) under the names terraform.yml used to pass as
