@@ -153,6 +153,9 @@ function invocationHarness() {
       getInvocationIdByTriggerKey: vi.fn().mockResolvedValue(null),
       isAtConcurrencyLimit: vi.fn().mockResolvedValue(false),
       getActiveRunForKey: vi.fn().mockResolvedValue(null),
+      supersedeActiveRunsForKey: vi
+        .fn<AutomationInvocationServiceDeps["store"]["supersedeActiveRunsForKey"]>()
+        .mockResolvedValue([]),
       getRepositoriesForAutomation: vi.fn().mockResolvedValue([]),
       getEnvironmentsForAutomation: vi.fn().mockResolvedValue([]),
       insertInvocationGuarded: vi.fn().mockResolvedValue({ inserted: true }),
@@ -184,6 +187,9 @@ function invocationHarness() {
         }),
     },
     failures: { applyInvocationOutcome: vi.fn().mockResolvedValue(undefined) },
+    cancelSession: vi
+      .fn<AutomationInvocationServiceDeps["cancelSession"]>()
+      .mockResolvedValue(true),
     clock: { now: () => 1_000 },
     crypto: { generateId: () => `id-${++id}` },
     log,
@@ -346,6 +352,71 @@ describe("AutomationInvocationService", () => {
       expect.objectContaining({ actor_kind: "bot", skip_reason: "concurrent_run_active" }),
       undefined
     );
+    expect(deps.store.supersedeActiveRunsForKey).not.toHaveBeenCalled();
+  });
+
+  describe("cancel in progress", () => {
+    const replacing = { ...automation, cancel_in_progress: 1 };
+    const prEvent = {
+      automation: replacing,
+      source: "event" as const,
+      actorKind: "person" as const,
+      triggerKey: "github:delivery-2",
+      concurrencyKey: "pr:42",
+    };
+
+    it("supersedes the active run for the key and starts the new firing", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.store.supersedeActiveRunsForKey.mockResolvedValue([
+        { id: "old-run", invocation_id: "old-invocation", session_id: "old-session" },
+      ]);
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "started" });
+
+      expect(deps.store.supersedeActiveRunsForKey).toHaveBeenCalledExactlyOnceWith(
+        replacing.id,
+        "pr:42",
+        1_000
+      );
+      expect(deps.cancelSession).toHaveBeenCalledExactlyOnceWith("old-session", replacing.id);
+      expect(deps.store.insertSkippedInvocation).not.toHaveBeenCalled();
+      expect(deps.store.supersedeActiveRunsForKey.mock.invocationCallOrder[0]).toBeLessThan(
+        deps.store.insertInvocationGuarded.mock.invocationCallOrder[0]
+      );
+    });
+
+    it("starts the new firing when the superseded session cannot be cancelled", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.store.supersedeActiveRunsForKey.mockResolvedValue([
+        { id: "old-run", invocation_id: "old-invocation", session_id: "old-session" },
+      ]);
+      deps.cancelSession.mockResolvedValue(false);
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "started" });
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledOnce();
+    });
+
+    it("leaves the active run alone when the new firing is not authorized", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.isAuthorized.mockResolvedValue(false);
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "unauthorized" });
+      expect(deps.store.supersedeActiveRunsForKey).not.toHaveBeenCalled();
+      expect(deps.cancelSession).not.toHaveBeenCalled();
+    });
+
+    it("still skips manual firings at the limit", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.isAtConcurrencyLimit.mockResolvedValue(true);
+
+      await expect(
+        service.start({ automation: replacing, source: "manual", actorKind: "person" })
+      ).resolves.toEqual({ outcome: "blocked", reason: "concurrent_run_active" });
+      expect(deps.store.supersedeActiveRunsForKey).not.toHaveBeenCalled();
+    });
   });
 });
 

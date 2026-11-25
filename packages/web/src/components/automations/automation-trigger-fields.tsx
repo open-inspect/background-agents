@@ -413,6 +413,25 @@ export function AutomationTriggerConfigurationFields({
         </fieldset>
       )}
 
+      {value.type === "github_event" && (
+        <label className="flex items-center justify-between gap-4">
+          <span>
+            <span className="block text-sm font-medium text-foreground">
+              Replace the run in progress
+            </span>
+            <span className="block text-xs text-muted-foreground">
+              When a new event arrives for the same pull request, issue or workflow run while a run
+              is in progress, stop that run and start a new one. Otherwise the new event is skipped.
+            </span>
+          </span>
+          <Switch
+            aria-label="Replace the run in progress"
+            checked={value.cancelInProgress}
+            onCheckedChange={(checked) => update({ cancelInProgress: checked })}
+          />
+        </label>
+      )}
+
       {value.type === "slack_event" && (
         <div>
           <label className="flex items-center justify-between gap-4">

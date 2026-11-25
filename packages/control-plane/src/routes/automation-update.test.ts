@@ -651,6 +651,41 @@ describe("automation read, update, and delete routes", () => {
       expect(mockStore.bindAutomationUpdate).not.toHaveBeenCalled();
     });
 
+    it("turns on cancelInProgress for a GitHub event automation", async () => {
+      mockStore.getById.mockResolvedValue({
+        ...sampleRow,
+        trigger_type: "github_event",
+        schedule_cron: null,
+        schedule_tz: null,
+        event_type: "pull_request.synchronize",
+        trigger_config: JSON.stringify({ conditions: [] }),
+      });
+
+      const res = await callRoute("PUT", "/automations/auto-1", {
+        body: { cancelInProgress: true },
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockStore.bindAutomationUpdate).toHaveBeenCalledWith(
+        "auto-1",
+        expect.objectContaining({ cancel_in_progress: 1 })
+      );
+    });
+
+    it("rejects cancelInProgress on a scheduled automation", async () => {
+      mockStore.getById.mockResolvedValue(sampleRow);
+
+      const res = await callRoute("PUT", "/automations/auto-1", {
+        body: { cancelInProgress: true },
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "cancelInProgress is only valid for GitHub event triggers",
+      });
+      expect(mockStore.bindAutomationUpdate).not.toHaveBeenCalled();
+    });
+
     it("rejects a replacement pin the automation's harness cannot use", async () => {
       mockProviderAccountStore.getById.mockResolvedValue({
         id: "0123456789abcdef0123456789abcdef",

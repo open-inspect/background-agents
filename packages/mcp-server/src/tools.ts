@@ -684,6 +684,11 @@ export const TOOLS: ToolDefinition[] = [
           "firing is skipped and trigger_automation is refused. Recurring schedules only; " +
           "defaults to 1, one at a time."
       ),
+      cancel_in_progress: createAutomationRequestSchema.shape.cancelInProgress.describe(
+        "GitHub event triggers only. When true, an event for a pull request, issue or workflow " +
+          "run that already has a run in progress stops that run and starts a new one, instead " +
+          "of being skipped. Defaults to false."
+      ),
     },
     run: (client, args) => {
       const triggerType = args.trigger_type;
@@ -720,6 +725,7 @@ export const TOOLS: ToolDefinition[] = [
         model: args.model,
         reasoningEffort: args.reasoning_effort,
         maxConcurrentRuns: args.max_concurrent_runs,
+        cancelInProgress: args.cancel_in_progress,
       } satisfies CreateAutomationRequest);
     },
   }),

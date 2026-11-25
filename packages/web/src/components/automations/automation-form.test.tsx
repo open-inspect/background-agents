@@ -714,6 +714,59 @@ describe("automation cron submission", () => {
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("maxConcurrentRuns");
   });
 
+  it("submits cancelInProgress after replacing the run in progress is switched on", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <AutomationForm
+        mode="edit"
+        submitting={false}
+        onSubmit={onSubmit}
+        initialValues={{
+          name: "Review PRs",
+          repositories: singleRepository,
+          model: "openai/gpt-5.4",
+          instructions: "Review incoming PRs.",
+          triggerType: "github_event",
+          eventType: "pull_request.synchronize",
+          triggerConfig: { conditions: [] },
+        }}
+      />
+    );
+
+    const toggle = screen.getByRole("switch", { name: "Replace the run in progress" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    fireEvent.submit(container.querySelector("form")!);
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ cancelInProgress: true }));
+  });
+
+  it("neither shows nor submits cancelInProgress for a schedule-triggered automation", () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <AutomationForm
+        mode="edit"
+        submitting={false}
+        onSubmit={onSubmit}
+        initialValues={{
+          name: "Daily review",
+          repositories: singleRepository,
+          model: "openai/gpt-5.4",
+          scheduleCron: "0 9 * * *",
+          scheduleTz: "UTC",
+          instructions: "Review the repo.",
+        }}
+      />
+    );
+
+    expect(
+      screen.queryByRole("switch", { name: "Replace the run in progress" })
+    ).not.toBeInTheDocument();
+    fireEvent.submit(container.querySelector("form")!);
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("cancelInProgress");
+  });
+
   it("neither shows nor submits launch retries for an event-triggered automation", () => {
     const onSubmit = vi.fn();
     const { container } = render(

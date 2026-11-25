@@ -32,6 +32,7 @@ const automation = {
   consecutiveFailures: 0,
   maxRetries: 0,
   maxConcurrentRuns: 1,
+  cancelInProgress: false,
   createdBy: "user-1",
   userId: USER_ID,
   ownerTeamId: null,
@@ -76,6 +77,16 @@ describe("listAutomationsResponseSchema", () => {
       nextCursor: null,
     });
     expect(result.automations[0]!.maxConcurrentRuns).toBe(DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS);
+  });
+
+  it("reads an automation from a control plane that predates cancel in progress as off", () => {
+    const { cancelInProgress: _cancelInProgress, ...legacy } = automation;
+    const result = listAutomationsResponseSchema.parse({
+      automations: [legacy],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(result.automations[0]!.cancelInProgress).toBe(false);
   });
 
   it("reads an automation from a control plane that predates one-shot schedules", () => {

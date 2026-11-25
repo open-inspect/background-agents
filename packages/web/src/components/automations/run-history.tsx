@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import type { AutomationInvocation, AutomationRun } from "@open-inspect/shared/types/automations";
+import {
+  AUTOMATION_RUN_SUPERSEDED_SKIP_REASON,
+  type AutomationInvocation,
+  type AutomationRun,
+} from "@open-inspect/shared/types/automations";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChevronDownIcon, ChevronRightIcon } from "@/components/ui/icons";
@@ -47,6 +51,9 @@ function formatDuration(startedAt: number | null, completedAt: number | null): s
 function formatRunReason(reason: string): string {
   if (reason === "concurrent_run_active")
     return "Skipped because the concurrent run limit was reached";
+  if (reason === AUTOMATION_RUN_SUPERSEDED_SKIP_REASON) {
+    return "Stopped because a newer event replaced this run";
+  }
   if (reason === "slack_bot_trigger_limit") {
     return "Skipped because bot messages reached this automation's hourly run limit";
   }

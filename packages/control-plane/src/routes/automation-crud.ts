@@ -113,6 +113,13 @@ const MAX_RETRIES_SCHEDULE_ONLY_ERROR = "maxRetries above 0 is only valid for sc
 const MAX_CONCURRENT_RUNS_RECURRING_ONLY_ERROR =
   "maxConcurrentRuns above 1 is only valid for recurring schedule triggers";
 
+/**
+ * Cancelling a run in flight needs events that share a concurrency key, which GitHub event
+ * triggers carry (one key per pull request, issue, or workflow run). Off is accepted everywhere.
+ */
+const CANCEL_IN_PROGRESS_GITHUB_ONLY_ERROR =
+  "cancelInProgress is only valid for GitHub event triggers";
+
 function exceedsSerializedConcurrency(maxConcurrentRuns: number | undefined): boolean {
   return (
     maxConcurrentRuns !== undefined && maxConcurrentRuns > DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS
@@ -235,6 +242,9 @@ async function handleCreateAutomation(
     (!isSchedule || body.scheduleOnceAt !== undefined)
   ) {
     return error(MAX_CONCURRENT_RUNS_RECURRING_ONLY_ERROR, 400);
+  }
+  if (body.cancelInProgress && triggerType !== "github_event") {
+    return error(CANCEL_IN_PROGRESS_GITHUB_ONLY_ERROR, 400);
   }
 
   // Schedule-specific validation
@@ -412,6 +422,7 @@ async function handleCreateAutomation(
     max_retries: body.maxRetries ?? 0,
     sandbox_timeout_ms: body.sandboxTimeoutMs ?? null,
     max_concurrent_runs: body.maxConcurrentRuns ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+    cancel_in_progress: body.cancelInProgress ? 1 : 0,
     created_by: enforced.participantUserId,
     user_id: resolvedUserId,
     created_at: now,
@@ -538,6 +549,9 @@ async function handleUpdateAutomation(
     (existingTriggerType !== "schedule" || existing.schedule_once_at != null)
   ) {
     return error(MAX_CONCURRENT_RUNS_RECURRING_ONLY_ERROR, 400);
+  }
+  if (body.cancelInProgress && existingTriggerType !== "github_event") {
+    return error(CANCEL_IN_PROGRESS_GITHUB_ONLY_ERROR, 400);
   }
 
   let replacementProviderSelections: ModelProviderSelections | null = null;
@@ -689,6 +703,9 @@ async function handleUpdateAutomation(
   }
   if (body.maxConcurrentRuns !== undefined) {
     updateFields.max_concurrent_runs = body.maxConcurrentRuns;
+  }
+  if (body.cancelInProgress !== undefined) {
+    updateFields.cancel_in_progress = body.cancelInProgress ? 1 : 0;
   }
   if (body.harness !== undefined) updateFields.harness = nextHarness;
   if (body.model !== undefined) updateFields.model = nextModel;

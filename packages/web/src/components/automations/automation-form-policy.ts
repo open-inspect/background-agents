@@ -44,6 +44,8 @@ export interface AutomationFormValues {
   sandboxTimeoutMs?: number | null;
   /** Firings allowed in flight at once; submitted for recurring schedule triggers only. */
   maxConcurrentRuns?: number;
+  /** GitHub event triggers only: a new event cancels the run in progress for the same key. */
+  cancelInProgress?: boolean;
   instructions: string;
   triggerType: AutomationTriggerType;
   eventType?: string;
@@ -64,6 +66,8 @@ export interface AutomationTriggerDraft {
   conditions: TriggerCondition[];
   /** Slack triggers only: let other bots' messages trigger the automation. */
   includeBotMessages: boolean;
+  /** GitHub event triggers only: a new event replaces the run in progress. */
+  cancelInProgress: boolean;
   sentryClientSecret: string;
 }
 
@@ -142,6 +146,7 @@ export function createAutomationFormDraft(
       eventType: initialValues.eventType ?? "",
       conditions: initialValues.triggerConfig?.conditions ?? [],
       includeBotMessages: initialValues.triggerConfig?.slack?.includeBotMessages === true,
+      cancelInProgress: initialValues.cancelInProgress === true,
       sentryClientSecret: "",
     },
     agent: {
@@ -169,6 +174,7 @@ export function automationToFormValues(automation: Automation): InitialAutomatio
     maxRetries: automation.maxRetries,
     sandboxTimeoutMs: automation.sandboxTimeoutMs,
     maxConcurrentRuns: automation.maxConcurrentRuns,
+    cancelInProgress: automation.cancelInProgress,
     instructions: automation.instructions,
     triggerType: automation.triggerType,
     eventType: automation.eventType ?? undefined,
@@ -481,6 +487,9 @@ function buildSubmissionValues({
     values.triggerConfig.slack = { includeBotMessages: true };
   }
   if (draft.trigger.eventType) values.eventType = draft.trigger.eventType;
+  if (draft.trigger.type === "github_event") {
+    values.cancelInProgress = draft.trigger.cancelInProgress;
+  }
   if (draft.trigger.type === "sentry" && mode === "create") {
     values.sentryClientSecret = draft.trigger.sentryClientSecret.trim();
   }

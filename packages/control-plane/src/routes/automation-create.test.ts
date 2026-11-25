@@ -844,6 +844,31 @@ describe("automation create route", () => {
       expect(mockBatch).not.toHaveBeenCalled();
     });
 
+    it("refuses cancelInProgress on a trigger other than a GitHub event", async () => {
+      const res = await callRoute("POST", "/automations", {
+        body: { ...validBody, cancelInProgress: true },
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "cancelInProgress is only valid for GitHub event triggers",
+      });
+      expect(mockBatch).not.toHaveBeenCalled();
+    });
+
+    it("stores cancelInProgress off by default", async () => {
+      mockStore.getById.mockResolvedValue(sampleRow);
+
+      const res = await callRoute("POST", "/automations", {
+        body: { ...validBody, cancelInProgress: false },
+      });
+
+      expect(res.status).toBe(201);
+      expect(mockStore.bindAutomationInsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({ cancel_in_progress: 0 })
+      );
+    });
+
     it("rejects a concurrent run limit outside 1 to 10", async () => {
       for (const maxConcurrentRuns of [0, 11]) {
         const res = await callRoute("POST", "/automations", {

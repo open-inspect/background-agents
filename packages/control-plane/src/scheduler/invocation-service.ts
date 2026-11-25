@@ -96,6 +96,7 @@ export interface AutomationInvocationServiceDeps {
     | "getById"
     | "getRetriesToSettle"
     | "getActiveRunForKey"
+    | "supersedeActiveRunsForKey"
     | "getEnvironmentsForAutomation"
     | "getInvocationIdByTriggerKey"
     | "getRepositoriesForAutomation"
@@ -113,6 +114,11 @@ export interface AutomationInvocationServiceDeps {
   attribution: Pick<AutomationAttributionService, "resolve">;
   launcher: Pick<AutomationRunLaunchService, "launch" | "recordFailure">;
   failures: Pick<AutomationFailureService, "applyInvocationOutcome">;
+  /**
+   * Best-effort cancel of a superseded run's session; resolves false when the session could not
+   * be reached. Never throws.
+   */
+  cancelSession(sessionId: string, automationId: string): Promise<boolean>;
   clock: Pick<DateConstructor, "now">;
   crypto: Pick<typeof Crypto, "generateId">;
   log: Logger;
@@ -163,7 +169,13 @@ export class AutomationInvocationService {
       overlapScope.kind === "concurrencyKey"
         ? (await store.getActiveRunForKey(automation.id, concurrencyKey)) !== null
         : await store.isAtConcurrencyLimit(automation.id);
-    if (blocked) {
+    // An automation with cancel_in_progress replaces its run in flight for the
+    // event's key instead of skipping the event. The active run is ended only
+    // just before the insert, once this firing is known to be authorized, so a
+    // firing that is refused never cancels the run it would have replaced.
+    const replacesActiveRun =
+      blocked && overlapScope.kind === "concurrencyKey" && automation.cancel_in_progress === 1;
+    if (blocked && !replacesActiveRun) {
       return this.recordOverlapSkip(params, { advanceSchedule: true });
     }
 
@@ -288,6 +300,10 @@ export class AutomationInvocationService {
       created_at: now,
       updated_at: now,
     };
+
+    if (replacesActiveRun && overlapScope.kind === "concurrencyKey") {
+      await this.supersedeActiveRuns(automation.id, overlapScope.concurrencyKey, invocationId);
+    }
 
     let inserted: boolean;
     try {
@@ -436,6 +452,42 @@ export class AutomationInvocationService {
     skipReason: string
   ): Promise<StartInvocationResult> {
     return this.recordSkip({ ...params, source: "event" }, skipReason);
+  }
+
+  /**
+   * End the automation's active runs for a concurrency key so the firing
+   * `replacedBy` can take their place, then ask their sessions to stop. A run
+   * is terminal before its session is cancelled, so a cancel that fails or
+   * times out leaves a session finishing unobserved, never a second active run.
+   */
+  private async supersedeActiveRuns(
+    automationId: string,
+    concurrencyKey: string,
+    replacedBy: string
+  ): Promise<void> {
+    const superseded = await this.deps.store.supersedeActiveRunsForKey(
+      automationId,
+      concurrencyKey,
+      this.deps.clock.now()
+    );
+    const outcomes = await Promise.all(
+      superseded.map(async (run) => ({
+        run,
+        cancelled:
+          run.session_id === null || (await this.deps.cancelSession(run.session_id, automationId)),
+      }))
+    );
+    for (const { run, cancelled } of outcomes) {
+      this.deps.log.info("Superseded an active run for a newer event", {
+        event: "scheduler.run_superseded",
+        automation_id: automationId,
+        run_id: run.id,
+        invocation_id: run.invocation_id,
+        session_id: run.session_id,
+        replaced_by: replacedBy,
+        session_cancelled: cancelled,
+      });
+    }
   }
 
   /**

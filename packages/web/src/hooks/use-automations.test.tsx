@@ -34,6 +34,7 @@ function automation(id: string, name: string): AutomationListItem {
     maxRetries: 0,
     sandboxTimeoutMs: null,
     maxConcurrentRuns: 1,
+    cancelInProgress: false,
     createdBy: "user-1",
     userId: "11111111111111111111111111111111",
     createdAt: 1,

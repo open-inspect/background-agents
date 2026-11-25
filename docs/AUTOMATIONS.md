@@ -604,16 +604,16 @@ reason, and session link.
 
 ### Run Statuses
 
-| Status              | Meaning                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Starting**        | A session is being created for this run.                                                                            |
-| **Running**         | At least one session is actively executing.                                                                         |
-| **Retrying**        | A scheduled run failed to start and is waiting to launch again (see [Launch Retries](#launch-retries)).             |
-| **Completed**       | Every session finished successfully.                                                                                |
-| **Failed**          | Every session encountered an error. The failure reason is shown on the run.                                         |
-| **Partial failure** | A multi-repository run where some repositories completed and some failed.                                           |
-| **Skipped**         | A previous run was still active, or a scheduled firing was denied execution authorization.                          |
-| **Unauthorized**    | GitHub event admission found no owning-team grant for the repository (`repo_not_granted`); no session was launched. |
+| Status              | Meaning                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Starting**        | A session is being created for this run.                                                                              |
+| **Running**         | At least one session is actively executing.                                                                           |
+| **Retrying**        | A scheduled run failed to start and is waiting to launch again (see [Launch Retries](#launch-retries)).               |
+| **Completed**       | Every session finished successfully.                                                                                  |
+| **Failed**          | Every session encountered an error. The failure reason is shown on the run.                                           |
+| **Partial failure** | A multi-repository run where some repositories completed and some failed.                                             |
+| **Skipped**         | A previous run was still active, a newer event replaced it, or a scheduled firing was denied execution authorization. |
+| **Unauthorized**    | GitHub event admission found no owning-team grant for the repository (`repo_not_granted`); no session was launched.   |
 
 When authorized, click **View session** to open the session with its output and artifacts.
 Automation read access is not session read access: history redacts session IDs, titles, and artifact
@@ -654,6 +654,15 @@ Event-driven automations use concurrency keys instead. For inbound webhooks, ret
 `idempotencyKey` are treated as the same event, but separate deliveries without a shared
 `idempotencyKey` can overlap. Deliveries that share a `sessionKey` are keyed by it: a later one
 continues the first run's session rather than overlapping it.
+
+GitHub Event automations can turn on **Replace the run in progress** (`cancelInProgress`, default
+off). A new event whose concurrency key already has a run in progress then marks that run
+**Skipped** with reason `superseded`, cancels its sessions, and starts its own run, so the newest
+push to a pull request wins rather than losing. The replacement happens only after the new firing
+passes authorization and team admission, so a refused event never stops a run. It applies within one
+automation; events for other automations on the same pull request are unaffected. A superseded run
+neither adds nor clears an auto-pause failure. `cancelInProgress` is rejected for anything but a
+GitHub Event trigger.
 
 Slack Message triggers key concurrency by thread. Replies in a thread are not skipped — until the
 session has been idle for 7 days they continue the same session (while the run starts, during it,

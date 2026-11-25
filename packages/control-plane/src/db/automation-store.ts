@@ -22,6 +22,7 @@ import type {
   AutomationRunStatus,
 } from "@open-inspect/shared/types/automations";
 import {
+  AUTOMATION_RUN_SUPERSEDED_SKIP_REASON,
   automationInvocationStatusSchema,
   DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
 } from "@open-inspect/shared/types/automations";
@@ -107,6 +108,11 @@ export interface AutomationRow {
    * rows built for insert may omit it; the column defaults to DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
    */
   max_concurrent_runs?: number;
+  /**
+   * 1 when a new event firing cancels the run in flight for its concurrency key instead of being
+   * skipped. Optional so rows built for insert may omit it; the column defaults to 0.
+   */
+  cancel_in_progress?: number;
   created_by: string;
   user_id: string | null;
   owner_team_id: string | null;
@@ -402,6 +408,7 @@ export function toAutomation(
     maxRetries: row.max_retries ?? 0,
     sandboxTimeoutMs: row.sandbox_timeout_ms ?? null,
     maxConcurrentRuns: row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+    cancelInProgress: row.cancel_in_progress === 1,
     createdBy: row.created_by,
     userId: row.user_id,
     ownerTeamId: row.owner_team_id,
@@ -558,8 +565,8 @@ export class AutomationStore {
           trigger_type, schedule_cron, schedule_tz, harness, model, reasoning_effort, enabled, next_run_at,
           consecutive_failures, created_by, user_id, created_at, updated_at, deleted_at,
            event_type, trigger_config, trigger_auth_data, owner_team_id, schedule_once_at, max_retries,
-           sandbox_timeout_ms, max_concurrent_runs)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           sandbox_timeout_ms, max_concurrent_runs, cancel_in_progress)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         row.id,
@@ -586,7 +593,8 @@ export class AutomationStore {
         row.schedule_once_at,
         row.max_retries ?? 0,
         row.sandbox_timeout_ms ?? null,
-        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS
+        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+        row.cancel_in_progress ?? 0
       );
   }
 
@@ -812,6 +820,7 @@ export class AutomationStore {
       "max_retries",
       "sandbox_timeout_ms",
       "max_concurrent_runs",
+      "cancel_in_progress",
       "event_type",
       "trigger_config",
       "trigger_auth_data",
@@ -2117,6 +2126,45 @@ export class AutomationStore {
       .bind(repoOwner.toLowerCase(), repoName.toLowerCase(), triggerType, eventType)
       .all<AutomationRow>();
     return (result.results || []).map(withValidatedOwnerTeam);
+  }
+
+  /**
+   * End every active run of the automation for a concurrency key so a newer event can replace
+   * it: each one is marked skipped with AUTOMATION_RUN_SUPERSEDED_SKIP_REASON. A superseded run
+   * is neither a success nor a failure, so it never resets or adds to the auto-pause streak.
+   *
+   * Each transition is guarded on the run still being active, so a run that finished, or that a
+   * concurrent firing already superseded, is left alone and not returned. The caller cancels the
+   * returned runs' sessions; their later completion callbacks are ignored, as for any run that
+   * is no longer active.
+   */
+  async supersedeActiveRunsForKey(
+    automationId: string,
+    concurrencyKey: string,
+    now: number
+  ): Promise<Array<Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">>> {
+    const active = await this.db
+      .prepare(
+        `SELECT r.id, r.invocation_id, r.session_id FROM automation_runs r
+         JOIN automation_invocations i ON i.id = r.invocation_id
+         WHERE r.automation_id = ?
+           AND i.concurrency_key = ?
+           AND r.status IN ${ACTIVE_RUN_STATUSES_SQL}`
+      )
+      .bind(automationId, concurrencyKey)
+      .all<Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">>();
+    const superseded: Array<Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">> = [];
+    for (const run of active.results || []) {
+      const result = await this.db
+        .prepare(
+          `UPDATE automation_runs SET status = 'skipped', skip_reason = ?, completed_at = ?
+           WHERE id = ? AND status IN ${ACTIVE_RUN_STATUSES_SQL}`
+        )
+        .bind(AUTOMATION_RUN_SUPERSEDED_SKIP_REASON, now, run.id)
+        .run();
+      if ((result.meta?.changes ?? 0) > 0) superseded.push(run);
+    }
+    return superseded;
   }
 
   async getActiveRunForKey(
