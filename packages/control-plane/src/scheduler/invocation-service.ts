@@ -170,12 +170,15 @@ export class AutomationInvocationService {
         ? (await store.getActiveRunForKey(automation.id, concurrencyKey)) !== null
         : await store.isAtConcurrencyLimit(automation.id);
     // An automation with cancel_in_progress replaces its run in flight for the
-    // event's key instead of skipping the event. The active run is ended only
-    // just before the insert, once this firing is known to be authorized, so a
-    // firing that is refused never cancels the run it would have replaced.
-    const replacesActiveRun =
-      blocked && overlapScope.kind === "concurrencyKey" && automation.cancel_in_progress === 1;
-    if (blocked && !replacesActiveRun) {
+    // event's key instead of skipping the event. The active run is ended only in
+    // the insert's batch, once this firing is known to be authorized, so a firing
+    // that is refused never cancels the run it would have replaced. Every such
+    // firing asks for the supersede, not only one the pre-check saw blocked: a run
+    // that becomes active after the pre-check is replaced too. With no active run
+    // the supersede matches nothing.
+    const supersedesOnInsert =
+      overlapScope.kind === "concurrencyKey" && automation.cancel_in_progress === 1;
+    if (blocked && !supersedesOnInsert) {
       return this.recordOverlapSkip(params, { advanceSchedule: true });
     }
 
@@ -310,7 +313,7 @@ export class AutomationInvocationService {
         overlapScope,
         teamGrantsVersion,
         supersede:
-          replacesActiveRun && overlapScope.kind === "concurrencyKey"
+          supersedesOnInsert && overlapScope.kind === "concurrencyKey"
             ? { concurrencyKey: overlapScope.concurrencyKey, now }
             : undefined,
         advanceSchedule:

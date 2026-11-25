@@ -119,6 +119,8 @@ export function createScheduler(
     store,
     sessions,
     enqueueFirstPrompt: (input) => enqueueAutomationFirstPrompt(env, input),
+    cancelSession: (sessionId, automationId) =>
+      cancelSupersededSession(env, sessionId, `automation:${automationId}`),
     continuity,
     executionDeadlineMs: resolveDeadlineMs,
     clock: Date,

@@ -417,10 +417,29 @@ describe("AutomationInvocationService", () => {
       expect(deps.cancelSession).not.toHaveBeenCalled();
     });
 
-    it("does not ask a firing without an active run for the key to supersede", async () => {
+    it("asks for the supersede even when the pre-check saw no active run", async () => {
+      // A run for the key became active between the pre-check and the batch: the
+      // batch still replaces it rather than recording an overlap skip.
       const { deps, service } = invocationHarness();
+      deps.store.insertInvocationGuarded.mockResolvedValue({
+        inserted: true,
+        superseded: [oldRun],
+      });
 
       await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "started" });
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ supersede: { concurrencyKey: "pr:42", now: 1_000 } })
+      );
+      expect(deps.cancelSession).toHaveBeenCalledExactlyOnceWith("old-session", replacing.id);
+      expect(deps.store.insertSkippedInvocation).not.toHaveBeenCalled();
+    });
+
+    it("does not ask an automation without the setting to supersede", async () => {
+      const { deps, service } = invocationHarness();
+
+      await expect(service.start({ ...prEvent, automation })).resolves.toMatchObject({
+        outcome: "started",
+      });
       expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ supersede: undefined })
       );

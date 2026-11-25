@@ -13,7 +13,10 @@ import type { resolveSessionScopedSettings } from "../session/integration-settin
 import type { resolveManagedSkills } from "../session/skill-resolution";
 import type { SessionMemorySelector } from "../memory/session-memory-selector";
 import { resolvedPin } from "../session/pinned";
-import { AutomationExecutionUnauthorizedError } from "./contracts";
+import {
+  AutomationExecutionUnauthorizedError,
+  AutomationRunNoLongerActiveError,
+} from "./contracts";
 import { executionDenialReason } from "./launch-admission";
 import type { CreateAutomationSessionInput } from "./launch-contracts";
 
@@ -91,11 +94,14 @@ export class AutomationSessionService {
       automation.sandbox_timeout_ms ?? null
     );
     // The session below is about to start spending this budget, so the sweep
-    // must not come for the run until it is spent.
-    await this.deps.store.setRunExecutionDeadline(
+    // must not come for the run until it is spent. The update only applies to a
+    // running run: if a newer event superseded it, or recovery ended it, since the
+    // claim, no session is created.
+    const stillRunning = await this.deps.store.setRunExecutionDeadline(
       run.id,
       startedAtMs + this.deps.executionDeadlineMs(sandboxSettings)
     );
+    if (!stillRunning) throw new AutomationRunNoLongerActiveError();
     // Automation runs use all target-applicable shared skills. Personal
     // profiles are interactive-user choices and are not automation policy.
     const managedSkillsManifest = await this.deps.resolveSkills(

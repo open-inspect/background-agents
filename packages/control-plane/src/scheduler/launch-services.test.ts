@@ -5,7 +5,10 @@ import type { RequestContext } from "../routes/shared";
 import { createLogger } from "../logger";
 import { HarnessAdmissionError } from "../harness-admission";
 import { ProviderAccountSelectionPolicyError } from "../model-provider-accounts/selection-policy";
-import { AutomationExecutionUnauthorizedError } from "./contracts";
+import {
+  AutomationExecutionUnauthorizedError,
+  AutomationRunNoLongerActiveError,
+} from "./contracts";
 import {
   AutomationRunLaunchService,
   type AutomationRunLaunchServiceDeps,
@@ -121,11 +124,15 @@ function launcherHarness() {
       markRunFirstPromptQueued: vi
         .fn<AutomationRunLaunchServiceDeps["store"]["markRunFirstPromptQueued"]>()
         .mockResolvedValue(undefined),
+      isRunActiveForSession: vi
+        .fn<AutomationRunLaunchServiceDeps["store"]["isRunActiveForSession"]>()
+        .mockResolvedValue(true),
     },
     sessions: { create: vi.fn<AutomationSessionService["create"]>().mockResolvedValue(undefined) },
     enqueueFirstPrompt: vi
       .fn<AutomationRunLaunchServiceDeps["enqueueFirstPrompt"]>()
       .mockResolvedValue(undefined),
+    cancelSession: vi.fn<AutomationRunLaunchServiceDeps["cancelSession"]>().mockResolvedValue(true),
     continuity: {
       releaseHeldPrompts: vi
         .fn<AutomationRunLaunchServiceDeps["continuity"]["releaseHeldPrompts"]>()
@@ -169,6 +176,28 @@ describe("AutomationRunLaunchService", () => {
     await service.launch(automation, child, input);
     expect(deps.sessions.create).not.toHaveBeenCalled();
     expect(deps.enqueueFirstPrompt).not.toHaveBeenCalled();
+  });
+
+  it("cancels the new session instead of prompting it when the run ended during creation", async () => {
+    const { deps, service, child, input } = launcherHarness();
+    deps.store.isRunActiveForSession.mockResolvedValue(false);
+    await service.launch(automation, child, input);
+    expect(deps.store.isRunActiveForSession).toHaveBeenCalledWith(child.id, "session-1");
+    expect(deps.cancelSession).toHaveBeenCalledExactlyOnceWith("session-1", automation.id);
+    expect(deps.enqueueFirstPrompt).not.toHaveBeenCalled();
+    expect(deps.store.updateRun).not.toHaveBeenCalled();
+    expect(deps.store.failLaunchOrRetry).not.toHaveBeenCalled();
+    expect(deps.store.markRunFirstPromptQueued).not.toHaveBeenCalled();
+  });
+
+  it("stops without recording a failure when the run ended before its session was created", async () => {
+    const { deps, service, child, input } = launcherHarness();
+    deps.sessions.create.mockRejectedValue(new AutomationRunNoLongerActiveError());
+    await service.launch(automation, child, input);
+    expect(deps.enqueueFirstPrompt).not.toHaveBeenCalled();
+    expect(deps.cancelSession).not.toHaveBeenCalled();
+    expect(deps.store.updateRun).not.toHaveBeenCalled();
+    expect(deps.store.failLaunchOrRetry).not.toHaveBeenCalled();
   });
 
   it("retries initialization failures with the attempt's backoff", async () => {
@@ -369,6 +398,13 @@ describe("AutomationSessionService", () => {
     input.automation = { ...automation, owner_team_id: team.id };
     await expect(service.create(input)).rejects.toThrow("missing its admitted target");
     expect(deps.resolveTarget).not.toHaveBeenCalled();
+    expect(deps.initializeSession).not.toHaveBeenCalled();
+  });
+
+  it("creates no session when the run stopped running after its claim", async () => {
+    const { deps, service, input } = sessionHarness();
+    deps.store.setRunExecutionDeadline.mockResolvedValue(false);
+    await expect(service.create(input)).rejects.toBeInstanceOf(AutomationRunNoLongerActiveError);
     expect(deps.initializeSession).not.toHaveBeenCalled();
   });
 

@@ -210,6 +210,7 @@ function createMockStore() {
     updateRun: vi.fn().mockResolvedValue(true),
     claimRunSession: vi.fn().mockResolvedValue(true),
     setRunExecutionDeadline: vi.fn().mockResolvedValue(true),
+    isRunActiveForSession: vi.fn().mockResolvedValue(true),
     completeTimedOutRun: vi.fn().mockResolvedValue(false),
     getById: vi.fn().mockResolvedValue(null),
     getRunById: vi.fn().mockResolvedValue(null),

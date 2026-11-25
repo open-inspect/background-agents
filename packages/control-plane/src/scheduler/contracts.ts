@@ -74,6 +74,18 @@ export class AutomationExecutionUnauthorizedError extends Error {
 }
 
 /**
+ * Raised when a run stops being active while its launch is still creating the session,
+ * for example because a newer event superseded it. The run is already terminal, so the
+ * launch stops without recording a failure.
+ */
+export class AutomationRunNoLongerActiveError extends Error {
+  constructor() {
+    super("Automation run stopped being active during its launch");
+    this.name = "AutomationRunNoLongerActiveError";
+  }
+}
+
+/**
  * Raised when the session a webhook sessionKey continues does not take the follow-up.
  * The sender sees the refusal instead of the delivery starting over in a fresh session.
  */

@@ -5,7 +5,10 @@ import type { AutomationRow, AutomationRunRow, AutomationStore } from "../db/aut
 import { HarnessAdmissionError } from "../harness-admission";
 import { ProviderAccountSelectionPolicyError } from "../model-provider-accounts/selection-policy";
 import type { Logger } from "../logger";
-import { AutomationExecutionUnauthorizedError } from "./contracts";
+import {
+  AutomationExecutionUnauthorizedError,
+  AutomationRunNoLongerActiveError,
+} from "./contracts";
 import type { AutomationSessionService } from "./automation-session-service";
 import type { FirstPromptInput, RunLaunch } from "./launch-contracts";
 import { DEPLOYMENT_DEFAULT_SANDBOX_SETTINGS, launchRetryDelayMs } from "./launch-policy";
@@ -13,10 +16,16 @@ import { DEPLOYMENT_DEFAULT_SANDBOX_SETTINGS, launchRetryDelayMs } from "./launc
 export interface AutomationRunLaunchServiceDeps {
   store: Pick<
     AutomationStore,
-    "claimRunSession" | "failLaunchOrRetry" | "updateRun" | "markRunFirstPromptQueued"
+    | "claimRunSession"
+    | "failLaunchOrRetry"
+    | "updateRun"
+    | "markRunFirstPromptQueued"
+    | "isRunActiveForSession"
   >;
   sessions: Pick<AutomationSessionService, "create">;
   enqueueFirstPrompt(input: FirstPromptInput): Promise<void>;
+  /** Stop a session whose run ended while it was created. Never throws. */
+  cancelSession(sessionId: string, automationId: string): Promise<boolean>;
   continuity: Pick<SessionContinuityService, "releaseHeldPrompts">;
   executionDeadlineMs(settings: SandboxSettings): number;
   clock: Pick<DateConstructor, "now">;
@@ -72,6 +81,13 @@ export class AutomationRunLaunchService {
           target: targetSnapshot && "target" in targetSnapshot ? targetSnapshot.target : undefined,
         },
       });
+      // A newer event can supersede the run while its session is created. The supersede's
+      // cancel finds no session yet, so stop the new one here instead of prompting it.
+      // A supersede after this check finds the session and cancels it itself.
+      if (!(await this.deps.store.isRunActiveForSession(child.id, sessionId))) {
+        await this.stopSessionOfEndedRun(child, sessionId);
+        return;
+      }
       // From here the session may take the prompt even when the call fails, and a second
       // session would run it twice, so a failure is no longer retried.
       promptSent = true;
@@ -86,8 +102,28 @@ export class AutomationRunLaunchService {
       child.session_id = sessionId;
       await this.releaseFollowUpsHeldDuringLaunch(child);
     } catch (e) {
+      if (e instanceof AutomationRunNoLongerActiveError) {
+        this.logLaunchStopped(child);
+        return;
+      }
       await this.recordFailure(child, e, launch.retryable && !promptSent);
     }
+  }
+
+  /** Cancel the session of a run that ended during its launch, leaving the run as it is. */
+  private async stopSessionOfEndedRun(child: AutomationRunRow, sessionId: string): Promise<void> {
+    const cancelled = await this.deps.cancelSession(sessionId, child.automation_id);
+    this.logLaunchStopped(child, { session_id: sessionId, cancelled });
+  }
+
+  private logLaunchStopped(child: AutomationRunRow, extra: Record<string, unknown> = {}): void {
+    this.deps.log.info("Automation run ended during its launch; launch stopped", {
+      event: "scheduler.launch_stopped_run_ended",
+      automation_id: child.automation_id,
+      invocation_id: child.invocation_id,
+      run_id: child.id,
+      ...extra,
+    });
   }
 
   /**

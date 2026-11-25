@@ -1270,6 +1270,18 @@ export class AutomationStore {
     return (result.meta?.changes ?? 0) > 0;
   }
 
+  /** Whether the run is still running on the session its launch claimed. */
+  async isRunActiveForSession(id: string, sessionId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 AS active FROM automation_runs
+         WHERE id = ? AND session_id = ? AND status = 'running'`
+      )
+      .bind(id, sessionId)
+      .first<{ active: number }>();
+    return row !== null;
+  }
+
   /**
    * Overturn a sweep-declared timeout with the completion callback that
    * eventually arrived. `execution_timeout` is the only terminal state the
