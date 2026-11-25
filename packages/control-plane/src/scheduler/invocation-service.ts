@@ -289,6 +289,16 @@ export class AutomationInvocationService {
         ? await this.deps.admission.resolveProviderAuth(automation)
         : { providerAuth: [] };
 
+    // Only a firing that can launch something replaces the run in flight. One whose
+    // provider routing was refused, or whose every target failed, takes its usual
+    // failure path and leaves the active run alone (or records the overlap skip).
+    const canLaunch =
+      !("error" in providerAuthSnapshot) &&
+      launchCandidates.some((child) => {
+        const target = launchTargets.get(child.id);
+        return !(target && "error" in target);
+      });
+
     const invocation: AutomationInvocationRow = {
       id: invocationId,
       automation_id: automation.id,
@@ -313,7 +323,7 @@ export class AutomationInvocationService {
         overlapScope,
         teamGrantsVersion,
         supersede:
-          supersedesOnInsert && overlapScope.kind === "concurrencyKey"
+          supersedesOnInsert && overlapScope.kind === "concurrencyKey" && canLaunch
             ? { concurrencyKey: overlapScope.concurrencyKey, now }
             : undefined,
         advanceSchedule:

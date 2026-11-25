@@ -191,9 +191,10 @@ Ask the agent to open one in a prompt.
     as a run of the same automation in progress ends that run, asks its session to stop, and starts
     a new one. Pull request, issue and workflow run events share a key per pull request, issue or
     run; issue comment events have a key per comment, so a new comment starts its own run instead of
-    replacing another comment's. Runs of other automations on the same pull request are not touched.
-    Stopping the session is best effort; if it fails, the old session may keep working while the new
-    run starts.
+    replacing another comment's. A refused event (authorization, grants or provider routing) or a
+    repeated delivery of the same event replaces nothing. Runs of other automations on the same pull
+    request are not touched. Stopping the session is best effort; if it fails, the old session may
+    keep working while the new run starts.
 
   The automation is created **enabled**, so a schedule starts firing at its next occurrence. No tool
   edits or pauses an automation, so create it with the schedule it should keep, and fix a mistake in

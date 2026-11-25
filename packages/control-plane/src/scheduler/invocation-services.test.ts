@@ -434,6 +434,20 @@ describe("AutomationInvocationService", () => {
       expect(deps.store.insertSkippedInvocation).not.toHaveBeenCalled();
     });
 
+    it("does not supersede for a firing whose provider routing was refused", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.admission.resolveProviderAuth.mockResolvedValue({ error: new Error("no account") });
+      deps.store.insertInvocationGuarded.mockResolvedValue({ inserted: false, superseded: [] });
+
+      await service.start(prEvent);
+
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ supersede: undefined })
+      );
+      expect(deps.cancelSession).not.toHaveBeenCalled();
+    });
+
     it("does not ask an automation without the setting to supersede", async () => {
       const { deps, service } = invocationHarness();
 
