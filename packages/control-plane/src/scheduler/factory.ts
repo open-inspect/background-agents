@@ -48,6 +48,8 @@ import { WebhookEventHandler } from "./webhook-event-handler";
 import { SlackChannelStore } from "../db/slack-channel-store";
 import { admitGitHubEvent } from "../automation/github-event-admission";
 import { enqueueAutomationFirstPrompt } from "./session-prompt";
+import { AutomationCommitStatusService } from "./commit-status-service";
+import { createSourceControlProviderFromEnv } from "../source-control";
 
 /** Assemble scheduler collaborators without starting database or network work. */
 export function createScheduler(
@@ -148,9 +150,17 @@ export function createScheduler(
     crypto: schedulerCrypto,
     log,
   });
+  let commitStatusProvider: ReturnType<typeof createSourceControlProviderFromEnv> | undefined;
+  const commitStatus = new AutomationCommitStatusService({
+    provider: () => (commitStatusProvider ??= createSourceControlProviderFromEnv(env)),
+    store,
+    webAppUrl: env.WEB_APP_URL,
+    log,
+  });
   const recovery = new AutomationRecoveryService({
     store,
     failures,
+    commitStatus,
     executionDeadlineMs: resolveDeadlineMs,
     clock: Date,
     log,
@@ -185,9 +195,11 @@ export function createScheduler(
     admitGitHubEvent: (event, fire) => admitGitHubEvent(db, event, fire, log),
     slack: slackEvents,
     webhook: webhookEvents,
+    commitStatus,
     log,
   });
   return new Scheduler({
+    commitStatus,
     store,
     events,
     continuity,

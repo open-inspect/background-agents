@@ -29,6 +29,7 @@ import type { AutomationInvocationService } from "./invocation-service";
 import type { AutomationFailureService } from "./failure-service";
 import type { AutomationRecoveryService } from "./recovery-service";
 import type { AutomationEventHandler } from "./event-handler";
+import type { AutomationCommitStatusService } from "./commit-status-service";
 import { TICK_CHILD_LAUNCH_BUDGET } from "./launch-policy";
 
 export interface SchedulerDeps {
@@ -45,6 +46,7 @@ export interface SchedulerDeps {
     | "completeTimedOutRun"
   >;
   slack: Pick<AutomationSlackService, "notifyCompletion">;
+  commitStatus: Pick<AutomationCommitStatusService, "publish">;
   invocations: Pick<AutomationInvocationService, "start" | "retryDue">;
   failures: Pick<AutomationFailureService, "applyInvocationOutcome">;
   recovery: Pick<AutomationRecoveryService, "recoverRuns">;
@@ -352,5 +354,14 @@ export class Scheduler {
     // coordinates live on the invocation. Only the terminal CAS winner owns
     // publication retries; retrying runComplete itself would be ignored.
     await this.deps.slack.notifyCompletion(run, body);
+    // The run's terminal state as just written (a correction is a completion).
+    await this.deps.commitStatus.publish(
+      {
+        ...run,
+        status: body.success ? "completed" : "failed",
+        failure_reason: body.success ? null : body.error || "Unknown error",
+      },
+      run.invocation_trigger_metadata
+    );
   }
 }

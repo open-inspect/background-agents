@@ -7,6 +7,7 @@ import {
 import type { Logger } from "../logger";
 import { DEPLOYMENT_DEFAULT_SANDBOX_SETTINGS } from "./launch-policy";
 import type { AutomationFailureService } from "./failure-service";
+import type { AutomationCommitStatusService } from "./commit-status-service";
 
 /** Threshold for detecting orphaned "starting" runs (5 minutes). */
 const ORPHAN_THRESHOLD_MS = 5 * 60 * 1000;
@@ -33,6 +34,7 @@ export interface AutomationRecoveryServiceDeps {
     | "getUncountedFailedInvocations"
   >;
   failures: Pick<AutomationFailureService, "applyInvocationOutcome">;
+  commitStatus: Pick<AutomationCommitStatusService, "refresh">;
   executionDeadlineMs(settings: SandboxSettings): number;
   clock: Pick<DateConstructor, "now">;
   log: Logger;
@@ -149,6 +151,9 @@ export class AutomationRecoveryService {
       await this.finalizationSweep();
       return;
     }
+
+    // A run the sweep failed would otherwise leave its commit status pending forever.
+    await this.deps.commitStatus.refresh(recoveredRuns);
 
     // Failure accounting: strikes are per INVOCATION (CAS-deduped), so two
     // stuck children of one fan-out cost one strike, not two.

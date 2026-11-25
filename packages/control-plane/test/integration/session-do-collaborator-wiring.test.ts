@@ -81,6 +81,7 @@ function stubSourceControlProvider(): SourceControlProvider {
     resolveCommit: () => notUsedHere("resolveCommit"),
     listTree: () => notUsedHere("listTree"),
     readBlob: () => notUsedHere("readBlob"),
+    createCommitStatus: () => notUsedHere("createCommitStatus"),
     buildManualPullRequestUrl: (config) =>
       `https://github.com/${config.owner}/${config.name}/pull/new/${config.targetBranch}...${config.sourceBranch}`,
     buildGitPushSpec: (config) => ({

@@ -6,6 +6,7 @@ import {
   listAutomationsResponseSchema,
   DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
   MAX_AUTOMATION_CONCURRENT_RUNS,
+  MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH,
   MAX_AUTOMATION_RETRIES,
   MAX_AUTOMATION_SANDBOX_TIMEOUT_MS,
   MIN_AUTOMATION_SANDBOX_TIMEOUT_MS,
@@ -32,6 +33,7 @@ const automation = {
   consecutiveFailures: 0,
   maxRetries: 0,
   maxConcurrentRuns: 1,
+  commitStatusContext: null,
   createdBy: "user-1",
   userId: USER_ID,
   ownerTeamId: null,
@@ -77,6 +79,31 @@ describe("listAutomationsResponseSchema", () => {
     });
     expect(result.automations[0]!.maxConcurrentRuns).toBe(DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS);
   });
+
+  it("reads an automation from a control plane that predates commit statuses as posting none", () => {
+    const { commitStatusContext: _commitStatusContext, ...legacy } = automation;
+    const result = listAutomationsResponseSchema.parse({
+      automations: [legacy],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(result.automations[0]!.commitStatusContext).toBeNull();
+  });
+
+  it.each([createAutomationRequestSchema, updateAutomationRequestSchema])(
+    "trims commitStatusContext and bounds it to MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH",
+    (schema) => {
+      const parse = (commitStatusContext: unknown) =>
+        schema.safeParse({ name: "Review", instructions: "Run", commitStatusContext });
+      expect(parse(" open-inspect ").data?.commitStatusContext).toBe("open-inspect");
+      expect(parse(null).success).toBe(true);
+      expect(parse("x".repeat(MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH)).success).toBe(true);
+      expect(parse("x".repeat(MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH + 1)).success).toBe(
+        false
+      );
+      expect(parse("   ").success).toBe(false);
+    }
+  );
 
   it("reads an automation from a control plane that predates one-shot schedules", () => {
     const { scheduleOnceAt: _scheduleOnceAt, ...legacy } = automation;

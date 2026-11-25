@@ -306,6 +306,16 @@ actor; comments offer actor. PR opened and PR updated also offer **Draft**. Chan
 removes conditions the new one cannot answer, and the form says which. GitHub webhook payloads carry
 no file list, so path-pattern filtering is not offered for any GitHub event.
 
+**Commit status** (`commitStatusContext`) makes a PR Opened, PR Updated or PR Ready for Review
+automation report each run on the pull request's head commit under that name, for example
+`open-inspect`: `pending` when the run starts, then `success` or `failure` when it finishes,
+including runs the recovery sweep fails. The status links to the run's session when `WEB_APP_URL` is
+set. Branch protection can then require it. The head commit is recorded when the event fires, so a
+later push leaves the older commit's status alone and the new run reports on the new head. A skipped
+run posts nothing. Posting is best effort: a refused post is logged and never fails the run. It
+needs the GitHub App's **Commit statuses: Read & Write** permission. Other triggers and PR Closed
+reject the field.
+
 A pull request that an automation run's own prompt opens is authored by the GitHub App, so its PR
 opened event carries the App bot login (for example `my-app[bot]`) as actor, not the executor's; an
 actor condition that names the executor no longer matches that event.

@@ -187,6 +187,8 @@ Ask the agent to open one in a prompt.
   - A `webhook` automation returns the key that calls it, shown once.
   - A recurring schedule may set `max_concurrent_runs` (1–10, default 1): how many scheduled and
     manual firings may be in progress at once.
+  - A `github_event` trigger on PR Opened, PR Updated or PR Ready for Review may set
+    `commit_status_context`, the name of a commit status each run posts on the PR's head commit.
 
   The automation is created **enabled**, so a schedule starts firing at its next occurrence. No tool
   edits or pauses an automation, so create it with the schedule it should keep, and fix a mistake in

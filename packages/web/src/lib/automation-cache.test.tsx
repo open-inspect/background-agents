@@ -64,6 +64,7 @@ const original: AutomationListItem = {
   maxRetries: 0,
   sandboxTimeoutMs: null,
   maxConcurrentRuns: 1,
+  commitStatusContext: null,
   createdBy: "user-1",
   userId: null,
   ownerTeamId: "team-1",

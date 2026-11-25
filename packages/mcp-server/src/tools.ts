@@ -684,6 +684,12 @@ export const TOOLS: ToolDefinition[] = [
           "firing is skipped and trigger_automation is refused. Recurring schedules only; " +
           "defaults to 1, one at a time."
       ),
+      commit_status_context: createAutomationRequestSchema.shape.commitStatusContext.describe(
+        "GitHub PR Opened, PR Updated or PR Ready for Review triggers only. Name of a commit " +
+          "status (for example open-inspect) each run posts on the pull request's head commit: " +
+          "pending while it runs, then success or failure, so branch protection can require it. " +
+          "Omit to post none."
+      ),
     },
     run: (client, args) => {
       const triggerType = args.trigger_type;
@@ -720,6 +726,7 @@ export const TOOLS: ToolDefinition[] = [
         model: args.model,
         reasoningEffort: args.reasoning_effort,
         maxConcurrentRuns: args.max_concurrent_runs,
+        commitStatusContext: args.commit_status_context,
       } satisfies CreateAutomationRequest);
     },
   }),

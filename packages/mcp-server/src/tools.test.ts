@@ -555,6 +555,23 @@ describe("create_automation", () => {
     ).rejects.toThrow();
   });
 
+  it("forwards commit_status_context for a PR event automation", async () => {
+    const { client, post } = fakeClient({ post: () => ({ automation: { id: "auto_1" } }) });
+
+    await tool("create_automation").run(client, {
+      name: "Review pushes",
+      instructions: "Review the new commits",
+      trigger_type: "github_event",
+      event_type: "pull_request.synchronize",
+      commit_status_context: "open-inspect",
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      "/automations",
+      expect.objectContaining({ commitStatusContext: "open-inspect" })
+    );
+  });
+
   it("keeps the caller's timezone rather than the default", async () => {
     const { client, post } = fakeClient({ post: () => ({ automation: { id: "auto_1" } }) });
 

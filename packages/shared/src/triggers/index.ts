@@ -64,6 +64,8 @@ export {
   GITHUB_WEBHOOK_EVENT_CATALOG,
   getGitHubEventConditionTypes,
   isGitHubConditionSupported,
+  GITHUB_COMMIT_STATUS_EVENT_TYPES,
+  githubEventSupportsCommitStatus,
 } from "./github";
 
 // Sentry source module

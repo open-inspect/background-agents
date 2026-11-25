@@ -107,6 +107,8 @@ export interface AutomationRow {
    * rows built for insert may omit it; the column defaults to DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
    */
   max_concurrent_runs?: number;
+  /** Commit status context posted on the PR head for each run; null or absent posts none. */
+  commit_status_context?: string | null;
   created_by: string;
   user_id: string | null;
   owner_team_id: string | null;
@@ -251,6 +253,8 @@ export interface HeldPromptRow {
 export interface EnrichedRunRow extends AutomationRunRow {
   session_title: string | null;
   artifact_summary: string | null;
+  /** The invocation's trigger metadata; only `getRunById` selects it. */
+  invocation_trigger_metadata?: string | null;
 }
 
 export interface AutomationRepositoryRow {
@@ -402,6 +406,7 @@ export function toAutomation(
     maxRetries: row.max_retries ?? 0,
     sandboxTimeoutMs: row.sandbox_timeout_ms ?? null,
     maxConcurrentRuns: row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+    commitStatusContext: row.commit_status_context ?? null,
     createdBy: row.created_by,
     userId: row.user_id,
     ownerTeamId: row.owner_team_id,
@@ -558,8 +563,8 @@ export class AutomationStore {
           trigger_type, schedule_cron, schedule_tz, harness, model, reasoning_effort, enabled, next_run_at,
           consecutive_failures, created_by, user_id, created_at, updated_at, deleted_at,
            event_type, trigger_config, trigger_auth_data, owner_team_id, schedule_once_at, max_retries,
-           sandbox_timeout_ms, max_concurrent_runs)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           sandbox_timeout_ms, max_concurrent_runs, commit_status_context)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         row.id,
@@ -586,7 +591,8 @@ export class AutomationStore {
         row.schedule_once_at,
         row.max_retries ?? 0,
         row.sandbox_timeout_ms ?? null,
-        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS
+        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+        row.commit_status_context ?? null
       );
   }
 
@@ -812,6 +818,7 @@ export class AutomationStore {
       "max_retries",
       "sandbox_timeout_ms",
       "max_concurrent_runs",
+      "commit_status_context",
       "event_type",
       "trigger_config",
       "trigger_auth_data",
@@ -1441,9 +1448,11 @@ export class AutomationStore {
         `SELECT
            r.*,
            s.title as session_title,
-           NULL as artifact_summary
+           NULL as artifact_summary,
+           i.trigger_metadata as invocation_trigger_metadata
          FROM automation_runs r
          LEFT JOIN sessions s ON r.session_id = s.id
+         LEFT JOIN automation_invocations i ON i.id = r.invocation_id
          WHERE r.id = ? AND r.automation_id = ?`
       )
       .bind(runId, automationId)

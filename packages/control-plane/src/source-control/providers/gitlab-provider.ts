@@ -600,6 +600,14 @@ export class GitLabSourceControlProvider implements SourceControlProvider {
     }
   }
 
+  async createCommitStatus(): Promise<void> {
+    // Automation commit statuses come from GitHub Event triggers only.
+    throw new SourceControlProviderError(
+      "Commit statuses are not supported for GitLab",
+      "permanent"
+    );
+  }
+
   async getBranchHead(
     config: GetRepositoryConfig & { branch: string },
     _scope: CredentialScope
