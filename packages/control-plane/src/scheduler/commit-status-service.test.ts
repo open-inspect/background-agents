@@ -227,17 +227,18 @@ describe("AutomationCommitStatusService", () => {
 
     await expect(service.publishAndReconcile(run, metadata)).resolves.toBeUndefined();
 
-    expect(createCommitStatus).toHaveBeenCalledTimes(4);
+    expect(createCommitStatus).toHaveBeenCalledTimes(3);
     // The last post is re-read too, so a run that changed after it is seen.
-    expect(getRunById).toHaveBeenCalledTimes(4);
+    expect(getRunById).toHaveBeenCalledTimes(3);
   });
 
-  it("re-reads after its last post and catches a success that landed behind failed posts", async () => {
+  it("still reconciles a late success after refused posts used their retries", async () => {
     const { service, createCommitStatus, getRunById } = harness();
-    // Three posts are refused while the run reads failed; the fourth goes through,
-    // then the late success shows up on the read after it.
+    // pending goes through; two `failure` posts are refused; the third `failure` is
+    // accepted but lands after the late success. The read after it sees the success,
+    // and the refused retries have not used up the post that restores it.
     createCommitStatus
-      .mockRejectedValueOnce(new Error("502"))
+      .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("502"))
       .mockRejectedValueOnce(new Error("502"));
     const timedOut = {
@@ -254,8 +255,14 @@ describe("AutomationCommitStatusService", () => {
 
     await service.publishAndReconcile(run, metadata);
 
-    expect(createCommitStatus).toHaveBeenCalledTimes(4);
-    expect(getRunById).toHaveBeenCalledTimes(4);
+    expect(createCommitStatus.mock.calls.map(([status]) => status.state)).toEqual([
+      "pending",
+      "failure",
+      "failure",
+      "failure",
+      "success",
+    ]);
+    expect(getRunById).toHaveBeenCalledTimes(5);
   });
 
   it("posts once when the run is still in progress after the post", async () => {

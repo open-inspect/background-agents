@@ -15,12 +15,15 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<AutomationRunRow["status"]> = new Set([
 ]);
 
 /**
- * Posts one {@link AutomationCommitStatusService.publishAndReconcile} call may make.
- * A run reaches a terminal state once and is corrected at most once more, so three
- * posts (the caller's state, the terminal state, the correction) settle any run whose
- * posts succeed; the fourth leaves room for one failed post.
+ * Posts that went through, per {@link AutomationCommitStatusService.publishAndReconcile}
+ * call. A run reaches a terminal state once and is corrected at most once more, so the
+ * caller's state, the terminal state and the correction settle any run; the cap only
+ * guards against a store that keeps changing under it.
  */
-const MAX_COMMIT_STATUS_POSTS = 4;
+const MAX_ACCEPTED_COMMIT_STATUS_POSTS = 3;
+
+/** Posts GitHub refused, per call, before it stops retrying and logs the status unsettled. */
+const MAX_REFUSED_COMMIT_STATUS_POSTS = 3;
 
 /** GitHub caps a commit status description at 140 characters. */
 const COMMIT_STATUS_DESCRIPTION_MAX_LENGTH = 140;
@@ -171,9 +174,11 @@ export class AutomationCommitStatusService {
    * before the re-read, that state is posted and re-read in turn; if it changes
    * after, the writer of that change posts later still. A run changes terminal
    * state at most once (a timeout's late-success correction), so this settles
-   * within a few posts. Posting stops after {@link MAX_COMMIT_STATUS_POSTS}; the
-   * last post is still re-read, and a status that has not settled by then (posts
-   * kept failing) is logged as `scheduler.commit_status_unsettled`. Never throws.
+   * within a few posts. Refused posts and accepted posts have separate limits
+   * ({@link MAX_REFUSED_COMMIT_STATUS_POSTS}, {@link MAX_ACCEPTED_COMMIT_STATUS_POSTS}), so
+   * failed retries never use up the posts that reconcile a late outcome. Every post,
+   * the last included, is re-read; a status still unsettled when a limit is reached
+   * is logged as `scheduler.commit_status_unsettled`. Never throws.
    */
   async publishAndReconcile(
     run: PublishableRun,
@@ -181,7 +186,8 @@ export class AutomationCommitStatusService {
   ): Promise<void> {
     if (!parseCommitStatusTarget(triggerMetadata ?? null)) return;
     let posted = await this.publish(run, triggerMetadata);
-    let posts = 1;
+    let accepted = posted === null ? 0 : 1;
+    let refused = posted === null ? 1 : 0;
     let metadata = triggerMetadata;
     try {
       for (;;) {
@@ -189,7 +195,10 @@ export class AutomationCommitStatusService {
         if (!current || !TERMINAL_RUN_STATUSES.has(current.status)) return;
         const want = commitStatusForRun(current)?.state;
         if (want === posted) return;
-        if (posts >= MAX_COMMIT_STATUS_POSTS) {
+        if (
+          accepted >= MAX_ACCEPTED_COMMIT_STATUS_POSTS ||
+          refused >= MAX_REFUSED_COMMIT_STATUS_POSTS
+        ) {
           this.deps.log.warn("Automation commit status did not settle", {
             event: "scheduler.commit_status_unsettled",
             automation_id: run.automation_id,
@@ -201,7 +210,8 @@ export class AutomationCommitStatusService {
         }
         metadata = current.invocation_trigger_metadata ?? metadata;
         posted = await this.publish(current, metadata);
-        posts++;
+        if (posted === null) refused++;
+        else accepted++;
       }
     } catch (error) {
       this.deps.log.warn("Automation commit status reconcile failed", {
