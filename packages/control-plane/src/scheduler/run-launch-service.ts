@@ -83,7 +83,6 @@ export class AutomationRunLaunchService {
       });
       // A newer event can supersede the run while its session is created. The supersede's
       // cancel finds no session yet, so stop the new one here instead of prompting it.
-      // A supersede after this check finds the session and cancels it itself.
       if (!(await this.deps.store.isRunActiveForSession(child.id, sessionId))) {
         await this.stopSessionOfEndedRun(child, sessionId);
         return;
@@ -98,6 +97,14 @@ export class AutomationRunLaunchService {
         executionPrincipal: launch.executionPrincipal,
         instructionsOverride: launch.instructionsOverride,
       });
+      // A supersede between the check above and the enqueue sends its cancel before the
+      // prompt is queued, so that cancel can miss the prompt. Checking again here means a
+      // cancel always follows the enqueue: this one, or the supersede's own when it commits
+      // after this check.
+      if (await this.runEndedAfterFirstPrompt(child, sessionId)) {
+        await this.stopSessionOfEndedRun(child, sessionId);
+        return;
+      }
       child.status = "running";
       child.session_id = sessionId;
       await this.releaseFollowUpsHeldDuringLaunch(child);
@@ -107,6 +114,29 @@ export class AutomationRunLaunchService {
         return;
       }
       await this.recordFailure(child, e, launch.retryable && !promptSent);
+    }
+  }
+
+  /**
+   * Whether the run stopped being active by the time its first prompt was queued. A failed
+   * read counts as still active: the prompt is queued, so the launch went through, and a
+   * supersede that committed meanwhile still sends its own cancel.
+   */
+  private async runEndedAfterFirstPrompt(
+    child: AutomationRunRow,
+    sessionId: string
+  ): Promise<boolean> {
+    try {
+      return !(await this.deps.store.isRunActiveForSession(child.id, sessionId));
+    } catch (error) {
+      this.deps.log.warn("Failed to re-check the run after its first prompt", {
+        event: "scheduler.launch_recheck_failed",
+        automation_id: child.automation_id,
+        run_id: child.id,
+        session_id: sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
     }
   }
 

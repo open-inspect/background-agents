@@ -190,6 +190,36 @@ describe("AutomationRunLaunchService", () => {
     expect(deps.store.markRunFirstPromptQueued).not.toHaveBeenCalled();
   });
 
+  it("cancels the session after queuing its prompt when the run was superseded meanwhile", async () => {
+    const { deps, service, child, input } = launcherHarness();
+    // Active when checked before the prompt; superseded by the time it was queued.
+    deps.store.isRunActiveForSession.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await service.launch(automation, child, input);
+    expect(deps.enqueueFirstPrompt).toHaveBeenCalledOnce();
+    expect(deps.cancelSession).toHaveBeenCalledExactlyOnceWith("session-1", automation.id);
+    expect(deps.enqueueFirstPrompt.mock.invocationCallOrder[0]).toBeLessThan(
+      deps.cancelSession.mock.invocationCallOrder[0]
+    );
+    expect(deps.store.isRunActiveForSession).toHaveBeenCalledTimes(2);
+    expect(deps.store.markRunFirstPromptQueued).not.toHaveBeenCalled();
+    expect(deps.continuity.releaseHeldPrompts).not.toHaveBeenCalled();
+    expect(deps.store.updateRun).not.toHaveBeenCalled();
+    expect(deps.store.failLaunchOrRetry).not.toHaveBeenCalled();
+    expect(child.status).not.toBe("running");
+  });
+
+  it("keeps a launched run running when the re-check after its prompt fails", async () => {
+    const { deps, service, child, input } = launcherHarness();
+    deps.store.isRunActiveForSession
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error("D1 unavailable"));
+    await service.launch(automation, child, input);
+    expect(deps.cancelSession).not.toHaveBeenCalled();
+    expect(deps.store.updateRun).not.toHaveBeenCalled();
+    expect(deps.store.markRunFirstPromptQueued).toHaveBeenCalledOnce();
+    expect(child).toMatchObject({ status: "running", session_id: "session-1" });
+  });
+
   it("stops without recording a failure when the run ended before its session was created", async () => {
     const { deps, service, child, input } = launcherHarness();
     deps.sessions.create.mockRejectedValue(new AutomationRunNoLongerActiveError());
