@@ -41,7 +41,7 @@
     "build:base-snapshot-cleanup": "npm run --silent build -w @open-inspect/shared && tsc --noEmit -p scripts/tsconfig.base-snapshot-cleanup.json && esbuild scripts/cleanup-base-snapshots.mjs --bundle --platform=node --format=esm --packages=external --outfile=dist/cleanup-base-snapshots.mjs"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.6",
     "@vitest/coverage-istanbul": "^5.1.0",
     "@vitest/coverage-v8": "^5.1.0",
     "esbuild": "^0.28.1",
