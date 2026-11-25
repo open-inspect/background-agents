@@ -216,6 +216,42 @@ describe("AutomationCommitStatusService", () => {
     expect(getRunById).toHaveBeenCalledTimes(3);
   });
 
+  it("ends on success when a late success posts while the timeout's failure post is in flight", async () => {
+    const { service, createCommitStatus, getRunById } = harness();
+    let stored: EnrichedRunRow = {
+      ...run,
+      status: "failed",
+      failure_reason: "Timed out",
+      invocation_trigger_metadata: metadata,
+    };
+    getRunById.mockImplementation(async () => stored);
+    // GitHub keeps the status that lands last, so record the order posts land in.
+    const landed: string[] = [];
+    let releaseFailure!: () => void;
+    const failureHeld = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    createCommitStatus.mockImplementation(async (status) => {
+      if (status.state === "failure" && !landed.includes("failure")) await failureHeld;
+      landed.push(status.state);
+    });
+
+    // The sweep posts the timeout's failure; GitHub holds it.
+    const sweep = service.publishAndReconcile(stored, metadata);
+    await vi.waitFor(() => expect(createCommitStatus).toHaveBeenCalledTimes(1));
+    // The late success corrects the run and posts success while failure is held.
+    stored = { ...stored, status: "completed", failure_reason: null };
+    await service.publishAndReconcile(stored, metadata);
+    expect(landed).toEqual(["success"]);
+
+    // The held failure lands over the success; the sweep's re-read must correct it.
+    releaseFailure();
+    await sweep;
+
+    expect(landed).toEqual(["success", "failure", "success"]);
+    expect(landed.at(-1)).toBe("success");
+  });
+
   it("stops re-posting after a bounded number of rounds when posts keep failing", async () => {
     const { service, createCommitStatus, getRunById } = harness();
     createCommitStatus.mockRejectedValue(new Error("502 Bad Gateway"));
