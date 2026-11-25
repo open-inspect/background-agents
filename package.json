@@ -50,7 +50,7 @@
     "lint-staged": "^17.6.0",
     "oxlint": "^1.95.0",
     "prettier": "^3.9.10",
-    "typescript": "^5.8.0",
+    "typescript": "^7.0.2",
     "vitest": "^5.1.0",
     "wrangler": "^4.160.0"
   },
