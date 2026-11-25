@@ -340,8 +340,8 @@ became active after the overlap pre-check is replaced too. Once the new firing i
 `skip_reason = 'superseded'` in the same batch as the insert, under the same team-grants guard and
 only while the firing's `trigger_key` is unused. After the batch commits, their sessions are
 cancelled (best effort). A launch whose run stops running before its session exists creates none
-(`setRunExecutionDeadline` is status-guarded), and one that stops while the session is created
-cancels that session instead of sending its first prompt (`isRunActiveForSession`), logging
+(`setRunExecutionDeadline` is status-guarded), and one that stops while the session is created sends
+that session one best-effort cancel instead of its first prompt (`isRunActiveForSession`), logging
 `scheduler.launch_stopped_run_ended`. Other trigger types reject it.
 
 #### Webhook triggers
