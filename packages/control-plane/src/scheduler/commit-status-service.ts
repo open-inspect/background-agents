@@ -15,10 +15,12 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<AutomationRunRow["status"]> = new Set([
 ]);
 
 /**
- * Re-read rounds after a post. A run reaches a terminal state once and is corrected
- * at most once more, so two rounds settle it; the third only absorbs a failed post.
+ * Posts one {@link AutomationCommitStatusService.publishAndReconcile} call may make.
+ * A run reaches a terminal state once and is corrected at most once more, so three
+ * posts (the caller's state, the terminal state, the correction) settle any run whose
+ * posts succeed; the fourth leaves room for one failed post.
  */
-const MAX_RECONCILE_ROUNDS = 3;
+const MAX_COMMIT_STATUS_POSTS = 4;
 
 /** GitHub caps a commit status description at 140 characters. */
 const COMMIT_STATUS_DESCRIPTION_MAX_LENGTH = 140;
@@ -169,7 +171,9 @@ export class AutomationCommitStatusService {
    * before the re-read, that state is posted and re-read in turn; if it changes
    * after, the writer of that change posts later still. A run changes terminal
    * state at most once (a timeout's late-success correction), so this settles
-   * within a few rounds. Never throws.
+   * within a few posts. Posting stops after {@link MAX_COMMIT_STATUS_POSTS}; the
+   * last post is still re-read, and a status that has not settled by then (posts
+   * kept failing) is logged as `scheduler.commit_status_unsettled`. Never throws.
    */
   async publishAndReconcile(
     run: PublishableRun,
@@ -177,14 +181,27 @@ export class AutomationCommitStatusService {
   ): Promise<void> {
     if (!parseCommitStatusTarget(triggerMetadata ?? null)) return;
     let posted = await this.publish(run, triggerMetadata);
+    let posts = 1;
     let metadata = triggerMetadata;
     try {
-      for (let round = 0; round < MAX_RECONCILE_ROUNDS; round++) {
+      for (;;) {
         const current = await this.deps.store.getRunById(run.automation_id, run.id);
         if (!current || !TERMINAL_RUN_STATUSES.has(current.status)) return;
-        if (commitStatusForRun(current)?.state === posted) return;
+        const want = commitStatusForRun(current)?.state;
+        if (want === posted) return;
+        if (posts >= MAX_COMMIT_STATUS_POSTS) {
+          this.deps.log.warn("Automation commit status did not settle", {
+            event: "scheduler.commit_status_unsettled",
+            automation_id: run.automation_id,
+            run_id: run.id,
+            posted_state: posted,
+            run_state: want,
+          });
+          return;
+        }
         metadata = current.invocation_trigger_metadata ?? metadata;
         posted = await this.publish(current, metadata);
+        posts++;
       }
     } catch (error) {
       this.deps.log.warn("Automation commit status reconcile failed", {
