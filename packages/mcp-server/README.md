@@ -188,7 +188,10 @@ Ask the agent to open one in a prompt.
   - A recurring schedule may set `max_concurrent_runs` (1–10, default 1): how many scheduled and
     manual firings may be in progress at once.
   - A `github_event` trigger may set `cancel_in_progress`: a new event for a pull request, issue or
-    workflow run that already has a run in progress stops that run and starts a new one.
+    workflow run that already has a run of the same automation in progress ends that run, asks its
+    session to stop, and starts a new one. Runs of other automations on the same pull request are
+    not touched. Stopping the session is best effort; if it fails, the old session may keep working
+    while the new run starts.
 
   The automation is created **enabled**, so a schedule starts firing at its next occurrence. No tool
   edits or pauses an automation, so create it with the schedule it should keep, and fix a mistake in

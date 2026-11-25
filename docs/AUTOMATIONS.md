@@ -657,12 +657,13 @@ continues the first run's session rather than overlapping it.
 
 GitHub Event automations can turn on **Replace the run in progress** (`cancelInProgress`, default
 off). A new event whose concurrency key already has a run in progress then marks that run
-**Skipped** with reason `superseded`, cancels its sessions, and starts its own run, so the newest
-push to a pull request wins rather than losing. The replacement happens only after the new firing
-passes authorization and team admission, so a refused event never stops a run. It applies within one
-automation; events for other automations on the same pull request are unaffected. A superseded run
-neither adds nor clears an auto-pause failure. `cancelInProgress` is rejected for anything but a
-GitHub Event trigger.
+**Skipped** with reason `superseded`, asks its sessions to stop (best effort: a failed cancel can
+leave an old session working until it finishes on its own), and starts its own run, so the newest
+push to a pull request wins rather than losing. The replacement commits in the same batch as the new
+firing's insert, so an event that is refused (authorization, team admission, stale grants) or
+deduplicated never stops a run. It applies within one automation; events for other automations on
+the same pull request are unaffected. A superseded run neither adds nor clears an auto-pause
+failure. `cancelInProgress` is rejected for anything but a GitHub Event trigger.
 
 Slack Message triggers key concurrency by thread. Replies in a thread are not skipped — until the
 session has been idle for 7 days they continue the same session (while the run starts, during it,

@@ -334,9 +334,10 @@ firing holds one slot; a firing at the bound is skipped (schedule) or rejected w
 One-shots and other trigger types keep the default.
 
 A `github_event` automation's `cancelInProgress` (default `false`) turns a blocked firing into a
-replacement: once the new firing is authorized, the active runs for its concurrency key are marked
-`skipped` with `skip_reason = 'superseded'`, their sessions are cancelled, and the new invocation
-starts. Other trigger types reject it.
+replacement. Once the new firing is authorized, `insertInvocationGuarded` marks the automation's
+active runs for its concurrency key `skipped` with `skip_reason = 'superseded'` in the same batch as
+the insert, under the same team-grants guard and only while the firing's `trigger_key` is unused.
+After the batch commits, their sessions are cancelled (best effort). Other trigger types reject it.
 
 #### Webhook triggers
 

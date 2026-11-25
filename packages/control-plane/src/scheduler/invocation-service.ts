@@ -13,6 +13,7 @@ import {
   type AutomationRepositoryInsert,
   type AutomationEnvironmentRow,
   type TeamGrantsVersion,
+  type SupersededRun,
 } from "../db/automation-store";
 import type { TeamStore } from "../db/teams";
 import type { AutomationExecutionAuthorizationRequest } from "../automation/authorization-guard";
@@ -96,7 +97,6 @@ export interface AutomationInvocationServiceDeps {
     | "getById"
     | "getRetriesToSettle"
     | "getActiveRunForKey"
-    | "supersedeActiveRunsForKey"
     | "getEnvironmentsForAutomation"
     | "getInvocationIdByTriggerKey"
     | "getRepositoriesForAutomation"
@@ -301,17 +301,18 @@ export class AutomationInvocationService {
       updated_at: now,
     };
 
-    if (replacesActiveRun && overlapScope.kind === "concurrencyKey") {
-      await this.supersedeActiveRuns(automation.id, overlapScope.concurrencyKey, invocationId);
-    }
-
     let inserted: boolean;
+    let superseded: SupersededRun[] = [];
     try {
-      ({ inserted } = await store.insertInvocationGuarded({
+      ({ inserted, superseded = [] } = await store.insertInvocationGuarded({
         invocation,
         children,
         overlapScope,
         teamGrantsVersion,
+        supersede:
+          replacesActiveRun && overlapScope.kind === "concurrencyKey"
+            ? { concurrencyKey: overlapScope.concurrencyKey, now }
+            : undefined,
         advanceSchedule:
           source === "schedule" &&
           params.scheduledAt !== undefined &&
@@ -338,6 +339,13 @@ export class AutomationInvocationService {
         };
       }
       throw e;
+    }
+
+    // Only after the batch committed: the replaced runs are already terminal,
+    // so a cancel that fails leaves a session finishing unobserved, never two
+    // active runs for one key.
+    if (superseded.length > 0) {
+      await this.cancelSupersededSessions(automation.id, superseded, invocationId);
     }
 
     if (!inserted && teamGrantsVersion) {
@@ -454,22 +462,12 @@ export class AutomationInvocationService {
     return this.recordSkip({ ...params, source: "event" }, skipReason);
   }
 
-  /**
-   * End the automation's active runs for a concurrency key so the firing
-   * `replacedBy` can take their place, then ask their sessions to stop. A run
-   * is terminal before its session is cancelled, so a cancel that fails or
-   * times out leaves a session finishing unobserved, never a second active run.
-   */
-  private async supersedeActiveRuns(
+  /** Ask the sessions of runs a replacing firing ended to stop. Never throws. */
+  private async cancelSupersededSessions(
     automationId: string,
-    concurrencyKey: string,
+    superseded: SupersededRun[],
     replacedBy: string
   ): Promise<void> {
-    const superseded = await this.deps.store.supersedeActiveRunsForKey(
-      automationId,
-      concurrencyKey,
-      this.deps.clock.now()
-    );
     const outcomes = await Promise.all(
       superseded.map(async (run) => ({
         run,

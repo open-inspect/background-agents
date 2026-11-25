@@ -289,6 +289,9 @@ export interface AutomationEnvironmentRow {
  */
 export type InvocationActorKind = "person" | "bot" | "system" | "unknown";
 
+/** A run a replacing firing ended, as the supersede update left it. */
+export type SupersededRun = Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">;
+
 export interface AutomationInvocationRow {
   id: string;
   automation_id: string;
@@ -1562,12 +1565,51 @@ export class AutomationStore {
     advanceSchedule?: ScheduleAdvance;
     /** Team grants version the targets were authorized against; a change refuses admission. */
     teamGrantsVersion?: TeamGrantsVersion;
-  }): Promise<{ inserted: boolean }> {
+    /**
+     * Replace the automation's active runs for this concurrency key instead of
+     * yielding to them. They are marked skipped in the same batch as the insert,
+     * so a firing that is refused (stale grants) or deduplicated (its trigger key
+     * is already recorded) leaves them running.
+     */
+    supersede?: { concurrencyKey: string; now: number };
+  }): Promise<{ inserted: boolean; superseded?: SupersededRun[] }> {
     const invocation = params.invocation;
     const overlap = this.overlapPredicate(invocation.automation_id, params.overlapScope);
     const grantsGuard = teamGrantsGuard(params.teamGrantsVersion);
     const scheduleGuard = this.scheduledInvocationGuard(invocation);
     const statements: SqlStatement[] = [];
+    if (params.supersede) {
+      // RETURNING reads the rows as written, so a session a launch claimed just
+      // before this update is returned and cancelled; a claim after it fails,
+      // since claims require a starting run.
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE automation_runs SET status = 'skipped', skip_reason = ?, completed_at = ?
+             WHERE automation_id = ?
+               AND status IN ${ACTIVE_RUN_STATUSES_SQL}
+               AND invocation_id IN (
+                 SELECT id FROM automation_invocations
+                 WHERE automation_id = ? AND concurrency_key = ?
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM automation_invocations WHERE automation_id = ? AND trigger_key = ?
+               ) ${grantsGuard.sql}
+             RETURNING id, invocation_id, session_id`
+          )
+          .bind(
+            AUTOMATION_RUN_SUPERSEDED_SKIP_REASON,
+            params.supersede.now,
+            invocation.automation_id,
+            invocation.automation_id,
+            params.supersede.concurrencyKey,
+            invocation.automation_id,
+            invocation.trigger_key,
+            ...grantsGuard.params
+          )
+      );
+    }
+    const insertIndex = statements.length;
     statements.push(
       this.db
         .prepare(
@@ -1636,7 +1678,9 @@ export class AutomationStore {
     }
 
     const results = await this.db.batch(statements);
-    return { inserted: (results[0]?.meta?.changes ?? 0) > 0 };
+    const inserted = (results[insertIndex]?.meta?.changes ?? 0) > 0;
+    if (!params.supersede) return { inserted };
+    return { inserted, superseded: (results[0]?.results ?? []) as SupersededRun[] };
   }
 
   /**
@@ -2126,45 +2170,6 @@ export class AutomationStore {
       .bind(repoOwner.toLowerCase(), repoName.toLowerCase(), triggerType, eventType)
       .all<AutomationRow>();
     return (result.results || []).map(withValidatedOwnerTeam);
-  }
-
-  /**
-   * End every active run of the automation for a concurrency key so a newer event can replace
-   * it: each one is marked skipped with AUTOMATION_RUN_SUPERSEDED_SKIP_REASON. A superseded run
-   * is neither a success nor a failure, so it never resets or adds to the auto-pause streak.
-   *
-   * Each transition is guarded on the run still being active, so a run that finished, or that a
-   * concurrent firing already superseded, is left alone and not returned. The caller cancels the
-   * returned runs' sessions; their later completion callbacks are ignored, as for any run that
-   * is no longer active.
-   */
-  async supersedeActiveRunsForKey(
-    automationId: string,
-    concurrencyKey: string,
-    now: number
-  ): Promise<Array<Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">>> {
-    const active = await this.db
-      .prepare(
-        `SELECT r.id, r.invocation_id, r.session_id FROM automation_runs r
-         JOIN automation_invocations i ON i.id = r.invocation_id
-         WHERE r.automation_id = ?
-           AND i.concurrency_key = ?
-           AND r.status IN ${ACTIVE_RUN_STATUSES_SQL}`
-      )
-      .bind(automationId, concurrencyKey)
-      .all<Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">>();
-    const superseded: Array<Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">> = [];
-    for (const run of active.results || []) {
-      const result = await this.db
-        .prepare(
-          `UPDATE automation_runs SET status = 'skipped', skip_reason = ?, completed_at = ?
-           WHERE id = ? AND status IN ${ACTIVE_RUN_STATUSES_SQL}`
-        )
-        .bind(AUTOMATION_RUN_SUPERSEDED_SKIP_REASON, now, run.id)
-        .run();
-      if ((result.meta?.changes ?? 0) > 0) superseded.push(run);
-    }
-    return superseded;
   }
 
   async getActiveRunForKey(
