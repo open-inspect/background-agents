@@ -31,7 +31,7 @@ export interface AutomationEventHandlerDeps {
   ): Promise<SchedulerEventResult>;
   slack: Pick<SlackEventHandler, "handle">;
   webhook: Pick<WebhookEventHandler, "handle">;
-  commitStatus: Pick<AutomationCommitStatusService, "publish">;
+  commitStatus: Pick<AutomationCommitStatusService, "publishAndReconcile">;
   log: Logger;
 }
 
@@ -64,7 +64,9 @@ export class AutomationEventHandler {
           // Pending once the run exists; a run that failed to launch reports failure.
           if (result.outcome === "started" && triggerMetadata) {
             await Promise.all(
-              result.runs.map((run) => this.deps.commitStatus.publish(run, triggerMetadata))
+              result.runs.map((run) =>
+                this.deps.commitStatus.publishAndReconcile(run, triggerMetadata)
+              )
             );
           }
           return result;

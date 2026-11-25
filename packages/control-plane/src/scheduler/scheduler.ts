@@ -322,6 +322,18 @@ export class Scheduler {
       return;
     }
 
+    // The run's terminal state as just written (a correction is a completion).
+    // First of the fan-out: publish never throws, and a retried callback takes
+    // the duplicate branch above, so a later step's failure must not skip it.
+    await this.deps.commitStatus.publish(
+      {
+        ...run,
+        status: body.success ? "completed" : "failed",
+        failure_reason: body.success ? null : body.error || "Unknown error",
+      },
+      run.invocation_trigger_metadata
+    );
+
     // Invocation-level accounting: one CAS-guarded strike per invocation on
     // first failure; streak reset once every sibling completed. Skipped for a
     // correction, per above. The slack fan-out below is not: the sweep posts
@@ -354,14 +366,5 @@ export class Scheduler {
     // coordinates live on the invocation. Only the terminal CAS winner owns
     // publication retries; retrying runComplete itself would be ignored.
     await this.deps.slack.notifyCompletion(run, body);
-    // The run's terminal state as just written (a correction is a completion).
-    await this.deps.commitStatus.publish(
-      {
-        ...run,
-        status: body.success ? "completed" : "failed",
-        failure_reason: body.success ? null : body.error || "Unknown error",
-      },
-      run.invocation_trigger_metadata
-    );
   }
 }

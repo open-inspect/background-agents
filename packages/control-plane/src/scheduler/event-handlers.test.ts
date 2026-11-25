@@ -185,7 +185,10 @@ describe("GitHub event commit statuses", () => {
         context: "open-inspect",
       },
     });
-    expect(deps.commitStatus.publish).toHaveBeenCalledExactlyOnceWith(startedRun, triggerMetadata);
+    expect(deps.commitStatus.publishAndReconcile).toHaveBeenCalledExactlyOnceWith(
+      startedRun,
+      triggerMetadata
+    );
   });
 
   it("posts nothing for an automation without a commit status context", async () => {
@@ -195,7 +198,7 @@ describe("GitHub event commit statuses", () => {
     await handler.handle(prEvent);
 
     expect(deps.invocations.start.mock.calls[0]![0].triggerMetadata).toBeNull();
-    expect(deps.commitStatus.publish).not.toHaveBeenCalled();
+    expect(deps.commitStatus.publishAndReconcile).not.toHaveBeenCalled();
   });
 
   it("posts nothing for a firing that was skipped", async () => {
@@ -205,7 +208,7 @@ describe("GitHub event commit statuses", () => {
 
     await handler.handle(prEvent);
 
-    expect(deps.commitStatus.publish).not.toHaveBeenCalled();
+    expect(deps.commitStatus.publishAndReconcile).not.toHaveBeenCalled();
   });
 });
 
@@ -599,8 +602,8 @@ function eventHandlerHarness() {
     slack: { handle: vi.fn<SlackEventHandler["handle"]>() },
     webhook: { handle: vi.fn<WebhookEventHandler["handle"]>() },
     commitStatus: {
-      publish: vi
-        .fn<AutomationEventHandlerDeps["commitStatus"]["publish"]>()
+      publishAndReconcile: vi
+        .fn<AutomationEventHandlerDeps["commitStatus"]["publishAndReconcile"]>()
         .mockResolvedValue(undefined),
     },
     log,

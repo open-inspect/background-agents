@@ -157,7 +157,7 @@ describe("AutomationCommitStatusService", () => {
     const { service, createCommitStatus } = harness();
     createCommitStatus.mockRejectedValue(new Error("403 Resource not accessible"));
 
-    await expect(service.publish(run, metadata)).resolves.toBeUndefined();
+    await expect(service.publish(run, metadata)).resolves.toBeNull();
   });
 
   it("refreshes from the stored run, so a run a callback finished reports its real outcome", async () => {
@@ -170,11 +170,44 @@ describe("AutomationCommitStatusService", () => {
 
     await service.refresh([{ automation_id: "auto-1", id: "run-1" }]);
 
-    expect(getRunById).toHaveBeenCalledExactlyOnceWith("auto-1", "run-1");
-    expect(createCommitStatus).toHaveBeenCalledWith(
+    expect(getRunById).toHaveBeenCalledWith("auto-1", "run-1");
+    expect(createCommitStatus).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ state: "success" }),
       expect.anything()
     );
+  });
+
+  it("re-posts the finished outcome when a run completed while pending was in flight", async () => {
+    const { service, createCommitStatus, getRunById } = harness();
+    getRunById.mockResolvedValue({
+      ...run,
+      status: "completed",
+      invocation_trigger_metadata: metadata,
+    });
+
+    await service.publishAndReconcile({ ...run, status: "running" }, metadata);
+
+    expect(createCommitStatus.mock.calls.map(([status]) => status.state)).toEqual([
+      "pending",
+      "success",
+    ]);
+  });
+
+  it("posts once when the run is still in progress after the post", async () => {
+    const { service, createCommitStatus, getRunById } = harness();
+    getRunById.mockResolvedValue({ ...run, invocation_trigger_metadata: metadata });
+
+    await service.publishAndReconcile(run, metadata);
+
+    expect(createCommitStatus).toHaveBeenCalledOnce();
+  });
+
+  it("reads nothing for a firing without a target", async () => {
+    const { service, getRunById } = harness();
+
+    await service.publishAndReconcile(run, null);
+
+    expect(getRunById).not.toHaveBeenCalled();
   });
 
   it("keeps refreshing the other runs when one read fails", async () => {

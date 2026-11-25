@@ -333,7 +333,8 @@ GitHub OAuth sign-in, but its client pair is optional when Google is the only si
    - If enabling the GitHub bot, also grant Actions: **Read-only** _(workflow-run automations)_,
      Checks: **Read-only** _(check-suite automations)_, and Issues: **Read & Write**.
    - If PR-event automations will post a commit status, also grant Commit statuses: **Read &
-     Write**.
+     Write**. Adding it to an existing App takes effect only after each installation's owner
+     approves the permission request.
 6. If using `ALLOWED_GITHUB_ORGS`, set **Organization permissions**:
    - Members: **Read-only**
    - For existing GitHub Apps, republish the permission change and request/approve installation

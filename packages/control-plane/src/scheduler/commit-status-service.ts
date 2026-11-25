@@ -8,6 +8,12 @@ import type { Logger } from "../logger";
 import { repositoryCredentialScope } from "../source-control/credential-scope";
 import type { CommitStatusState, SourceControlProvider } from "../source-control/types";
 
+/** Run states a later write never changes, apart from a timeout's late-success correction. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<AutomationRunRow["status"]> = new Set([
+  "completed",
+  "failed",
+]);
+
 /** GitHub caps a commit status description at 140 characters. */
 const COMMIT_STATUS_DESCRIPTION_MAX_LENGTH = 140;
 
@@ -109,12 +115,19 @@ type PublishableRun = Pick<
 export class AutomationCommitStatusService {
   constructor(private readonly deps: AutomationCommitStatusServiceDeps) {}
 
-  /** Post the status for a run in the state given, under its firing's recorded target. */
-  async publish(run: PublishableRun, triggerMetadata: string | null | undefined): Promise<void> {
+  /**
+   * Post the status for a run in the state given, under its firing's recorded target.
+   * For a state the caller just wrote itself, such as the run-complete transition.
+   * Returns the state posted, or null when nothing was posted.
+   */
+  async publish(
+    run: PublishableRun,
+    triggerMetadata: string | null | undefined
+  ): Promise<CommitStatusState | null> {
     const target = parseCommitStatusTarget(triggerMetadata ?? null);
-    if (!target) return;
+    if (!target) return null;
     const status = commitStatusForRun(run);
-    if (!status) return;
+    if (!status) return null;
     try {
       const targetUrl = this.targetUrl(run.session_id);
       await this.deps.provider().createCommitStatus(
@@ -129,12 +142,43 @@ export class AutomationCommitStatusService {
         },
         repositoryCredentialScope([target.repositoryId])
       );
+      return status.state;
     } catch (error) {
       this.deps.log.warn("Automation commit status post failed", {
         event: "scheduler.commit_status_failed",
         automation_id: run.automation_id,
         run_id: run.id,
         state: status.state,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Post a state the caller read or held in memory, then make sure it did not land
+   * over a newer outcome. GitHub keeps the last status posted per context, so a
+   * stale `pending` that arrives after the run-complete post would stick. Re-reading
+   * the run after the post closes that: if the run finished before the re-read, its
+   * outcome is posted again here; if it finishes after, its own post comes later
+   * still. Never throws.
+   */
+  async publishAndReconcile(
+    run: PublishableRun,
+    triggerMetadata: string | null | undefined
+  ): Promise<void> {
+    if (!parseCommitStatusTarget(triggerMetadata ?? null)) return;
+    const posted = await this.publish(run, triggerMetadata);
+    try {
+      const current = await this.deps.store.getRunById(run.automation_id, run.id);
+      if (!current || !TERMINAL_RUN_STATUSES.has(current.status)) return;
+      if (commitStatusForRun(current)?.state === posted) return;
+      await this.publish(current, current.invocation_trigger_metadata ?? triggerMetadata);
+    } catch (error) {
+      this.deps.log.warn("Automation commit status reconcile failed", {
+        event: "scheduler.commit_status_failed",
+        automation_id: run.automation_id,
+        run_id: run.id,
         error: error instanceof Error ? error : new Error(String(error)),
       });
     }
@@ -150,7 +194,7 @@ export class AutomationCommitStatusService {
       runs.map(async ({ automation_id, id }) => {
         try {
           const run = await this.deps.store.getRunById(automation_id, id);
-          if (run) await this.publish(run, run.invocation_trigger_metadata);
+          if (run) await this.publishAndReconcile(run, run.invocation_trigger_metadata);
         } catch (error) {
           this.deps.log.warn("Automation commit status refresh failed", {
             event: "scheduler.commit_status_failed",

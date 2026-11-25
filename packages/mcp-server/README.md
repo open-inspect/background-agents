@@ -189,6 +189,8 @@ Ask the agent to open one in a prompt.
     manual firings may be in progress at once.
   - A `github_event` trigger on PR Opened, PR Updated or PR Ready for Review may set
     `commit_status_context`, the name of a commit status each run posts on the PR's head commit.
+    Posting is best effort: it needs the GitHub App's Commit statuses permission, and a refused post
+    is logged (`scheduler.commit_status_failed`) without failing the run.
 
   The automation is created **enabled**, so a schedule starts firing at its next occurrence. No tool
   edits or pauses an automation, so create it with the schedule it should keep, and fix a mistake in

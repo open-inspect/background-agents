@@ -62,7 +62,7 @@ function harness() {
         .mockResolvedValue(undefined),
     },
     commitStatus: {
-      publish: vi.fn<SchedulerDeps["commitStatus"]["publish"]>().mockResolvedValue(undefined),
+      publish: vi.fn<SchedulerDeps["commitStatus"]["publish"]>().mockResolvedValue(null),
     },
     invocations: {
       start: vi.fn<SchedulerDeps["invocations"]["start"]>(),
@@ -188,6 +188,16 @@ describe("Scheduler.runComplete", () => {
       );
     }
   );
+
+  it("publishes the commit status even when failure accounting rejects", async () => {
+    const { deps, scheduler } = harness();
+    deps.failures.applyInvocationOutcome.mockRejectedValue(new Error("D1 unavailable"));
+
+    await expect(scheduler.runComplete(completion)).rejects.toThrow("D1 unavailable");
+
+    expect(deps.commitStatus.publish).toHaveBeenCalledOnce();
+    expect(deps.slack.notifyCompletion).not.toHaveBeenCalled();
+  });
 
   it("publishes no commit status for an ignored duplicate callback", async () => {
     const { deps, scheduler } = harness();
