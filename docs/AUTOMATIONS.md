@@ -665,8 +665,10 @@ routing, or no target that can launch) or deduplicated never stops a run. It app
 automation; events for other automations on the same pull request are unaffected. Only an event with
 the same concurrency key replaces a run: issue comment events are keyed per comment, so a second
 comment on an issue starts its own run. A run superseded while its launch is still creating the
-session gets no first prompt, and that session is stopped. A superseded run neither adds nor clears
-an auto-pause failure. `cancelInProgress` is rejected for anything but a GitHub Event trigger.
+session gets no first prompt, and its session is sent one best-effort stop request (if that fails,
+the session can keep running unobserved, as with any failed cancel). A superseded run neither adds
+nor clears an auto-pause failure. `cancelInProgress` is rejected for anything but a GitHub Event
+trigger.
 
 Slack Message triggers key concurrency by thread. Replies in a thread are not skipped — until the
 session has been idle for 7 days they continue the same session (while the run starts, during it,
