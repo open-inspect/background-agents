@@ -14,6 +14,12 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<AutomationRunRow["status"]> = new Set([
   "failed",
 ]);
 
+/**
+ * Re-read rounds after a post. A run reaches a terminal state once and is corrected
+ * at most once more, so two rounds settle it; the third only absorbs a failed post.
+ */
+const MAX_RECONCILE_ROUNDS = 3;
+
 /** GitHub caps a commit status description at 140 characters. */
 const COMMIT_STATUS_DESCRIPTION_MAX_LENGTH = 140;
 
@@ -158,22 +164,28 @@ export class AutomationCommitStatusService {
   /**
    * Post a state the caller read or held in memory, then make sure it did not land
    * over a newer outcome. GitHub keeps the last status posted per context, so a
-   * stale `pending` that arrives after the run-complete post would stick. Re-reading
-   * the run after the post closes that: if the run finished before the re-read, its
-   * outcome is posted again here; if it finishes after, its own post comes later
-   * still. Never throws.
+   * stale post that arrives after a newer one would stick. Every post here is
+   * followed by a re-read of the run: if the run reached a different terminal state
+   * before the re-read, that state is posted and re-read in turn; if it changes
+   * after, the writer of that change posts later still. A run changes terminal
+   * state at most once (a timeout's late-success correction), so this settles
+   * within a few rounds. Never throws.
    */
   async publishAndReconcile(
     run: PublishableRun,
     triggerMetadata: string | null | undefined
   ): Promise<void> {
     if (!parseCommitStatusTarget(triggerMetadata ?? null)) return;
-    const posted = await this.publish(run, triggerMetadata);
+    let posted = await this.publish(run, triggerMetadata);
+    let metadata = triggerMetadata;
     try {
-      const current = await this.deps.store.getRunById(run.automation_id, run.id);
-      if (!current || !TERMINAL_RUN_STATUSES.has(current.status)) return;
-      if (commitStatusForRun(current)?.state === posted) return;
-      await this.publish(current, current.invocation_trigger_metadata ?? triggerMetadata);
+      for (let round = 0; round < MAX_RECONCILE_ROUNDS; round++) {
+        const current = await this.deps.store.getRunById(run.automation_id, run.id);
+        if (!current || !TERMINAL_RUN_STATUSES.has(current.status)) return;
+        if (commitStatusForRun(current)?.state === posted) return;
+        metadata = current.invocation_trigger_metadata ?? metadata;
+        posted = await this.publish(current, metadata);
+      }
     } catch (error) {
       this.deps.log.warn("Automation commit status reconcile failed", {
         event: "scheduler.commit_status_failed",

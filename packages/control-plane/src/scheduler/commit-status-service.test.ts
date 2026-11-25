@@ -193,6 +193,43 @@ describe("AutomationCommitStatusService", () => {
     ]);
   });
 
+  it("ends on success when a late success corrects a timeout during the reconcile post", async () => {
+    const { service, createCommitStatus, getRunById } = harness();
+    // The sweep timed the run out before the first re-read; the late success lands
+    // while the reconcile's `failure` post is in flight, so the next re-read sees it.
+    getRunById
+      .mockResolvedValueOnce({
+        ...run,
+        status: "failed",
+        failure_reason: "Timed out",
+        invocation_trigger_metadata: metadata,
+      })
+      .mockResolvedValue({ ...run, status: "completed", invocation_trigger_metadata: metadata });
+
+    await service.publishAndReconcile(run, metadata);
+
+    expect(createCommitStatus.mock.calls.map(([status]) => status.state)).toEqual([
+      "pending",
+      "failure",
+      "success",
+    ]);
+    expect(getRunById).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops re-posting after a bounded number of rounds when posts keep failing", async () => {
+    const { service, createCommitStatus, getRunById } = harness();
+    createCommitStatus.mockRejectedValue(new Error("502 Bad Gateway"));
+    getRunById.mockResolvedValue({
+      ...run,
+      status: "completed",
+      invocation_trigger_metadata: metadata,
+    });
+
+    await expect(service.publishAndReconcile(run, metadata)).resolves.toBeUndefined();
+
+    expect(createCommitStatus).toHaveBeenCalledTimes(4);
+  });
+
   it("posts once when the run is still in progress after the post", async () => {
     const { service, createCommitStatus, getRunById } = harness();
     getRunById.mockResolvedValue({ ...run, invocation_trigger_metadata: metadata });
