@@ -99,6 +99,12 @@ def test_debian_restores_shared_tmp_before_using_apt():
     assert script.index("install -d -m 1777 /tmp") < script.index("apt-get update")
 
 
+def test_debian_apt_accepts_only_a_repository_label_change():
+    script = (REPO_ROOT / "packages/sandbox-images/install/os/debian.sh").read_text()
+    assert 'Acquire::AllowReleaseInfoChange::Label "true";' in script
+    assert 'Acquire::AllowReleaseInfoChange "true"' not in script
+
+
 def test_agent_browser_installs_as_checked_native_binary():
     script = (REPO_ROOT / "packages/sandbox-images/install/tools.sh").read_text()
     assert 'install -m 0755 "$download_dir/agent-browser" /usr/local/bin/agent-browser' in script
