@@ -76,6 +76,12 @@ const BOAT_MAX_NAME_CHARS = 120;
 export const BOAT_LAUNCHER_PATH = "/home/user/openinspect/launcher.sh";
 const LAUNCHER_ALREADY_RUNNING_EXIT_CODE = 75;
 /**
+ * How Boat's `setupError` starts when its box agent could not confirm the
+ * setup script started, e.g. "setup start failed (the script may have started
+ * on the box): Request timeout after 15000ms".
+ */
+const BOAT_SETUP_START_UNCONFIRMED = "setup start failed";
+/**
  * The file whose presence lets a create-time launch proceed. The control
  * plane writes it (see {@link BoatSandboxLifecycle.releaseLaunch}) only once
  * the sandbox is known private and its tunnel env file is in the workspace,
@@ -574,7 +580,16 @@ export class BoatSandboxLifecycle {
     for (;;) {
       const sandbox = await this.client.getSandbox(boatSandboxId);
       if (sandbox.setupStatus === "failed" || sandbox.setupStatus === "done") {
-        const detail = (sandbox.setupError ?? "").trim().slice(-400);
+        const setupError = (sandbox.setupError ?? "").trim();
+        const detail = setupError.slice(-400);
+        if (setupError.startsWith(BOAT_SETUP_START_UNCONFIRMED)) {
+          // Boat's box agent timed out starting the script, so it may or may
+          // not be running. The launcher holds a lock, so start it directly:
+          // it exits as already running if the script got there first.
+          log.warn("boat.setup_start_unconfirmed", { sandbox_id: boatSandboxId, detail });
+          await this.launchRuntime(boatSandboxId);
+          return;
+        }
         throw new SandboxProviderError(
           `Boat runtime launcher exited${detail ? `: ${detail}` : ""}`,
           "permanent"

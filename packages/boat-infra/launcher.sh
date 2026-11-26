@@ -75,20 +75,23 @@ log() { printf 'openinspect-launcher: %s\n' "$*" >&2; }
 
 # ensure_link <link> <target>: make <link> a symlink to <target>, replacing an
 # empty directory (the base image ships an empty /app). Anything else at
-# <link> is somebody's data and is left alone.
+# <link> is somebody's data and is left alone. Two launchers can prepare at once
+# (the setup script and a recovery launch, before either holds the lock), so
+# nothing is decided between two checks: rmdir removes only an empty directory,
+# and the check after it accepts <link> missing or linked, which is all the
+# other launcher can leave.
 ensure_link() {
   local link="$1" target="$2"
   mkdir -p "$target"
   if [[ -L "$link" && "$(readlink "$link")" == "$target" ]]; then
     return
   fi
+  if [[ -d "$link" && ! -L "$link" ]]; then
+    sudo rmdir "$link" 2>/dev/null || true
+  fi
   if [[ -e "$link" && ! -L "$link" ]]; then
-    if [[ -d "$link" && -z "$(ls -A "$link")" ]]; then
-      sudo rmdir "$link"
-    else
-      log "refusing to replace non-empty $link"
-      exit 1
-    fi
+    log "refusing to replace $link: not an empty directory"
+    exit 1
   fi
   sudo ln -sfn "$target" "$link"
 }

@@ -426,6 +426,32 @@ describe("BoatSandboxProvider", () => {
       expect(client.deleteSandbox).toHaveBeenCalledWith("bx_abcdefgh");
     });
 
+    it.each([
+      ["a short error", ""],
+      ["an error longer than the logged detail", ` ${"x".repeat(400)}`],
+    ])(
+      "starts the launcher itself when Boat could not confirm the setup script started (%s)",
+      async (_case, suffix) => {
+        // Boat's box agent timed out starting the script, which may or may not
+        // be running. The launcher holds a lock, so starting it again is safe.
+        const client = mockClient({
+          getSandbox: vi.fn(async () =>
+            boatSandbox({
+              setupStatus: "failed",
+              setupError: `setup start failed (the script may have started on the box): Request timeout after 15000ms${suffix}`,
+            })
+          ),
+        });
+        const result = await createProvider(client, providerConfig).createSandbox(baseCreateConfig);
+        expect(result.providerObjectId).toBe("bx_abcdefgh");
+        expect(client.startDetachedCommand).toHaveBeenCalledWith(
+          "bx_abcdefgh",
+          "/home/user/openinspect/launcher.sh"
+        );
+        expect(client.deleteSandbox).not.toHaveBeenCalled();
+      }
+    );
+
     it("still catches a launcher that exits just after the readiness read", async () => {
       const client = mockClient({
         getSandbox: vi
