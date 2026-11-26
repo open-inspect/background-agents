@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 env:
-  TF_VERSION: "1.14.8"
+  TF_VERSION: "1.17.2"
   TF_WORKING_DIR: ${{ inputs.working-directory }}
 
 jobs:
