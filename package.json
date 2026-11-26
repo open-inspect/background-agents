@@ -46,13 +46,13 @@
     "@vitest/coverage-v8": "^5.1.0",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
-    "knip": "^6.45.0",
-    "lint-staged": "^17.6.0",
+    "knip": "^6.45.1",
+    "lint-staged": "^17.6.1",
     "oxlint": "^1.95.0",
-    "prettier": "^3.9.10",
+    "prettier": "^3.10.1",
     "typescript": "^5.8.0",
     "vitest": "^5.1.0",
-    "wrangler": "^4.160.0"
+    "wrangler": "^4.164.0"
   },
   "engines": {
     "node": ">=24.0.0"
