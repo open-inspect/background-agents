@@ -20,6 +20,10 @@ import {
   getDailyPullRequestCounts,
   getDailySessionCounts,
   getDailySessionCountsByUser,
+  getDailySpendBySource,
+  getMonthlySpendRunRate,
+  getSpendChange,
+  getSpendSourceLabel,
   getPullRequestAcceptanceRate,
   getSessionsBySource,
   getSubscriptionShare,
@@ -147,6 +151,62 @@ describe("analytics utilities", () => {
     expect(byUser.get("user-zoe")).toEqual([0, 2, 0, 0, 0, 3, 0, 0]);
     expect(byUser.get("__unknown__")).toEqual([0, 0, 0, 0, 0, 1, 0, 0]);
     expect(byUser.get("Zoe")).toBeUndefined();
+  });
+
+  it("zero-fills spend per day and source across the window", () => {
+    const daily = getDailySpendBySource(analyticsDashboard());
+    expect(daily).toHaveLength(8);
+    expect(daily[1]).toEqual({
+      date: "2026-09-18",
+      user: 2,
+      "slack-bot": 0,
+      "linear-bot": 0,
+      "github-review": 0,
+      "github-mention": 0,
+      automation: 1,
+      agent: 0,
+    });
+    expect(daily[2]).toMatchObject({ date: "2026-09-19", user: 0, automation: 0 });
+  });
+
+  it.each([
+    // Noon on Sep 24: Sep 17–23 are complete (7 + 3 + 4) and Sep 24's 100 is still accruing.
+    { endAt: Date.UTC(2026, 8, 24, 12), completeSpend: 14 },
+    // Midnight after Sep 24: Sep 18–24 are all complete (3 + 4 + 100).
+    { endAt: Date.UTC(2026, 8, 25), completeSpend: 107 },
+  ])(
+    "projects a monthly run rate from the last seven complete days",
+    ({ endAt, completeSpend }) => {
+      const dashboard = analyticsDashboard();
+      const window = { ...dashboard.window, startAt: endAt - 7 * 86_400_000, endAt };
+      expect(getMonthlySpendRunRate({ ...dashboard, window })).toBeCloseTo(
+        (completeSpend / 7) * 30
+      );
+    }
+  );
+
+  it.each([
+    { cost: 15, previousCost: 10, expected: 0.5 },
+    { cost: 5, previousCost: 10, expected: -0.5 },
+    { cost: 5, previousCost: 0, expected: null },
+  ])("compares $cost against $previousCost of previous spend", ({ expected, ...entry }) => {
+    expect(getSpendChange(entry)).toBe(expected);
+  });
+
+  it.each([
+    { automationName: "Nightly", expected: "Nightly" },
+    { automationName: null, expected: "Deleted automation" },
+  ])("labels an automation $automationName as $expected", ({ automationName, expected }) => {
+    expect(
+      getSpendSourceLabel({
+        source: "automation",
+        automationId: automationName ? "a" : null,
+        automationName,
+        runs: 1,
+        cost: 1,
+        previousCost: 0,
+      })
+    ).toBe(expected);
   });
 
   it("zero-fills pull requests per day across the window", () => {

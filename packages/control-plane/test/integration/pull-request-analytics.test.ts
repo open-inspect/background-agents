@@ -62,6 +62,7 @@ async function seedSession(input: {
     reasoningTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    dailyCosts: [],
   });
 }
 

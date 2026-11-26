@@ -526,6 +526,7 @@ describe("D1 SessionIndexStore", () => {
       reasoningTokens: 56,
       cacheReadTokens: 7800,
       cacheWriteTokens: 910,
+      dailyCosts: [],
     });
     expect(updated).toBe(true);
 
@@ -573,6 +574,7 @@ describe("D1 SessionIndexStore", () => {
       reasoningTokens: 0,
       cacheReadTokens: 400,
       cacheWriteTokens: 50,
+      dailyCosts: [],
     });
 
     await store.updateMetrics("session-metrics-overwrite", {
@@ -585,6 +587,7 @@ describe("D1 SessionIndexStore", () => {
       reasoningTokens: 10,
       cacheReadTokens: 900,
       cacheWriteTokens: 75,
+      dailyCosts: [],
     });
 
     const session = await store.get("session-metrics-overwrite");
@@ -613,8 +616,74 @@ describe("D1 SessionIndexStore", () => {
       reasoningTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      dailyCosts: [{ dayIndex: 20_000, costUsd: 1 }],
     });
     expect(result).toBe(false);
+    const rows = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM session_usage_daily WHERE session_id = 'nonexistent'"
+    ).first<{ count: number }>();
+    expect(rows?.count).toBe(0);
+  });
+
+  it("updateMetrics restates the session's daily costs, dropping days no longer reported", async () => {
+    const store = new SessionIndexStore(env.DB);
+    const now = Date.now();
+    await store.create({
+      id: "session-daily-costs",
+      ownerTeamId: null,
+      visibility: "workspace",
+      title: null,
+      repoOwner: "acme",
+      repoName: "api",
+      model: "anthropic/claude-haiku-4-5",
+      reasoningEffort: null,
+      baseBranch: null,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const metrics = {
+      activeDurationMs: 0,
+      messageCount: 0,
+      prCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+    const readDays = async () =>
+      (
+        await env.DB.prepare(
+          "SELECT day_index, cost_usd FROM session_usage_daily WHERE session_id = ? ORDER BY day_index"
+        )
+          .bind("session-daily-costs")
+          .all<{ day_index: number; cost_usd: number }>()
+      ).results;
+    const manyDays = Array.from({ length: 120 }, (_, offset) => ({
+      dayIndex: 19_000 + offset,
+      costUsd: 0.5,
+    }));
+
+    await store.updateMetrics("session-daily-costs", {
+      ...metrics,
+      totalCost: 60,
+      dailyCosts: manyDays,
+    });
+    expect(await readDays()).toHaveLength(120);
+
+    await store.updateMetrics("session-daily-costs", {
+      ...metrics,
+      totalCost: 3,
+      dailyCosts: [
+        { dayIndex: 20_000, costUsd: 1 },
+        { dayIndex: 20_001, costUsd: 2 },
+      ],
+    });
+    expect(await readDays()).toEqual([
+      { day_index: 20_000, cost_usd: 1 },
+      { day_index: 20_001, cost_usd: 2 },
+    ]);
   });
 
   it("deletes a session", async () => {

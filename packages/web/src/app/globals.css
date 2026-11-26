@@ -158,6 +158,15 @@ pre code.hljs {
 
   /* Border radius */
   --radius: 0.25rem;
+
+  /* Categorical chart series, in fixed order (validated for color-vision deficiency) */
+  --chart-1: #257de0;
+  --chart-2: #f47230;
+  --chart-3: #00b894;
+  --chart-4: #f2a600;
+  --chart-5: #ee7fac;
+  --chart-6: #008a17;
+  --chart-7: #6a4ce2;
 }
 
 /* Dark mode via system preference (no-JS fallback) */
@@ -180,6 +189,13 @@ pre code.hljs {
     --accent: #a68b6a;
     --accent-foreground: #ffffff;
     --accent-muted: rgba(139, 115, 85, 0.2);
+    --chart-1: #338ced;
+    --chart-2: #e76624;
+    --chart-3: #00a888;
+    --chart-4: #d28e05;
+    --chart-5: #e24d8b;
+    --chart-6: #0aac23;
+    --chart-7: #9887ef;
 
     --muted: rgba(255, 255, 255, 0.05);
     --muted-foreground: #9c9690;
@@ -236,6 +252,13 @@ pre code.hljs {
   --accent: #a68b6a;
   --accent-foreground: #ffffff;
   --accent-muted: rgba(139, 115, 85, 0.2);
+  --chart-1: #338ced;
+  --chart-2: #e76624;
+  --chart-3: #00a888;
+  --chart-4: #d28e05;
+  --chart-5: #e24d8b;
+  --chart-6: #0aac23;
+  --chart-7: #9887ef;
 
   --muted: rgba(255, 255, 255, 0.05);
   --muted-foreground: #9c9690;

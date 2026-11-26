@@ -6,6 +6,7 @@ import type {
 import { AnalyticsStore } from "./analytics-store";
 import { PullRequestAnalyticsStore } from "./pull-request-analytics-store";
 import { SessionRunStore } from "./session-run-store";
+import { SpendAnalyticsStore } from "./spend-analytics-store";
 import type { SqlDatabase } from "./sql-database";
 import type { SessionReadScope } from "./session-visibility";
 import type { TeamsEnforcementMode } from "../authorization/teams-enforcement";
@@ -30,6 +31,7 @@ export class AnalyticsDashboardStore {
     const analytics = new AnalyticsStore(this.db, this.readScope, this.mode);
     const pullRequests = new PullRequestAnalyticsStore(this.db, this.readScope, this.mode);
     const runs = new SessionRunStore(this.db, this.readScope, this.mode);
+    const spend = new SpendAnalyticsStore(this.db, this.readScope, this.mode);
     const sessionFilters = {
       startAt: filters.startAt,
       endAt: filters.endAt,
@@ -41,6 +43,7 @@ export class AnalyticsDashboardStore {
       now: filters.endAt,
     });
     const [modelStatement, billingStatement] = analytics.prepareProviderBreakdown(sessionFilters);
+    const [dailySpendStatement, sourceSpendStatement] = spend.prepare(sessionFilters);
 
     const [
       summary,
@@ -52,6 +55,8 @@ export class AnalyticsDashboardStore {
       automation,
       billing,
       sessionOrigins,
+      dailySpend,
+      sourceSpend,
       ...pullRequestAndRunResults
     ] = await this.db.batch([
       analytics.prepareSummary(sessionFilters),
@@ -63,6 +68,8 @@ export class AnalyticsDashboardStore {
       analytics.prepareBreakdown(sessionFilters, "automation"),
       billingStatement,
       analytics.prepareSessionOrigins(sessionFilters),
+      dailySpendStatement,
+      sourceSpendStatement,
       ...pullRequestStatements,
       runs.prepareList({ ...sessionFilters, limit: DASHBOARD_RUNS_LIMIT, orderBy: "cost" }),
     ]);
@@ -91,6 +98,7 @@ export class AnalyticsDashboardStore {
       },
       pullRequests: pullRequests.decode(pullRequestAndRunResults),
       runs: runs.decodeList(runResult),
+      spend: spend.decode([dailySpend, sourceSpend]),
     };
   }
 }

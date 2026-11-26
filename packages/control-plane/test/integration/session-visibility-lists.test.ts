@@ -129,6 +129,7 @@ async function seedFixture(): Promise<void> {
       reasoningTokens: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      dailyCosts: [],
     });
   }
   await env.DB.prepare(

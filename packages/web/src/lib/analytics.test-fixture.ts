@@ -162,6 +162,27 @@ export function analyticsDashboard(
       ],
     },
     runs: [sessionRun("root-1")],
+    spend: {
+      // Sep 24 is today and still accruing; the API omits quiet days.
+      daily: [
+        { date: "2026-09-17", sources: { user: 7 } },
+        { date: "2026-09-18", sources: { user: 2, automation: 1 } },
+        { date: "2026-09-23", sources: { "github-review": 4 } },
+        { date: "2026-09-24", sources: { user: 100 } },
+      ],
+      sources: [
+        { source: "user", runs: 4, cost: 109, previousCost: 100 },
+        { source: "github-review", runs: 2, cost: 4, previousCost: 0 },
+        {
+          source: "automation",
+          automationId: "nightly",
+          automationName: "Nightly bump",
+          runs: 1,
+          cost: 1,
+          previousCost: 2,
+        },
+      ],
+    },
     ...overrides,
   };
 }

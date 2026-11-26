@@ -23,7 +23,7 @@ import { HARNESS_CATALOG, isValidHarness } from "@open-inspect/shared/harnesses"
 import { SUBSCRIPTION_PROVIDER_DISPLAY_METADATA } from "@open-inspect/shared/types/provider-accounts";
 import type { SqlDatabase, SqlResult, SqlStatement } from "./sql-database";
 import { MS_PER_DAY, utcDateFromDayIndex } from "./utc-day";
-import { visibleSessionsPredicate, type SessionReadScope } from "./session-visibility";
+import { analyticsVisibilityPredicate, type SessionReadScope } from "./session-visibility";
 import type { TeamsEnforcementMode } from "../authorization/teams-enforcement";
 import { z } from "zod";
 
@@ -173,9 +173,7 @@ export class AnalyticsStore {
   ) {}
 
   private visible(alias: string) {
-    return this.readScope.kind === "internal"
-      ? { sql: "", params: [] }
-      : visibleSessionsPredicate(alias, this.readScope, { mode: this.mode, excludePrivate: true });
+    return analyticsVisibilityPredicate(alias, this.readScope, this.mode);
   }
 
   async getSummary(filters: AnalyticsFilters): Promise<AnalyticsSummaryResponse> {
@@ -515,7 +513,7 @@ function parseOptionalRow<Schema extends z.ZodType>(
   return parsed.data;
 }
 
-function parseRows<Schema extends z.ZodType>(
+export function parseRows<Schema extends z.ZodType>(
   rows: unknown[] | undefined,
   schema: Schema,
   name: string

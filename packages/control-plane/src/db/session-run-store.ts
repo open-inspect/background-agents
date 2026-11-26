@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { SqlDatabase, SqlResult, SqlStatement } from "./sql-database";
 import { scopePredicate } from "./analytics-store";
 import type { TeamsEnforcementMode } from "../authorization/teams-enforcement";
-import { visibleSessionsPredicate, type SessionReadScope } from "./session-visibility";
+import { analyticsVisibilityPredicate, type SessionReadScope } from "./session-visibility";
 
 export interface ListSessionRunsOptions {
   startAt: number;
@@ -98,9 +98,7 @@ export class SessionRunStore {
   ) {}
 
   private visible(alias: string) {
-    return this.readScope.kind === "internal"
-      ? { sql: "", params: [] }
-      : visibleSessionsPredicate(alias, this.readScope, { mode: this.mode, excludePrivate: true });
+    return analyticsVisibilityPredicate(alias, this.readScope, this.mode);
   }
 
   prepareList({ startAt, endAt, limit, orderBy, scope }: ListSessionRunsOptions): SqlStatement {

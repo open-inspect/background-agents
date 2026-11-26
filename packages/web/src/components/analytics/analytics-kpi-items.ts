@@ -14,8 +14,11 @@ import {
   getCostPerMergedPullRequest,
   getDailyPullRequestCounts,
   getDailySessionCounts,
+  getMonthlySpendRunRate,
   getPullRequestAcceptanceRate,
   getSubscriptionShare,
+  RUN_RATE_DAYS,
+  RUN_RATE_PERIOD_DAYS,
 } from "@/lib/analytics";
 import type { AnalyticsKpiGroup, AnalyticsKpiItem } from "./analytics-kpis";
 
@@ -96,6 +99,11 @@ export function getCostKpis(dashboard: AnalyticsDashboardResponse): AnalyticsKpi
       label: "Spend",
       value: formatAnalyticsCost(summary.totalCost),
       detail: `${formatAnalyticsCost(summary.avgCost)} per session`,
+    },
+    {
+      label: "Run rate",
+      value: `${formatAnalyticsCost(getMonthlySpendRunRate(dashboard))}/mo`,
+      detail: `${RUN_RATE_DAYS}-day average × ${RUN_RATE_PERIOD_DAYS}`,
     },
     {
       label: "Cache hit ratio",

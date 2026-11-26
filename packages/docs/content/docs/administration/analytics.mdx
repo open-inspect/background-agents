@@ -72,10 +72,15 @@ The numbers across the top:
 | Number                      | Value                                                                                                                      |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | **Spend**                   | The sum of every counted session's recorded cost, with the average per session.                                            |
+| **Run rate**                | Average spend per day over the last seven full days, times 30. Today is left out because it is still accruing.             |
 | **Cache hit ratio**         | Cache reads divided by cache reads plus input tokens.                                                                      |
 | **Billed to subscriptions** | The share of sessions billed through a connected subscription. Those sessions report model-price equivalents, not charges. |
 | **Tokens**                  | Input plus output tokens, split into each.                                                                                 |
 | **Private sessions**        | The cost of private sessions in the same window and scope, which Spend excludes. Only Owners and Administrators see it.    |
+
+**Spend per day** charts cost on the UTC day it was incurred, stacked by source. Unlike **Spend**, which counts sessions created in the window, a long session's cost is spread over the days it ran. Cost recorded before per-day tracking was added is booked on its session's creation day.
+
+**By source** lists what started the work: User / app, Slack, Linear, **Code review** (GitHub bot review requests), **PR @mention** (GitHub bot comment mentions), and each automation on its own row. A sub-session's cost counts toward the source of the root session that spawned it, so choose the All scope to include sub-session spend. For each source the table shows runs (root sessions that incurred cost in the window), spend, share of the total, spend per run, and the change from the equally long period just before the window.
 
 **By model**, **By provider**, and **By harness** list sessions, cost, and cost per session for each, sorted by cost. The provider table also shows how many sessions ran **On subscription**; the harness table shows the completion rate. Narrow screens hide secondary columns such as PRs and cache hit ratio.
 
