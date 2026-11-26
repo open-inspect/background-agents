@@ -122,6 +122,9 @@ export type { AlarmScheduler } from "../../platform-ports";
 
 const log = createLogger("lifecycle-manager");
 
+/** How long after a failed launch the alarm retries the queued prompt. */
+export const FAILED_SPAWN_RETRY_DELAY_MS = 60_000;
+
 // ==================== Dependency Interfaces ====================
 
 /** Internal shutdown collaborator; callers outside this subsystem use the manager's policies. */
@@ -1034,6 +1037,9 @@ export class SandboxLifecycleManager
           this.recordSpawnFailure(Date.now(), generation?.createdAt);
           this.log.info("Circuit breaker incremented", { error_type: "unknown" });
         }
+        // Nothing else wakes the session after a failed launch: the alarm
+        // retries the queued prompt, and the circuit breaker decides when.
+        await this.alarmScheduler.schedule(Date.now() + FAILED_SPAWN_RETRY_DELAY_MS);
       }
     } finally {
       this.vmStartup.finalizeForeground(generation);
@@ -2260,6 +2266,41 @@ export class SandboxLifecycleManager
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Retries queued work after a failed launch, once the circuit breaker
+   * allows another. Otherwise the prompt stays pending until someone sends
+   * again, and a bot's session never starts. While the breaker is open this
+   * arms an alarm for when it closes, since a failed sandbox's alarm
+   * schedules nothing else. The caller decides how long a prompt is worth
+   * retrying.
+   */
+  async retryAfterFailedLaunch(): Promise<void> {
+    const sandbox = this.storage.getSandboxWithCircuitBreaker();
+    if (sandbox?.status !== "failed") return;
+    const state = toCircuitBreakerState(sandbox);
+    const now = Date.now();
+    const decision = evaluateCircuitBreaker(state, this.config.circuitBreaker, now);
+    if (!decision.shouldProceed) {
+      await this.alarmScheduler.schedule(now + (decision.waitTimeMs ?? 0));
+      return;
+    }
+    if (this.isSpawningSandbox || this.providerStartupPending) return;
+    this.log.info("Retrying queued work after a failed launch", {
+      event: "sandbox.failed_launch_retry",
+      failure_count: state.failureCount,
+    });
+    await this.config.resumeQueuedWork?.();
+  }
+
+  /** Why the last launch failed, while the sandbox is failed and no launch is running. */
+  failedLaunchReason(): string | null {
+    const sandbox = this.storage.getSandbox();
+    if (sandbox?.status !== "failed" || this.isSpawning() || this.providerStartupPending) {
+      return null;
+    }
+    return sandbox.last_spawn_error ?? "The sandbox failed to start.";
   }
 
   private beginStartup(): StartupAttempt {

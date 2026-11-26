@@ -155,4 +155,60 @@ describe("createAlarmHandler", () => {
     expect(executionStop.recoverStopConfirmationTimeout).toHaveBeenCalledOnce();
     expect(executionStop.resumeAfterSandboxTermination).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ["a recent pending prompt", 60_000, true],
+    ["a pending prompt older than 30 minutes", 30 * 60_000, false],
+  ])("retries after a failed launch for %s", async (_case, ageMs, retried) => {
+    const now = 100_000_000;
+    const retryAfterFailedLaunch = vi.fn(async () => {});
+    const deps = makeDeps({
+      repository: {
+        getProcessingMessageWithStartedAt: vi.fn(() => null),
+        getNextPendingMessage: vi.fn(() => ({ ...makeMessage("msg"), created_at: now - ageMs })),
+      },
+      retryAfterFailedLaunch,
+      now: () => now,
+    });
+
+    await createAlarmHandler(deps).handle();
+
+    expect(retryAfterFailedLaunch).toHaveBeenCalledTimes(retried ? 1 : 0);
+  });
+
+  it.each([
+    ["the last launch failed", "Boat API POST /sandboxes failed with HTTP 409", 1],
+    ["no launch failed", null, 0],
+  ])("for a prompt older than 30 minutes, fails it when %s", async (_case, reason, failed) => {
+    const now = 100_000_000;
+    const failPendingMessage = vi.fn(async () => {});
+    const deps = makeDeps({
+      repository: {
+        getProcessingMessageWithStartedAt: vi.fn(() => null),
+        getNextPendingMessage: vi.fn(() => ({
+          ...makeMessage("msg"),
+          created_at: now - 31 * 60_000,
+        })),
+      },
+      messageQueue: { failStuckProcessingMessage: vi.fn(async () => {}), failPendingMessage },
+      failedLaunchReason: () => reason,
+      now: () => now,
+    });
+
+    await createAlarmHandler(deps).handle();
+
+    expect(failPendingMessage).toHaveBeenCalledTimes(failed);
+    if (failed) {
+      expect(failPendingMessage).toHaveBeenCalledWith(
+        "msg",
+        `Could not start a sandbox: ${reason}`
+      );
+    }
+  });
+
+  it("does not retry after a failed launch with nothing pending", async () => {
+    const retryAfterFailedLaunch = vi.fn(async () => {});
+    await createAlarmHandler(makeDeps({ retryAfterFailedLaunch })).handle();
+    expect(retryAfterFailedLaunch).not.toHaveBeenCalled();
+  });
 });

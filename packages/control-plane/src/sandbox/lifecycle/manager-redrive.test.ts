@@ -1,5 +1,10 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { DEFAULT_LIFECYCLE_CONFIG, type SandboxShutdownLifecycle } from "./manager";
+import {
+  DEFAULT_LIFECYCLE_CONFIG,
+  FAILED_SPAWN_RETRY_DELAY_MS,
+  type SandboxShutdownLifecycle,
+} from "./manager";
+import { SandboxProviderError } from "../provider";
 import {
   createMockSession,
   createMockSandbox,
@@ -119,5 +124,107 @@ describe("idle queue redrive", () => {
     await manager.redriveIdleQueue();
 
     expect(resumeQueuedWork).not.toHaveBeenCalled();
+  });
+});
+
+describe("retry after a failed launch", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const { threshold, windowMs } = DEFAULT_LIFECYCLE_CONFIG.circuitBreaker;
+
+  function failedHarness(sandbox: Partial<Parameters<typeof createMockSandbox>[0]>) {
+    const storage = createMockStorage(
+      createMockSession(),
+      createMockSandbox({ status: "failed", ...sandbox })
+    );
+    const resumeQueuedWork = vi.fn(async () => undefined);
+    const alarms = createMockAlarmScheduler();
+    const manager = createTestLifecycleManager(
+      createMockProvider(),
+      storage,
+      storage,
+      createMockBroadcaster(),
+      createMockWebSocketManager(),
+      alarms,
+      createMockIdGenerator(),
+      createUnmanagedShutdown(),
+      { ...createTestConfig(), resumeQueuedWork }
+    );
+    return { manager, resumeQueuedWork, alarms };
+  }
+
+  it.each(["transient", "permanent"] as const)(
+    "arms an alarm to retry the queued prompt after a %s provider error",
+    async (errorType) => {
+      vi.spyOn(Date, "now").mockReturnValue(10_000_000);
+      const storage = createMockStorage(
+        createMockSession(),
+        createMockSandbox({ status: "stopped" })
+      );
+      const alarms = createMockAlarmScheduler();
+      const manager = createTestLifecycleManager(
+        createMockProvider({
+          createSandbox: async () => {
+            throw new SandboxProviderError("Server is currently at capacity.", errorType);
+          },
+        }),
+        storage,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        alarms,
+        createMockIdGenerator(),
+        createUnmanagedShutdown(),
+        createTestConfig()
+      );
+
+      await manager.spawnSandbox();
+
+      expect(manager.failedLaunchReason()).not.toBeNull();
+      expect(alarms.alarms).toContain(10_000_000 + FAILED_SPAWN_RETRY_DELAY_MS);
+    }
+  );
+
+  it("arms an alarm for when an open circuit breaker closes, without retrying yet", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000_000);
+    const { manager, resumeQueuedWork, alarms } = failedHarness({
+      spawn_failure_count: threshold,
+      last_spawn_failure: 10_000_000 - 60_000,
+    });
+
+    await manager.retryAfterFailedLaunch();
+
+    expect(resumeQueuedWork).not.toHaveBeenCalled();
+    expect(alarms.alarms).toEqual([10_000_000 - 60_000 + windowMs]);
+  });
+
+  it.each([
+    ["the circuit breaker has closed", { spawn_failure_count: threshold, last_spawn_failure: 1 }],
+    ["a transient failure the breaker did not count", { spawn_failure_count: 0 }],
+    [
+      "fewer failures than the threshold",
+      { spawn_failure_count: threshold - 1, last_spawn_failure: 10_000_000 - 60_000 },
+    ],
+  ])("retries queued work after %s", async (_case, sandbox) => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000_000);
+    const { manager, resumeQueuedWork, alarms } = failedHarness(sandbox);
+
+    await manager.retryAfterFailedLaunch();
+
+    expect(resumeQueuedWork).toHaveBeenCalledOnce();
+    expect(alarms.alarms).toEqual([]);
+  });
+
+  it("does nothing when the sandbox is not failed", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(10_000_000);
+    const { manager, resumeQueuedWork, alarms } = failedHarness({
+      status: "stopped",
+      spawn_failure_count: threshold,
+    });
+
+    await manager.retryAfterFailedLaunch();
+
+    expect(resumeQueuedWork).not.toHaveBeenCalled();
+    expect(alarms.alarms).toEqual([]);
   });
 });

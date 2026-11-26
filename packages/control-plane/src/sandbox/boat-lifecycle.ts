@@ -355,9 +355,9 @@ function isRetryableCreateFailure(error: unknown): boolean {
 
 /**
  * The control-plane classification of a failed Boat call, by status and
- * code only. Rate limits and server errors are the provider's moment, not a
- * broken deployment, so they stay off the circuit breaker; every other API
- * answer says the request was wrong.
+ * code only. Rate limits, server errors and a full fleet are the provider's
+ * moment, not a broken deployment, so they stay off the circuit breaker; every
+ * other API answer says the request was wrong.
  */
 export function classifyBoatError(message: string, error: unknown): SandboxProviderError {
   if (error instanceof SandboxProviderError) return error;
@@ -366,7 +366,12 @@ export function classifyBoatError(message: string, error: unknown): SandboxProvi
     return new SandboxProviderError(`${message}: ${error.message}`, "transient", error);
   }
   if (error instanceof BoatApiError) {
-    const transient = error.status === 429 || error.status >= 500;
+    // Boat answers a full fleet with 409 `deploy_failed`: "Server is currently
+    // at capacity. Please try again in a few minutes."
+    const transient =
+      error.status === 429 ||
+      error.status >= 500 ||
+      (error.status === 409 && error.code === "deploy_failed");
     return new SandboxProviderError(
       `${message}: ${error.message}`,
       transient ? "transient" : "permanent",

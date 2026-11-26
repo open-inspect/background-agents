@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   assertBoatEnvWithinLimits,
+  classifyBoatError,
   BOAT_LAUNCH_MARKER_PATH,
   BOAT_LAUNCHER_PATH,
   BOAT_SETUP_SCRIPT,
@@ -159,5 +160,21 @@ describe("boatIdempotencyKey", () => {
     expect(await boatIdempotencyKey("staging", "sess-a", "sb-1")).not.toBe(key);
     expect(await boatIdempotencyKey("prod", "sess-a", "sb-2")).not.toBe(key);
     expect(await boatIdempotencyKey("prod", "sess-b", "sb-1")).not.toBe(key);
+  });
+});
+
+describe("classifyBoatError", () => {
+  it.each([
+    [
+      "a full fleet (409 deploy_failed)",
+      "transient",
+      new BoatApiError("Server is currently at capacity.", 409, "deploy_failed"),
+    ],
+    ["a rate limit", "transient", new BoatApiError("slow down", 429)],
+    ["a server error", "transient", new BoatApiError("boom", 503)],
+    ["another 409", "permanent", new BoatApiError("name taken", 409, "conflict")],
+    ["a forbidden request", "permanent", new BoatApiError("forbidden", 403)],
+  ])("classifies %s as %s", (_case, errorType, error) => {
+    expect(classifyBoatError("Failed to create Boat sandbox", error).errorType).toBe(errorType);
   });
 });
