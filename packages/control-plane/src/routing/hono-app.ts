@@ -27,9 +27,11 @@ const logger = createLogger("router");
 /**
  * Hono gives `*`, `?`, `{...}` and `.` routing meaning, and admission reads
  * raw parameter segments back from the pathname by position, so a path may
- * hold only literal and `:param` segments.
+ * hold only literal and `:param` segments. The one exception is a leading
+ * literal `.well-known` (RFC 8615), where clients look for metadata: it is a
+ * fixed segment with no parameter before it, so neither concern applies.
  */
-const ROUTE_PATH_GRAMMAR = /^(\/([A-Za-z0-9_-]+|:\w+))+$/;
+const ROUTE_PATH_GRAMMAR = /^(\/\.well-known)?(\/([A-Za-z0-9_-]+|:\w+))+$/;
 
 function assertRoutePath(method: string, path: string): void {
   if (!ROUTE_PATH_GRAMMAR.test(path)) {

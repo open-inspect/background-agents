@@ -108,6 +108,7 @@ async function tokenDatabase(fixture: Fixture) {
                   enabled: 1,
                   max_lifetime_days: null,
                   allowed_permissions_json: null,
+                  oauth_client_ids_json: null,
                   revision: 0,
                   updated_at: null,
                   updated_by_user_id_snapshot: null,
@@ -122,6 +123,7 @@ async function tokenDatabase(fixture: Fixture) {
               display_prefix: TOKEN.slice(0, 13),
               created_at: NOW - 60_000,
               expires_at: fixture.expiresAt ?? NOW + 60_000,
+              oauth_client_id: null,
               permission_id,
             }));
             return { results: rows as T[], meta: { changes: 0 } };

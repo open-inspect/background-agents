@@ -9,14 +9,13 @@
 import { Hono } from "hono";
 import {
   createPersonalAccessTokenRequestSchema,
-  isPersonalAccessTokenGrantable,
-  PERSONAL_ACCESS_TOKEN_ERROR_CODES,
-  PERSONAL_ACCESS_TOKEN_MAX_PER_USER,
-  personalAccessTokenMaxLifetimeDays,
-  personalAccessTokenPolicyAllows,
   type PersonalAccessTokenPolicy,
-  unmetGrantPrerequisite,
 } from "@open-inspect/shared/types/personal-access-tokens";
+import {
+  refuseTokenGrant,
+  TOKEN_LIMIT_REACHED,
+  TOKEN_POLICY_CHANGED,
+} from "../auth/personal-access-token-issuance";
 import { PersonalAccessTokenPolicyStore } from "../db/personal-access-token-policy";
 import { PersonalAccessTokenStore } from "../db/personal-access-tokens";
 import { admit, dispatch } from "../routing/admit";
@@ -66,72 +65,14 @@ async function handleIssueToken(
   const parsed = await parseBody(request, createPersonalAccessTokenRequestSchema);
   if (parsed instanceof Response) return parsed;
   const policy = await new PersonalAccessTokenPolicyStore(ctx.db).get();
-  if (!policy.enabled) {
-    return json(
-      {
-        error: "Personal access tokens are disabled for this workspace",
-        code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.disabled,
-      },
-      403
-    );
-  }
-  const maxLifetimeDays = personalAccessTokenMaxLifetimeDays(policy);
-  if (parsed.expiresInDays > maxLifetimeDays) {
-    return json(
-      {
-        error: `This workspace allows tokens to live at most ${maxLifetimeDays} days`,
-        code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.lifetimeExceedsPolicy,
-        maxLifetimeDays,
-      },
-      400
-    );
-  }
   // Loaded by ACTIVE_SELF admission; a grant may name only what its issuer holds right now.
-  const held = new Set(ctx.authorization?.permissions ?? []);
-  for (const permission of parsed.permissions) {
-    if (!isPersonalAccessTokenGrantable(permission)) {
-      return json(
-        {
-          error: `Personal access tokens cannot be granted ${permission}`,
-          code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.permissionNotGrantable,
-          permission,
-        },
-        400
-      );
-    }
-    if (!personalAccessTokenPolicyAllows(policy, permission)) {
-      return json(
-        {
-          error: `This workspace does not allow tokens to be granted ${permission}`,
-          code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.permissionNotAllowed,
-          permission,
-        },
-        400
-      );
-    }
-    if (!held.has(permission)) {
-      return json(
-        {
-          error: `You do not hold ${permission}, so a token cannot be granted it`,
-          code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.permissionNotHeld,
-          permission,
-        },
-        403
-      );
-    }
-  }
-  const unmet = unmetGrantPrerequisite(parsed.permissions);
-  if (unmet) {
-    return json(
-      {
-        error: `A token granted ${unmet.permission} must also be granted ${unmet.requires}`,
-        code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.prerequisiteMissing,
-        permission: unmet.permission,
-        requires: unmet.requires,
-      },
-      400
-    );
-  }
+  const refusal = refuseTokenGrant(
+    policy,
+    new Set(ctx.authorization?.permissions ?? []),
+    parsed.permissions,
+    parsed.expiresInDays
+  );
+  if (refusal) return json(refusal.body, refusal.status);
 
   const now = Date.now();
   const result = await new PersonalAccessTokenStore(ctx.db).issue({
@@ -143,23 +84,9 @@ async function handleIssueToken(
     requestId: ctx.request_id,
     policyRevision: policy.revision,
   });
-  if (result.kind === "policy_changed") {
-    return json(
-      {
-        error: "The workspace token policy changed while this token was being issued; try again",
-        code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.policyChanged,
-      },
-      409
-    );
-  }
-  if (result.kind === "limit_reached") {
-    return json(
-      {
-        error: `You already hold ${PERSONAL_ACCESS_TOKEN_MAX_PER_USER} personal access tokens; revoke one first`,
-        code: PERSONAL_ACCESS_TOKEN_ERROR_CODES.limitReached,
-      },
-      409
-    );
+  if (result.kind !== "issued") {
+    const failed = result.kind === "policy_changed" ? TOKEN_POLICY_CHANGED : TOKEN_LIMIT_REACHED;
+    return json(failed.body, failed.status);
   }
   // The only response that carries the plaintext token; the route policy keeps it out of caches.
   return json(result.token, 201);

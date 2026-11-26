@@ -39,7 +39,42 @@ export interface PersonalAccessTokenCredential {
   readonly expiresAt: number;
   /** Registered permissions only; a grant naming a since-removed permission ignores it. */
   readonly grant: readonly PermissionId[];
+  /** The OAuth client the token was issued to through sign-in; null for one made in Settings. */
+  readonly oauthClientId: string | null;
 }
+
+/** What makes an issue an OAuth token exchange: the client, the code, and any token it replaces. */
+export interface OAuthIssuance {
+  /** The client the token is issued to; recorded on the token. */
+  readonly clientId: string;
+  /**
+   * The hash of the authorization code being exchanged. The token is issued only while that code
+   * has issued nothing and has not been replayed, and the code then records the token.
+   */
+  readonly codeHash: string;
+  /**
+   * An earlier token of the same owner and client to revoke in the same transaction, on step-up.
+   * It is revoked only if the new token is issued, and does not count against the per-user cap.
+   */
+  readonly replacesTokenId: string | null;
+  /**
+   * The owner's expired tokens from the same client, deleted before the new one is counted, so
+   * a client that signs in again every time its token expires never fills the per-user cap.
+   */
+  readonly expiredTokenIds: readonly string[];
+}
+
+/** One of an owner's tokens with what OAuth sign-in needs: its client and any step-up mark. */
+export interface OwnedToken extends PersonalAccessToken {
+  /** The OAuth client the token was issued to; null for one made in Settings. */
+  readonly oauthClientId: string | null;
+  /** When `/mcp` last asked this token's client to step up, if it has. */
+  readonly stepUpRequestedAt: number | null;
+}
+
+/** Why a token was revoked, when not by a person: recorded as the audit event's reason. */
+export type TokenRevocationReason =
+  "oauth_code_replayed" | "oauth_step_up_replaced" | "oauth_expired_pruned";
 
 export interface IssuePersonalAccessTokenInput {
   readonly userId: string;
@@ -54,12 +89,21 @@ export interface IssuePersonalAccessTokenInput {
    * token the new policy forbids.
    */
   readonly policyRevision?: number;
+  /**
+   * Set for a token issued through OAuth sign-in. Such a token is also issued only while its owner
+   * is not suspended.
+   */
+  readonly oauth?: OAuthIssuance;
 }
 
 export type IssuePersonalAccessTokenResult =
   | { kind: "issued"; token: CreatedPersonalAccessToken }
   | { kind: "limit_reached" }
-  | { kind: "policy_changed" };
+  | { kind: "policy_changed" }
+  /** OAuth only: the code has already issued a token, or was replayed. */
+  | { kind: "code_unavailable" }
+  /** OAuth only: the owner is suspended. */
+  | { kind: "user_inactive" };
 
 export interface RevokePersonalAccessTokenInput {
   /** The token's owner; a token id alone never selects another user's token. */
@@ -69,6 +113,8 @@ export interface RevokePersonalAccessTokenInput {
   readonly actorUserId: string;
   readonly now: number;
   readonly requestId: string;
+  /** Set when the system revoked it rather than a person; recorded on the audit event. */
+  readonly reason?: TokenRevocationReason;
 }
 
 interface TokenRow {
@@ -130,12 +176,13 @@ function toPersonalAccessToken(row: TokenRow, permissions: PermissionId[]): Pers
 }
 
 /** The audit snapshot of a token: everything but its secret and usage. */
-function auditSnapshot(token: PersonalAccessToken) {
+function auditSnapshot(token: PersonalAccessToken, oauthClientId: string | null = null) {
   return {
     name: token.name,
     displayPrefix: token.displayPrefix,
     permissions: token.permissions,
     expiresAt: token.expiresAt,
+    ...(oauthClientId === null ? {} : { oauthClientId }),
   };
 }
 
@@ -163,6 +210,22 @@ export class PersonalAccessTokenStore {
       token: plaintext,
     };
 
+    const oauth = input.oauth;
+    // The owner's tokens from the issuing client, as they stand now. Only these may be replaced
+    // or pruned: an id naming a Settings token, another client's, or another owner's, is ignored,
+    // so it neither escapes the cap nor gets a revocation recorded.
+    const clientTokens =
+      oauth === undefined
+        ? []
+        : (await this.listOwned(input.userId)).filter(
+            (owned) => owned.oauthClientId === oauth.clientId
+          );
+    const replaced = clientTokens.find((owned) => owned.id === oauth?.replacesTokenId) ?? null;
+    const expired = clientTokens.filter((owned) => oauth?.expiredTokenIds.includes(owned.id));
+    // What the insert leaves out of the cap: what this issue revokes, if it inserts.
+    const uncounted = [...(replaced ? [replaced.id] : []), ...expired.map((owned) => owned.id)];
+    const uncountedGuard =
+      uncounted.length === 0 ? "" : ` AND id NOT IN (${uncounted.map(() => "?").join(", ")})`;
     const policyGuard =
       input.policyRevision === undefined
         ? ""
@@ -170,13 +233,24 @@ export class PersonalAccessTokenStore {
              AND EXISTS (
                SELECT 1 FROM workspace_personal_access_token_policy WHERE id = 1 AND revision = ?
              )`;
+    const oauthGuard =
+      oauth === undefined
+        ? ""
+        : `
+             AND EXISTS (
+               SELECT 1 FROM oauth_authorization_codes
+                WHERE code_hash = ? AND replayed_at IS NULL AND issued_token_id IS NULL
+             )
+             AND EXISTS (SELECT 1 FROM users WHERE id = ? AND suspended_at IS NULL)`;
     const statements = await this.db.batch([
       this.db
         .prepare(
           `INSERT INTO personal_access_tokens
-             (id, user_id, name, token_hash, display_prefix, created_at, last_used_at, expires_at)
-           SELECT ?, ?, ?, ?, ?, ?, NULL, ?
-           WHERE (SELECT COUNT(*) FROM personal_access_tokens WHERE user_id = ?) < ?${policyGuard}`
+             (id, user_id, name, token_hash, display_prefix, created_at, last_used_at, expires_at,
+              oauth_client_id)
+           SELECT ?, ?, ?, ?, ?, ?, NULL, ?, ?
+           WHERE (SELECT COUNT(*) FROM personal_access_tokens
+                   WHERE user_id = ?${uncountedGuard}) < ?${policyGuard}${oauthGuard}`
         )
         .bind(
           token.id,
@@ -186,9 +260,12 @@ export class PersonalAccessTokenStore {
           token.displayPrefix,
           token.createdAt,
           token.expiresAt,
+          oauth?.clientId ?? null,
           input.userId,
+          ...uncounted,
           PERSONAL_ACCESS_TOKEN_MAX_PER_USER,
-          ...(input.policyRevision === undefined ? [] : [input.policyRevision])
+          ...(input.policyRevision === undefined ? [] : [input.policyRevision]),
+          ...(oauth === undefined ? [] : [oauth.codeHash, input.userId])
         ),
       ...token.permissions.map((permission) =>
         this.db
@@ -206,17 +283,131 @@ export class PersonalAccessTokenStore {
         requestId: input.requestId,
         now: input.now,
         before: {},
-        after: auditSnapshot(token),
+        after: auditSnapshot(token, oauth?.clientId),
       }),
+      ...(oauth === undefined
+        ? []
+        : this.bindOAuthIssuance(oauth, token.id, input, replaced, expired)),
       // Read in the same transaction, to tell a moved policy from the limit when nothing inserts.
-      this.db.prepare("SELECT revision FROM workspace_personal_access_token_policy WHERE id = 1"),
+      this.db
+        .prepare(
+          `SELECT
+           (SELECT revision FROM workspace_personal_access_token_policy WHERE id = 1) AS revision,
+           (SELECT COUNT(*) FROM oauth_authorization_codes
+             WHERE code_hash = ? AND replayed_at IS NULL AND issued_token_id IS NULL) AS code_open,
+           (SELECT COUNT(*) FROM users WHERE id = ? AND suspended_at IS NULL) AS user_active,
+           (SELECT COUNT(*) FROM personal_access_tokens WHERE id = ?) AS issued`
+        )
+        .bind(oauth?.codeHash ?? null, input.userId, token.id),
     ]);
-    const [inserted] = statements;
-    if (inserted.meta.changes === 1) return { kind: "issued", token };
-    const [policy] = statements[statements.length - 1].results as { revision: number }[];
-    return input.policyRevision !== undefined && policy?.revision !== input.policyRevision
-      ? { kind: "policy_changed" }
-      : { kind: "limit_reached" };
+    const [state] = statements[statements.length - 1].results as {
+      revision: number | null;
+      code_open: number;
+      user_active: number;
+      issued: number;
+    }[];
+    if (state.issued === 1) return { kind: "issued", token };
+    if (input.policyRevision !== undefined && state.revision !== input.policyRevision) {
+      return { kind: "policy_changed" };
+    }
+    if (oauth !== undefined && state.code_open === 0) return { kind: "code_unavailable" };
+    if (oauth !== undefined && state.user_active === 0) return { kind: "user_inactive" };
+    return { kind: "limit_reached" };
+  }
+
+  /**
+   * The statements that finish an OAuth issue, each applied only if the token was inserted: revoke
+   * the token a step-up replaces and the client's expired tokens, each with its audit event, and
+   * record the new token on the code it was exchanged for. So an issue that fails (a moved policy,
+   * the cap, a spent code) revokes nothing.
+   */
+  private bindOAuthIssuance(
+    oauth: OAuthIssuance,
+    tokenId: string,
+    input: IssuePersonalAccessTokenInput,
+    replaced: PersonalAccessToken | null,
+    expired: readonly PersonalAccessToken[]
+  ): SqlStatement[] {
+    const issued = "EXISTS (SELECT 1 FROM personal_access_tokens WHERE id = ?)";
+    const revocations: (readonly [PersonalAccessToken, TokenRevocationReason])[] = [
+      ...(replaced === null ? [] : [[replaced, "oauth_step_up_replaced"] as const]),
+      ...expired.map((token) => [token, "oauth_expired_pruned"] as const),
+    ];
+    return [
+      ...revocations.flatMap(([revoked, reason]) => [
+        this.bindAudit(
+          {
+            action: "personal_access_token.revoked",
+            tokenId: revoked.id,
+            ownerUserId: input.userId,
+            actorUserId: input.userId,
+            requestId: input.requestId,
+            now: input.now,
+            before: auditSnapshot(revoked, oauth.clientId),
+            after: {},
+            reason,
+          },
+          { onlyIfIssued: tokenId }
+        ),
+        this.db
+          .prepare(
+            `DELETE FROM personal_access_tokens
+              WHERE id = ? AND user_id = ? AND oauth_client_id = ? AND ${issued}`
+          )
+          .bind(revoked.id, input.userId, oauth.clientId, tokenId),
+      ]),
+      this.db
+        .prepare(
+          `UPDATE oauth_authorization_codes SET issued_token_id = ?
+            WHERE code_hash = ? AND ${issued}`
+        )
+        .bind(tokenId, oauth.codeHash, tokenId),
+    ];
+  }
+
+  /**
+   * One user's tokens with their OAuth client and step-up mark, read in one snapshot, so a count
+   * and what is subtracted from it describe the same moment.
+   */
+  async listOwned(userId: string): Promise<OwnedToken[]> {
+    const [tokens, grants] = await this.db.batch([
+      this.db
+        .prepare(
+          `SELECT id, name, display_prefix, created_at, last_used_at, expires_at, oauth_client_id,
+                  oauth_step_up_requested_at
+             FROM personal_access_tokens
+            WHERE user_id = ?
+            ORDER BY created_at DESC, id`
+        )
+        .bind(userId),
+      this.bindGrantsOf(userId),
+    ]);
+    const grantsById = grantsByToken(grants.results as GrantRow[]);
+    return (
+      tokens.results as (TokenRow & {
+        oauth_client_id: string | null;
+        oauth_step_up_requested_at: number | null;
+      })[]
+    ).map((row) => ({
+      ...toPersonalAccessToken(row, grantsById.get(row.id) ?? []),
+      oauthClientId: row.oauth_client_id,
+      stepUpRequestedAt: row.oauth_step_up_requested_at,
+    }));
+  }
+
+  /**
+   * Records that `/mcp` just asked this token's client to step up. A sign-in from the same client
+   * within the window replaces it if it is the only one of the client's tokens so marked. Only a
+   * token issued through sign-in is ever marked.
+   */
+  async recordStepUpRequest(tokenId: string, at: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE personal_access_tokens SET oauth_step_up_requested_at = ?
+          WHERE id = ? AND oauth_client_id IS NOT NULL`
+      )
+      .bind(at, tokenId)
+      .run();
   }
 
   /** One user's tokens, newest first, with their grants. Never includes a secret. */
@@ -230,19 +421,24 @@ export class PersonalAccessTokenStore {
             ORDER BY created_at DESC, id`
         )
         .bind(userId),
-      this.db
-        .prepare(
-          `SELECT grant_row.token_id, grant_row.permission_id
-             FROM personal_access_token_permissions grant_row
-             JOIN personal_access_tokens token ON token.id = grant_row.token_id
-            WHERE token.user_id = ?`
-        )
-        .bind(userId),
+      this.bindGrantsOf(userId),
     ]);
     const grantsById = grantsByToken(grants.results as GrantRow[]);
     return (tokens.results as TokenRow[]).map((row) =>
       toPersonalAccessToken(row, grantsById.get(row.id) ?? [])
     );
+  }
+
+  /** The grant rows of every token one user holds. */
+  private bindGrantsOf(userId: string): SqlStatement {
+    return this.db
+      .prepare(
+        `SELECT grant_row.token_id, grant_row.permission_id
+           FROM personal_access_token_permissions grant_row
+           JOIN personal_access_tokens token ON token.id = grant_row.token_id
+          WHERE token.user_id = ?`
+      )
+      .bind(userId);
   }
 
   /**
@@ -364,6 +560,7 @@ export class PersonalAccessTokenStore {
         now: input.now,
         before: auditSnapshot(existing),
         after: {},
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
       }),
       this.db
         .prepare("DELETE FROM personal_access_tokens WHERE id = ? AND user_id = ?")
@@ -380,7 +577,7 @@ export class PersonalAccessTokenStore {
     const { results } = await this.db
       .prepare(
         `SELECT token.id, token.user_id, token.display_prefix, token.created_at, token.expires_at,
-                grant_row.permission_id
+                token.oauth_client_id, grant_row.permission_id
            FROM personal_access_tokens token
            LEFT JOIN personal_access_token_permissions grant_row ON grant_row.token_id = token.id
           WHERE token.token_hash = ?`
@@ -392,6 +589,7 @@ export class PersonalAccessTokenStore {
         display_prefix: string;
         created_at: number;
         expires_at: number;
+        oauth_client_id: string | null;
         permission_id: string | null;
       }>();
     const row = results[0];
@@ -402,6 +600,7 @@ export class PersonalAccessTokenStore {
       displayPrefix: row.display_prefix,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
+      oauthClientId: row.oauth_client_id,
       grant: canonicalGrant(
         results.flatMap(({ permission_id }) =>
           permission_id !== null && isRegisteredPermission(permission_id) ? [permission_id] : []
@@ -431,16 +630,26 @@ export class PersonalAccessTokenStore {
    * The audit row for a token operation, written only while the token exists: after the insert
    * that issues it, and before the delete that revokes it, in the same batch.
    */
-  private bindAudit(event: {
-    action: Extract<AuditOperationAction, `personal_access_token.${string}`>;
-    tokenId: string;
-    ownerUserId: string;
-    actorUserId: string;
-    requestId: string;
-    now: number;
-    before: object;
-    after: object;
-  }): SqlStatement {
+  private bindAudit(
+    event: {
+      action: Extract<AuditOperationAction, `personal_access_token.${string}`>;
+      tokenId: string;
+      ownerUserId: string;
+      actorUserId: string;
+      requestId: string;
+      now: number;
+      before: object;
+      after: object;
+      /** The system's reason for a revocation; the audit reason code, and in its request. */
+      reason?: TokenRevocationReason;
+    },
+    /** Write the event only if this other token exists too: the one an OAuth issue inserted. */
+    options: { onlyIfIssued?: string } = {}
+  ): SqlStatement {
+    const issuedGuard =
+      options.onlyIfIssued === undefined
+        ? ""
+        : " AND EXISTS (SELECT 1 FROM personal_access_tokens WHERE id = ?)";
     return this.db
       .prepare(
         `INSERT INTO authorization_audit_events
@@ -448,7 +657,7 @@ export class PersonalAccessTokenStore {
             action, resource_type, resource_id, target_user_id_snapshot, team_id,
             reason_code, operation_result, metadata_json)
          SELECT ?, ?, ?, 'user', ?, ?, 'personal_access_token', ?, ?, NULL, ?, 'applied', ?
-         WHERE EXISTS (SELECT 1 FROM personal_access_tokens WHERE id = ? AND user_id = ?)`
+         WHERE EXISTS (SELECT 1 FROM personal_access_tokens WHERE id = ? AND user_id = ?)${issuedGuard}`
       )
       .bind(
         crypto.randomUUID(),
@@ -458,10 +667,15 @@ export class PersonalAccessTokenStore {
         event.action,
         event.tokenId,
         event.ownerUserId,
-        event.action,
-        JSON.stringify({ before: event.before, requested: {}, after: event.after }),
+        event.reason ?? event.action,
+        JSON.stringify({
+          before: event.before,
+          requested: event.reason === undefined ? {} : { reason: event.reason },
+          after: event.after,
+        }),
         event.tokenId,
-        event.ownerUserId
+        event.ownerUserId,
+        ...(options.onlyIfIssued === undefined ? [] : [options.onlyIfIssued])
       );
   }
 }

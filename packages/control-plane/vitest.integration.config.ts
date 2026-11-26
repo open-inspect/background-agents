@@ -1,4 +1,5 @@
 import { ManagedMcpGatewayFixture } from "./test/fixtures/managed-mcp-gateway";
+import { OAuthClientMetadataFixture } from "./test/fixtures/oauth-client-metadata";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import path from "path";
@@ -41,6 +42,7 @@ export default defineConfig({
     cloudflareTest(async () => {
       const migrations = await readD1Migrations(migrationsPath);
       const mcpFixture = new ManagedMcpGatewayFixture();
+      const oauthClients = new OAuthClientMetadataFixture();
       let mcpExchangeStarted = false;
       let releaseMcpExchange: (() => void) | undefined;
 
@@ -55,6 +57,7 @@ export default defineConfig({
           compatibilityFlags: ["nodejs_compat"],
           async outboundService(request: Request) {
             const url = new URL(request.url);
+            if (oauthClients.handles(url)) return oauthClients.fetch(request);
             if (url.origin === mcpFixture.origin) {
               if (url.pathname === "/__fixture/pause") {
                 mcpExchangeStarted = false;
@@ -211,6 +214,8 @@ export default defineConfig({
             MODAL_WORKSPACE: "test-workspace",
             SLACK_BOT_TOKEN: "xoxb-test-integration",
             WEB_APP_URL: "https://app.test.local",
+            // Every deployment sets the control plane's public URL; OAuth sign-in is built on it.
+            WORKER_URL: "https://test.local",
             APP_NAME: "Open-Inspect",
             TEST_MIGRATIONS: migrations,
           },

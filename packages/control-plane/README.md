@@ -405,12 +405,45 @@ is revoked too. One issued after it is not: only suspension stops a member issui
 keeps issuing through every pass, it answers `409 revoke_all_incomplete` with the count revoked;
 suspend the member and revoke again.
 
-The policy (`enabled`, `maxLifetimeDays`, `allowedPermissions`) is checked at authentication, so it
-applies to existing tokens at once: disabled refuses every token with `401`, a lower lifetime cap
-ends tokens older than it, and a permission ceiling narrows every grant. A ceiling that allows a
-permission must also allow its prerequisites (`skills.manage` needs `skills.read`), or the update is
-refused with `400 permission_prerequisite_missing`. A policy change writes
-`workspace.personal_access_token_policy_updated` in the same transaction as the change.
+The policy (`enabled`, `mcpEnabled`, `oauthClientIds`, `maxLifetimeDays`, `allowedPermissions`) is
+checked at authentication, so it applies to existing tokens at once: disabled refuses every token
+with `401`, `mcpEnabled: false` refuses every token issued through OAuth sign-in, as does taking its
+client off `oauthClientIds`, a lower lifetime cap ends tokens older than it, and a permission
+ceiling narrows every grant. `oauthClientIds` lists the client ID metadata document URLs that may
+sign in (null: Claude's apps); like `mcpEnabled`, a write that omits it keeps the stored value. A
+ceiling that allows a permission must also allow its prerequisites (`skills.manage` needs
+`skills.read`), or the update is refused with `400 permission_prerequisite_missing`. A policy change
+writes `workspace.personal_access_token_policy_updated` in the same transaction as the change.
+
+### OAuth sign-in
+
+The web app's origin is the issuer. It serves `/.well-known/oauth-authorization-server`, the consent
+page at `/oauth/authorize`, and `/oauth/token`, each backed by a route here:
+
+| Endpoint                                        | Method | Auth                 | Description                                                 |
+| ----------------------------------------------- | ------ | -------------------- | ----------------------------------------------------------- |
+| `/.well-known/oauth-protected-resource/mcp`     | GET    | public               | RFC 9728 metadata for `/mcp`; `404` while sign-in is off    |
+| `/internal/oauth/authorization-server-metadata` | GET    | `web` service        | RFC 8414 metadata the web app publishes; `404` while off    |
+| `/internal/oauth/token`                         | POST   | `web` service        | Exchange a code for a token (the web app forwards the form) |
+| `/oauth/authorize/check`                        | POST   | browser, active self | What the consent page shows for an authorization request    |
+| `/oauth/authorize/approve`                      | POST   | browser, active self | Record the member's approval as a code → `{ redirectUrl }`  |
+
+Sign-in is available only with both `WEB_APP_URL` (the issuer) and `WORKER_URL` (the MCP server is
+`<WORKER_URL>/mcp`), and while the policy has tokens and MCP clients on. Clients are identified by
+client ID metadata documents from the policy's `oauthClientIds`; only listed documents are fetched,
+without redirects, capped at 5 KiB and 5 seconds. Codes use PKCE S256 and are held as hashes in
+`oauth_authorization_codes` for five minutes, single-use, with a replay revoking what the code
+issued. The access token is a personal access token whose row records `oauth_client_id`; there is no
+refresh token and no revocation endpoint. `resource` is checked but not bound to the token, which
+works on every route that accepts tokens. A step-up challenge from `/mcp` marks the challenged token
+(`oauth_step_up_requested_at`); the client's next sign-in within `STEP_UP_REPLACEMENT_WINDOW_MS`
+whose approved grant writes replaces that token if it is the only one of the client's challenged in
+the window (none if several were), and approval is refused with `409 oauth_replacement_changed` if
+it no longer matches what the page showed. Issuing also deletes the client's expired tokens, only if
+the new token is inserted, and they do not count against the cap. Every issuance rule is checked at
+approve (the same rules and codes as `POST /personal-access-tokens`); the exchange answers RFC 6749
+errors (`invalid_grant`, `invalid_target`, `unsupported_grant_type`, `invalid_request`). See
+[OAuth sign-in for MCP clients](../../docs/AUTH.md#oauth-sign-in-for-mcp-clients).
 
 ### Audit Events
 
@@ -805,10 +838,13 @@ request is one message: JSON-RPC batches and `subscriptions/listen` are refused.
 handler-authenticated and grants nothing itself. It answers `404` while the API policy's
 `mcp_enabled` is off, refuses a browser `Origin` whose hostname is not that of `WEB_APP_URL` or
 `WORKER_URL`, and requires a live personal access token (a `401` with a `Bearer` challenge
-otherwise, and also when a service signature is present). Each tool call is then a request to this
-same app, made in-process with the same bearer token, so the route it reaches admits, narrows, and
-audits it exactly as a direct API call. Tool arguments are never logged. The local stdio server in
-`packages/mcp-server` registers the same tools and is deprecated.
+otherwise, and also when a service signature is present). While [OAuth sign-in](#oauth-sign-in) is
+available the challenge carries `resource_metadata` and the read-only `scope`, and a tool call by a
+token issued through sign-in that lacks a permission the tool needs, which its owner could grant,
+answers `403` with `error="insufficient_scope"` and the full scope set instead of running. Each tool
+call is then a request to this same app, made in-process with the same bearer token, so the route it
+reaches admits, narrows, and audits it exactly as a direct API call. Tool arguments are never
+logged. The local stdio server in `packages/mcp-server` registers the same tools and is deprecated.
 
 Five rules reach past route admission:
 

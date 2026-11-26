@@ -27,7 +27,14 @@ const PROVIDER_PRESENTATION = {
   }
 >;
 
-export function SignInProviderButtons({ providers }: { providers: readonly SignInProvider[] }) {
+export function SignInProviderButtons({
+  providers,
+  returnTo,
+}: {
+  providers: readonly SignInProvider[];
+  /** A same-origin path to return to once signed in; the home page when omitted. */
+  returnTo?: string;
+}) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,7 +42,7 @@ export function SignInProviderButtons({ providers }: { providers: readonly SignI
     setError(null);
     setPending(true);
     try {
-      await signIn(provider);
+      await signIn(provider, returnTo);
     } catch {
       setError("Could not start sign in. Please try again.");
       setPending(false);

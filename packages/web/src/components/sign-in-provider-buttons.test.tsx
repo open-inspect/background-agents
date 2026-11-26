@@ -41,7 +41,7 @@ describe("SignInProviderButtons", () => {
     await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
 
     expect(signIn).toHaveBeenCalledOnce();
-    expect(signIn).toHaveBeenCalledWith("github");
+    expect(signIn).toHaveBeenCalledWith("github", undefined);
     expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Sign in with Google" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("Starting sign in");

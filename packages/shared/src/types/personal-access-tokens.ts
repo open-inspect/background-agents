@@ -116,6 +116,55 @@ export function isPersonalAccessTokenGrantable(
   return PERSONAL_ACCESS_TOKEN_GRANTABILITY[permission] === "grantable";
 }
 
+/**
+ * Whether each grantable permission only reads. Exhaustive, so making a permission grantable does
+ * not compile until someone decides which it is. A grant of reads alone can change nothing: it is
+ * the read-only choice when issuing a token, and what an MCP client signing in with OAuth is
+ * granted unless the user chooses more.
+ */
+export const PERSONAL_ACCESS_TOKEN_PERMISSION_ACCESS = {
+  "analytics.read": "read",
+  "automations.create": "write",
+  "automations.manage.any": "write",
+  "automations.manage.own": "write",
+  "automations.read": "read",
+  "automations.trigger.any": "write",
+  "automations.trigger.own": "write",
+  "environments.read": "read",
+  "environments.use": "write",
+  "image_builds.read": "read",
+  "integrations.read": "read",
+  "mcp_servers.read": "read",
+  "memories.manage_own": "write",
+  "provider_accounts.read": "read",
+  "repositories.read": "read",
+  "repositories.use": "write",
+  "sessions.bulk_archive": "write",
+  "sessions.collaborate": "write",
+  "sessions.create": "write",
+  "sessions.delete": "write",
+  "sessions.export": "read",
+  "sessions.lifecycle": "write",
+  "sessions.read": "read",
+  "sessions.sandbox_access": "write",
+  "skill_profiles.manage_own": "write",
+  "skills.manage": "write",
+  "skills.read": "read",
+  "workspace.audit.read": "read",
+  "workspace.members.read": "read",
+  "workspace.roles.read": "read",
+} as const satisfies Record<PersonalAccessTokenGrantablePermission, "read" | "write">;
+
+/** Whether a permission is grantable and only reads. */
+export function isPersonalAccessTokenReadOnlyPermission(
+  permission: PermissionId
+): permission is PersonalAccessTokenGrantablePermission {
+  return (
+    isPersonalAccessTokenGrantable(permission) &&
+    PERSONAL_ACCESS_TOKEN_PERMISSION_ACCESS[permission] === "read"
+  );
+}
+
 /** Every permission a token may be granted, in registry order. */
 export const PERSONAL_ACCESS_TOKEN_GRANTABLE_PERMISSIONS: readonly PersonalAccessTokenGrantablePermission[] =
   PERMISSION_IDS.filter(isPersonalAccessTokenGrantable);
@@ -154,6 +203,17 @@ export function unmetGrantPrerequisite(
     if (requires) return { permission, requires };
   }
   return null;
+}
+
+/** `permissions` plus the prerequisites each of them needs, in registry order. */
+export function withGrantPrerequisites<Permission extends PermissionId>(
+  permissions: readonly Permission[]
+): PermissionId[] {
+  const present = new Set<PermissionId>(permissions);
+  for (const permission of permissions) {
+    for (const prerequisite of prerequisitesOf(permission)) present.add(prerequisite);
+  }
+  return PERMISSION_IDS.filter((permission) => present.has(permission));
 }
 
 /** `permissions` less every permission whose prerequisites are not also present. */
@@ -222,6 +282,69 @@ export type ListPersonalAccessTokensResponse = z.infer<
 >;
 
 /**
+ * The apps members may sign in to with OAuth when none are configured: Claude's hosted apps
+ * (claude.ai, Desktop, mobile) and Claude Code, by the URLs of their client ID metadata documents.
+ */
+export const DEFAULT_OAUTH_CLIENT_IDS: readonly string[] = [
+  "https://claude.ai/oauth/mcp-oauth-client-metadata",
+  "https://claude.ai/oauth/claude-code-client-metadata",
+];
+
+/** Most apps the API policy may list as able to sign in with OAuth. */
+export const OAUTH_CLIENT_IDS_MAX = 20;
+
+const OAUTH_CLIENT_ID_MAX_LENGTH = 2048;
+
+/** Host suffixes that name a machine on a private network rather than a public site. */
+const PRIVATE_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".lan", ".home.arpa"];
+
+/**
+ * Whether a hostname names a public site: not an IP address, not a single-label name, and not a
+ * private-network name. The control plane fetches a listed client's document, so a listed URL must
+ * not point it at its own network.
+ */
+function isPublicHostname(hostname: string): boolean {
+  if (hostname.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return false;
+  if (!hostname.includes(".") || hostname === "localhost") return false;
+  return !PRIVATE_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+}
+
+/**
+ * Whether a string can name an OAuth client by its client ID metadata document: an HTTPS URL on a
+ * public hostname with a path, no fragment, no credentials, and no dot segments, written exactly as
+ * a URL parser would write it back, so a client ID compares by plain string equality.
+ */
+export function isOAuthClientIdUrl(value: string): boolean {
+  if (value.length > OAUTH_CLIENT_ID_MAX_LENGTH) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    url.href === value &&
+    url.pathname !== "/" &&
+    url.hash === "" &&
+    !value.includes("#") &&
+    url.username === "" &&
+    url.password === "" &&
+    isPublicHostname(url.hostname) &&
+    !/\/\.{1,2}(\/|$)/.test(url.pathname)
+  );
+}
+
+const oauthClientIdsSchema = z
+  .array(
+    z.string().refine(isOAuthClientIdUrl, {
+      message: "An app is named by the HTTPS URL of its client ID metadata document",
+    })
+  )
+  .max(OAUTH_CLIENT_IDS_MAX)
+  .refine((ids) => new Set(ids).size === ids.length, { message: "An app is listed twice" });
+
+/**
  * The workspace's rules for personal access tokens, set by holders of
  * `workspace.personal_access_tokens.manage`. They apply to existing tokens at once, not only to new
  * ones: disabling refuses every token, a lower lifetime cap expires older tokens early, and a
@@ -235,6 +358,11 @@ export const personalAccessTokenPolicySchema = z.strictObject({
    * client that predates it cannot turn it back on by saving the rest of the policy.
    */
   mcpEnabled: z.boolean().optional(),
+  /**
+   * The apps members may sign in to with OAuth, each named by its client ID metadata document URL.
+   * Null: DEFAULT_OAUTH_CLIENT_IDS. Optional on a write, like `mcpEnabled`.
+   */
+  oauthClientIds: oauthClientIdsSchema.nullable().optional(),
   /** Days a token may live, counted from issue. Null: PERSONAL_ACCESS_TOKEN_MAX_LIFETIME_DAYS. */
   maxLifetimeDays: z
     .number()
@@ -250,6 +378,7 @@ export type PersonalAccessTokenPolicy = z.infer<typeof personalAccessTokenPolicy
 /** The policy as administrators edit it: the rules plus the revision an update must name. */
 export const personalAccessTokenPolicySnapshotSchema = personalAccessTokenPolicySchema.extend({
   mcpEnabled: z.boolean(),
+  oauthClientIds: oauthClientIdsSchema.nullable(),
   revision: z.number().int().nonnegative(),
   updatedAt: z.number().nullable(),
   updatedByUserId: z.string().nullable(),
@@ -261,6 +390,13 @@ export type PersonalAccessTokenPolicySnapshot = z.infer<
 /** The longest lifetime, in days, the policy allows a token. */
 export function personalAccessTokenMaxLifetimeDays(policy: PersonalAccessTokenPolicy): number {
   return policy.maxLifetimeDays ?? PERSONAL_ACCESS_TOKEN_MAX_LIFETIME_DAYS;
+}
+
+/** The apps the policy lets members sign in to with OAuth. */
+export function personalAccessTokenOAuthClientIds(
+  policy: PersonalAccessTokenPolicy
+): readonly string[] {
+  return policy.oauthClientIds ?? DEFAULT_OAUTH_CLIENT_IDS;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;

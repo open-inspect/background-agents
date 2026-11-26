@@ -9,6 +9,7 @@ import {
 } from "./browser-auth-session-contract";
 import { browserApiFetch } from "./browser-api-fetch";
 import { clearStoredPromptDrafts } from "./prompt-drafts";
+import { safeReturnTo } from "./sign-in-return-to";
 
 const BROWSER_AUTH_SESSION_PATH = "/api/auth/get-session";
 
@@ -28,13 +29,17 @@ export type AuthSessionState =
       status: "loading" | "unauthenticated" | "unavailable";
     };
 
-export async function signIn(provider: SignInProvider): Promise<void> {
+/**
+ * Start signing in with `provider`, returning afterwards to `returnTo`, a same-origin path (see
+ * `safeReturnTo`), or to the home page.
+ */
+export async function signIn(provider: SignInProvider, returnTo = "/"): Promise<void> {
   const response = await browserApiFetch("/api/auth/sign-in/social", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       provider,
-      callbackURL: "/",
+      callbackURL: safeReturnTo(returnTo) ?? "/",
       disableRedirect: true,
     }),
   });

@@ -11,6 +11,7 @@ import {
   PERSONAL_ACCESS_TOKEN_DISPLAY_CHARS,
   PERSONAL_ACCESS_TOKEN_PREFIX,
   personalAccessTokenEffectiveExpiry,
+  personalAccessTokenOAuthClientIds,
   personalAccessTokenPolicyAllows,
   type PersonalAccessTokenPolicy,
 } from "@open-inspect/shared/types/personal-access-tokens";
@@ -49,10 +50,12 @@ export type PersonalAccessTokenAuthentication =
   /** Unknown, expired, or past the policy's lifetime cap; reported identically to the caller. */
   | { kind: "rejected" }
   /**
-   * The workspace policy has turned tokens off. Reported only for a live token, which tells its
-   * holder nothing they could not already learn by using it.
+   * The workspace policy has turned tokens off, or, for a token issued to an app through OAuth
+   * sign-in, turned MCP clients off (`scope: "oauth"`) or no longer lists the app
+   * (`scope: "oauth_client"`). Reported only for a live token, which tells
+   * its holder nothing they could not already learn by using it.
    */
-  | { kind: "disabled" };
+  | { kind: "disabled"; scope: "tokens" | "oauth" | "oauth_client" };
 
 /**
  * Resolves a presented token under the workspace policy. The policy applies to existing tokens:
@@ -73,7 +76,16 @@ export async function authenticatePersonalAccessToken(
   if (!credential) return { kind: "rejected" };
   const policy = await policies.get();
   if (personalAccessTokenEffectiveExpiry(credential, policy) <= now) return { kind: "rejected" };
-  if (!policy.enabled) return { kind: "disabled" };
+  if (!policy.enabled) return { kind: "disabled", scope: "tokens" };
+  // A token issued through OAuth sign-in belongs to an MCP client, so the switch that turns MCP
+  // clients off stops it everywhere, not only at /mcp, as does taking its client off the list of
+  // apps that may sign in.
+  if (credential.oauthClientId !== null) {
+    if (policy.mcpEnabled === false) return { kind: "disabled", scope: "oauth" };
+    if (!personalAccessTokenOAuthClientIds(policy).includes(credential.oauthClientId)) {
+      return { kind: "disabled", scope: "oauth_client" };
+    }
+  }
   return {
     kind: "authenticated",
     credential: {

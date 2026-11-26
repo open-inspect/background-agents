@@ -1,10 +1,10 @@
 ---
 title: Govern access tokens
-description: Turn personal access tokens or MCP off, cap token lifetime, limit the permissions tokens may hold, and revoke any member's tokens.
+description: Turn personal access tokens or MCP off, choose which apps can sign in with OAuth, cap token lifetime, limit the permissions tokens may hold, and revoke any member's tokens.
 audience: admin
 owner: security
 status: published
-lastReviewed: "2026-11-25"
+lastReviewed: "2026-11-26"
 relatedCode:
   - packages/control-plane/src/routes/personal-access-token-admin.ts
   - packages/control-plane/src/db/personal-access-token-policy.ts
@@ -13,9 +13,11 @@ relatedCode:
   - packages/web/src/components/settings/personal-access-token-admin-settings.tsx
   - terraform/d1/migrations/0097_personal_access_token_policy.sql
   - terraform/d1/migrations/0107_api_policy_mcp_enabled.sql
+  - terraform/d1/migrations/0108_oauth_sign_in.sql
+  - packages/control-plane/src/oauth/server.ts
 ---
 
-Members issue [personal access tokens](/integrations/personal-access-tokens) to let tools such as the [MCP server](/integrations/mcp-server) call OpenInspect as them. **Settings › API policy** lets you set the rules every token follows, turn the hosted MCP server off, and revoke any member's tokens.
+Members issue [personal access tokens](/integrations/personal-access-tokens) to let tools such as the [MCP server](/integrations/mcp-server) call OpenInspect as them, either in Settings or by signing an MCP client in with OAuth, which issues the client a token. **Settings › API policy** lets you set the rules every token follows, turn the hosted MCP server and OAuth sign-in off, choose which apps can sign in, and revoke any member's tokens.
 
 You need the **Manage personal access tokens** permission (`workspace.personal_access_tokens.manage`). Owners and Administrators have it; you can add it to a custom role, for example a security reviewer's, without granting member management.
 
@@ -23,12 +25,21 @@ You need the **Manage personal access tokens** permission (`workspace.personal_a
 
 The policy applies to existing tokens the moment you save it, not only to new ones:
 
-| Setting                          | Effect                                                                                                                                                                                                                                      |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Allow personal access tokens** | Off refuses every token at once and stops members creating new ones. Tokens are not revoked: turning it back on restores them.                                                                                                              |
-| **Allow MCP clients**            | Off answers the MCP server at `/mcp` as though it did not exist. Tokens keep working with the API directly. The setting shows the server's URL to give members.                                                                             |
-| **Longest lifetime**             | Tokens older than this stop working, even if they were issued for longer. New tokens cannot be issued for longer.                                                                                                                           |
-| **Permissions tokens may hold**  | Narrows every token's grant to these permissions, and new tokens cannot be granted others. Workspace administration permissions are never available. Allowing **Manage skills** also allows **Read skills**, which a token needs to use it. |
+| Setting                          | Effect                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Allow personal access tokens** | Off refuses every token at once and stops members creating new ones. Tokens are not revoked: turning it back on restores them.                                                                                                                                                                                                   |
+| **Allow MCP clients**            | Off answers the MCP server at `/mcp` as though it did not exist, turns OAuth sign-in off, and refuses every token an app received by signing in, everywhere. Tokens members made in Settings keep working with the API directly. The setting shows the server's URL to give members.                                             |
+| **Apps that can sign in**        | The MCP clients members can sign in with OAuth, each named by the URL of its client ID metadata document. **Claude (default)** allows claude.ai, Claude Desktop and mobile, and Claude Code. OpenInspect fetches only the documents listed here, and only from public hostnames. Removing an app stops the tokens it was issued. |
+| **Longest lifetime**             | Tokens older than this stop working, even if they were issued for longer. New tokens cannot be issued for longer.                                                                                                                                                                                                                |
+| **Permissions tokens may hold**  | Narrows every token's grant to these permissions, and new tokens cannot be granted others. Workspace administration permissions are never available. Allowing **Manage skills** also allows **Read skills**, which a token needs to use it.                                                                                      |
+
+A token an app receives by signing in is an ordinary token: the lifetime cap and permission ceiling apply to it, the member chooses its permissions and lifetime when they allow the app, and it is listed and revoked like any other. Apps sign in with a client ID metadata document only; there is no dynamic client registration, and no refresh token, so an app signs in again when its token expires.
+
+### Sign-in needs reachable URLs
+
+OAuth sign-in uses both public URLs: the web app's origin is the issuer, which serves `/.well-known/oauth-authorization-server`, the consent page at `/oauth/authorize`, and the token endpoint at `/oauth/token`, and the control plane serves the MCP server and its `/.well-known/oauth-protected-resource/mcp`. Sign-in is unavailable unless the control plane knows both (`WEB_APP_URL` and `WORKER_URL`).
+
+Hosted Claude apps fetch these from Anthropic's servers, not the member's browser. Anything in front of the web app that challenges unauthenticated requests, such as Vercel deployment protection or Cloudflare Access, breaks sign-in; leave the metadata and token paths reachable, and allow Anthropic's outbound addresses through any firewall. Anthropic publishes them on its [IP addresses page](https://platform.claude.com/docs/en/api/ip-addresses) and says they will not change without notice; when this page was written they were the IPv4 ranges `160.79.104.0/21` and `153.61.208.0/20`.
 
 Turning tokens off is the fastest response to a suspected leak when you do not know which token leaked. Every policy change is recorded in the [audit log](/administration/audit-log) with the settings before and after, and saving refuses to overwrite a change someone else made since you loaded the page.
 

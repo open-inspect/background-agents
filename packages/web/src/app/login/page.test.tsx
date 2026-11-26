@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import * as matchers from "@testing-library/jest-dom/matchers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -131,5 +131,53 @@ describe("LoginPage", () => {
 
   it("is always rendered at request time", () => {
     expect(dynamic).toBe("force-dynamic");
+  });
+});
+
+describe("LoginPage return-to", () => {
+  it("signs in returning to the requested path", async () => {
+    const { signIn } = await import("@/lib/auth-session");
+    render(
+      await LoginPage({ searchParams: Promise.resolve({ returnTo: "/oauth/authorize?state=1" }) })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
+    expect(signIn).toHaveBeenCalledWith("github", "/oauth/authorize?state=1");
+  });
+
+  it("returns a signed-in user to a same-origin path", async () => {
+    mocks.getServerAuthSession.mockResolvedValue({ user: { id: "user-1" } });
+    await LoginPage({ searchParams: Promise.resolve({ returnTo: "/oauth/authorize?state=1" }) });
+    expect(mocks.redirect).toHaveBeenCalledWith("/oauth/authorize?state=1");
+  });
+
+  it.each(["https://evil.example/", "//evil.example", ["/a", "/b"]])(
+    "sends a signed-in user home instead of to %j",
+    async (returnTo) => {
+      mocks.getServerAuthSession.mockResolvedValue({ user: { id: "user-1" } });
+      await LoginPage({ searchParams: Promise.resolve({ returnTo }) });
+      expect(mocks.redirect).toHaveBeenCalledWith("/");
+    }
+  );
+});
+
+describe("LoginPage when sign-in is unavailable", () => {
+  it("keeps where it returns to in the retry link", async () => {
+    mocks.getServerAuthSession.mockRejectedValue(new AuthenticationUnavailableError(new Error()));
+    render(
+      await LoginPage({ searchParams: Promise.resolve({ returnTo: "/oauth/authorize?state=1" }) })
+    );
+    expect(screen.getByRole("link", { name: "Try again" })).toHaveAttribute(
+      "href",
+      "/login?returnTo=%2Foauth%2Fauthorize%3Fstate%3D1"
+    );
+    cleanup();
+
+    mocks.getServerAuthSession.mockResolvedValue(null);
+    mocks.getEnabledSignInProviders.mockRejectedValue(
+      new AuthenticationUnavailableError(new Error())
+    );
+    render(await LoginPage({ searchParams: Promise.resolve({ returnTo: "//evil.example" }) }));
+    // An unsafe destination is dropped, as it is everywhere else.
+    expect(screen.getByRole("link", { name: "Try again" })).toHaveAttribute("href", "/login");
   });
 });

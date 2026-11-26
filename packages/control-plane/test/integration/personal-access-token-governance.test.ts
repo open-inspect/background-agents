@@ -129,11 +129,12 @@ describe("the workspace token policy", () => {
     expect(audits.results).toHaveLength(1);
     expect(audits.results[0]?.actor_user_id_snapshot).toBe(ADMIN.userId);
     expect(JSON.parse(audits.results[0]!.metadata_json)).toEqual({
-      before: { ...OPEN, mcpEnabled: true },
+      before: { ...OPEN, mcpEnabled: true, oauthClientIds: null },
       requested: { expectedRevision: 0 },
       after: {
         ...OPEN,
         mcpEnabled: true,
+        oauthClientIds: null,
         maxLifetimeDays: 30,
         allowedPermissions: ["sessions.read"],
       },
@@ -161,10 +162,52 @@ describe("the workspace token policy", () => {
     expect(
       audits.results.map((row) => (JSON.parse(row.metadata_json) as { after: unknown }).after)
     ).toEqual([
-      { ...OPEN, mcpEnabled: false },
-      { ...OPEN, mcpEnabled: false, maxLifetimeDays: 30 },
-      { ...OPEN, mcpEnabled: true },
+      { ...OPEN, mcpEnabled: false, oauthClientIds: null },
+      { ...OPEN, mcpEnabled: false, maxLifetimeDays: 30, oauthClientIds: null },
+      { ...OPEN, mcpEnabled: true, oauthClientIds: null },
     ]);
+  });
+
+  it("lists the apps that may sign in with OAuth, defaulting to Claude's", async () => {
+    expect(await policy()).toMatchObject({ oauthClientIds: null, revision: 0 });
+
+    const listed = ["https://client.example/oauth/metadata"];
+    expect((await setPolicy({ oauthClientIds: listed })).status).toBe(200);
+    expect(await policy()).toMatchObject({ oauthClientIds: listed, revision: 1 });
+
+    // A client that predates the list saves the rest of the policy without it.
+    expect((await setPolicy({ maxLifetimeDays: 30 })).status).toBe(200);
+    expect(await policy()).toMatchObject({ oauthClientIds: listed, revision: 2 });
+
+    // Null returns to the defaults.
+    expect((await setPolicy({ oauthClientIds: null })).status).toBe(200);
+    expect(await policy()).toMatchObject({ oauthClientIds: null, revision: 3 });
+
+    // Only HTTPS document URLs, written as a parser writes them, each once.
+    for (const invalid of [
+      ["http://client.example/metadata"],
+      ["https://client.example"],
+      ["https://client.example/metadata#fragment"],
+      ["https://user@client.example/metadata"],
+      ["https://Client.example/metadata"],
+      ["https://client.example/a/../metadata"],
+      ["https://client.example/metadata", "https://client.example/metadata"],
+    ]) {
+      expect((await setPolicy({ oauthClientIds: invalid })).status, invalid.join(" ")).toBe(400);
+    }
+    expect((await policy()).revision).toBe(3);
+
+    const audits = await env.DB.prepare(
+      `SELECT metadata_json FROM authorization_audit_events
+        WHERE action = 'workspace.personal_access_token_policy_updated' ORDER BY occurred_at, rowid`
+    ).all<{ metadata_json: string }>();
+    expect(
+      audits.results.map(
+        (row) =>
+          (JSON.parse(row.metadata_json) as { after: { oauthClientIds: unknown } }).after
+            .oauthClientIds
+      )
+    ).toEqual([listed, listed, null]);
   });
 
   it("refuses a ceiling that allows a permission without its prerequisite", async () => {
@@ -324,6 +367,7 @@ describe("the workspace token policy", () => {
       .mockResolvedValue({
         ...OPEN,
         mcpEnabled: true,
+        oauthClientIds: null,
         maxLifetimeDays: 7,
         revision: 9,
         updatedAt: 0,
@@ -343,6 +387,7 @@ describe("the workspace token policy", () => {
       policy: {
         ...OPEN,
         mcpEnabled: true,
+        oauthClientIds: null,
         maxLifetimeDays: 30,
         revision: 1,
         updatedAt: 1234,
@@ -384,6 +429,33 @@ describe("the workspace token policy", () => {
     const response = await serviceFetch(`${BASE}/personal-access-tokens/policy`, { as: MEMBER });
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ...OPEN, maxLifetimeDays: 90 });
+  });
+
+  it("refuses a token issued to an app the policy turns off or no longer lists, and says which", async () => {
+    const { token, id } = await issueToken(MEMBER.userId, ["sessions.read"]);
+    await env.DB.prepare("UPDATE personal_access_tokens SET oauth_client_id = ? WHERE id = ?")
+      .bind("https://claude.ai/oauth/claude-code-client-metadata", id)
+      .run();
+    expect((await withToken(token, "/sessions")).status).toBe(200);
+
+    expect((await setPolicy({ oauthClientIds: ["https://client.example/metadata"] })).status).toBe(
+      200
+    );
+    const delisted = await withToken(token, "/sessions");
+    expect(delisted.status).toBe(401);
+    await expect(delisted.json()).resolves.toEqual({
+      error: "This app is no longer allowed to sign in to this workspace",
+    });
+
+    expect((await setPolicy({ oauthClientIds: null, mcpEnabled: false })).status).toBe(200);
+    const off = await withToken(token, "/sessions");
+    expect(off.status).toBe(401);
+    await expect(off.json()).resolves.toEqual({
+      error: "MCP clients are disabled for this workspace",
+    });
+
+    expect((await setPolicy({ mcpEnabled: true })).status).toBe(200);
+    expect((await withToken(token, "/sessions")).status).toBe(200);
   });
 
   it("turns every token off, and back on, without revoking any", async () => {

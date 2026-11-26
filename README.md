@@ -246,7 +246,7 @@ Interact with agents from wherever your team already works:
   activities, and link the resulting PR. See [Linear integration](docs/integrations/LINEAR.md)
 - **MCP Server** — The control plane serves MCP at `/mcp`, so Claude Code or another MCP client can
   read sessions and automation runs, and optionally start and steer sessions, create and run
-  automations, or import skills, with a personal access token. See
+  automations, or import skills, signing in with OAuth or with a personal access token. See
   [MCP server](packages/mcp-server/README.md)
 - **Webhooks** — Trigger sessions from any external system via authenticated HTTP POST
 

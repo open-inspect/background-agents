@@ -1,12 +1,13 @@
 # @open-inspect/mcp-server
 
 > **Deprecated.** The control plane now serves the same tools at `https://<control-plane>/mcp`,
-> which a client reaches with nothing to build or install:
+> which a client reaches with nothing to build or install, signing in with OAuth:
 >
 > ```bash
-> claude mcp add --transport http open-inspect https://<your-control-plane>/mcp \
->   --header "Authorization: Bearer oi_pat_..."
+> claude mcp add --transport http open-inspect https://<your-control-plane>/mcp
 > ```
+>
+> or with a token, by adding `--header "Authorization: Bearer oi_pat_..."`.
 >
 > This package will be removed once the hosted server covers everything it does. The tools and the
 > control-plane client live in `packages/control-plane/src/mcp-tools/`; this package only registers

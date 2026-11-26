@@ -1,6 +1,7 @@
 import { mcpConnectionRoutes } from "./mcp-connections";
 import { mcpProxyRoutes } from "./mcp-proxy";
 import { hostedMcpRoutes } from "./hosted-mcp";
+import { oauthRoutes } from "./oauth";
 /**
  * Canonical control-plane HTTP route catalog.
  *
@@ -106,6 +107,8 @@ export const catalog: readonly RouteModule[] = [
   mcpProxyRoutes,
   // The hosted MCP server, over personal access tokens
   hostedMcpRoutes,
+  // OAuth sign-in for MCP clients, which issues them personal access tokens
+  oauthRoutes,
 
   // Analytics
   analyticsRoutes,

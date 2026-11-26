@@ -51,6 +51,7 @@ describe("authenticatePersonalAccessToken", () => {
     createdAt: NOW - DAY_MS,
     expiresAt: NOW + 1,
     grant: ["sessions.read", "automations.create"],
+    oauthClientId: null,
   };
   const open: PersonalAccessTokenPolicy = {
     enabled: true,
@@ -85,7 +86,59 @@ describe("authenticatePersonalAccessToken", () => {
   it("refuses a live token while the policy disables tokens", async () => {
     await expect(
       authenticatePersonalAccessToken(lookup(credential), policy({ enabled: false }), TOKEN, NOW)
-    ).resolves.toEqual({ kind: "disabled" });
+    ).resolves.toEqual({ kind: "disabled", scope: "tokens" });
+  });
+
+  it("refuses a token issued to an app the policy no longer lists", async () => {
+    const issuedToApp = { ...credential, oauthClientId: "https://app.example/client" };
+    await expect(
+      authenticatePersonalAccessToken(
+        lookup(issuedToApp),
+        policy({ mcpEnabled: true, oauthClientIds: ["https://other.example/client"] }),
+        TOKEN,
+        NOW
+      )
+    ).resolves.toEqual({ kind: "disabled", scope: "oauth_client" });
+    // Nor one issued to a default app once the list replaces the defaults.
+    const issuedToClaude = {
+      ...credential,
+      oauthClientId: "https://claude.ai/oauth/mcp-oauth-client-metadata",
+    };
+    await expect(
+      authenticatePersonalAccessToken(
+        lookup(issuedToClaude),
+        policy({ oauthClientIds: ["https://other.example/client"] }),
+        TOKEN,
+        NOW
+      )
+    ).resolves.toEqual({ kind: "disabled", scope: "oauth_client" });
+    await expect(
+      authenticatePersonalAccessToken(lookup(issuedToClaude), policy(), TOKEN, NOW)
+    ).resolves.toMatchObject({ kind: "authenticated" });
+  });
+
+  it("refuses a token issued through OAuth sign-in while MCP clients are off", async () => {
+    const issuedToApp = { ...credential, oauthClientId: "https://app.example/client" };
+    await expect(
+      authenticatePersonalAccessToken(
+        lookup(issuedToApp),
+        policy({ mcpEnabled: false }),
+        TOKEN,
+        NOW
+      )
+    ).resolves.toEqual({ kind: "disabled", scope: "oauth" });
+    // A token made in Settings keeps working with the API, and the app's token works while on.
+    await expect(
+      authenticatePersonalAccessToken(lookup(credential), policy({ mcpEnabled: false }), TOKEN, NOW)
+    ).resolves.toMatchObject({ kind: "authenticated" });
+    await expect(
+      authenticatePersonalAccessToken(
+        lookup(issuedToApp),
+        policy({ mcpEnabled: true, oauthClientIds: [issuedToApp.oauthClientId] }),
+        TOKEN,
+        NOW
+      )
+    ).resolves.toMatchObject({ kind: "authenticated" });
   });
 
   it("reports unknown and expired tokens alike while the policy disables tokens", async () => {

@@ -170,6 +170,23 @@ describe("signIn", () => {
     expect(assign).toHaveBeenCalledWith("https://github.com/login/oauth/authorize?state=state");
   });
 
+  it("returns to a same-origin path after signing in, and home for anything else", async () => {
+    const fetchMock = vi.fn(async (_input: string, _init: RequestInit) =>
+      Response.json({ url: "https://github.com/login/oauth/authorize?state=state" })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("location", { origin: "https://app.example", assign: vi.fn() });
+
+    await signIn("github", "/oauth/authorize?client_id=x");
+    await signIn("github", "https://evil.example/");
+    await signIn("github", "//evil.example/");
+
+    const callbacks = fetchMock.mock.calls.map(
+      ([, init]) => (JSON.parse(init.body as string) as { callbackURL: string }).callbackURL
+    );
+    expect(callbacks).toEqual(["/oauth/authorize?client_id=x", "/", "/"]);
+  });
+
   it("throws instead of navigating when sign-in fails", async () => {
     vi.stubGlobal(
       "fetch",

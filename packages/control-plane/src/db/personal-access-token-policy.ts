@@ -5,6 +5,7 @@
 
 import { PERMISSION_IDS } from "@open-inspect/shared/rbac";
 import {
+  isOAuthClientIdUrl,
   personalAccessTokenPolicySchema,
   type PersonalAccessTokenPolicy,
   type PersonalAccessTokenPolicySnapshot,
@@ -17,6 +18,7 @@ interface PolicyRow {
   mcp_enabled: number;
   max_lifetime_days: number | null;
   allowed_permissions_json: string | null;
+  oauth_client_ids_json: string | null;
   revision: number;
   updated_at: number | null;
   updated_by_user_id_snapshot: string | null;
@@ -34,12 +36,26 @@ function storedCeiling(json: string | null): PersonalAccessTokenPolicy["allowedP
   return PERMISSION_IDS.filter((permission) => named.has(permission));
 }
 
+/**
+ * The stored client list. Entries are validated when written; one that no longer parses (the rules
+ * tightened since) is dropped rather than failing every sign-in.
+ */
+function storedOAuthClientIds(json: string | null): string[] | null {
+  if (json === null) return null;
+  const parsed: unknown = JSON.parse(json);
+  if (!Array.isArray(parsed)) throw new Error("Stored OAuth client list is not a list");
+  return parsed.filter(
+    (value): value is string => typeof value === "string" && isOAuthClientIdUrl(value)
+  );
+}
+
 function toSnapshot(row: PolicyRow): PersonalAccessTokenPolicySnapshot {
   return {
     enabled: row.enabled === 1,
     mcpEnabled: row.mcp_enabled === 1,
     maxLifetimeDays: row.max_lifetime_days,
     allowedPermissions: storedCeiling(row.allowed_permissions_json),
+    oauthClientIds: storedOAuthClientIds(row.oauth_client_ids_json),
     revision: row.revision,
     updatedAt: row.updated_at,
     updatedByUserId: row.updated_by_user_id_snapshot,
@@ -50,6 +66,7 @@ function rulesOf(policy: PersonalAccessTokenPolicy): PersonalAccessTokenPolicy {
   return {
     enabled: policy.enabled,
     mcpEnabled: policy.mcpEnabled,
+    oauthClientIds: policy.oauthClientIds,
     maxLifetimeDays: policy.maxLifetimeDays,
     allowedPermissions: policy.allowedPermissions,
   };
@@ -66,8 +83,8 @@ export class PersonalAccessTokenPolicyStore {
   async get(): Promise<PersonalAccessTokenPolicySnapshot> {
     const row = await this.db
       .prepare(
-        `SELECT enabled, mcp_enabled, max_lifetime_days, allowed_permissions_json, revision, updated_at,
-                updated_by_user_id_snapshot
+        `SELECT enabled, mcp_enabled, max_lifetime_days, allowed_permissions_json, oauth_client_ids_json,
+                revision, updated_at, updated_by_user_id_snapshot
            FROM workspace_personal_access_token_policy WHERE id = 1`
       )
       .first<PolicyRow>();
@@ -94,8 +111,14 @@ export class PersonalAccessTokenPolicyStore {
     const before = await this.get();
     if (before.revision !== input.expectedRevision) return { status: "conflict", policy: before };
     const parsed = personalAccessTokenPolicySchema.parse(input.policy);
-    // A write that omits the MCP switch keeps it, so the audit records the value actually stored.
-    const after = { ...parsed, mcpEnabled: parsed.mcpEnabled ?? before.mcpEnabled };
+    // A write that omits the MCP switch or the client list keeps it, so the audit records the value
+    // actually stored.
+    const after = {
+      ...parsed,
+      mcpEnabled: parsed.mcpEnabled ?? before.mcpEnabled,
+      oauthClientIds:
+        parsed.oauthClientIds === undefined ? before.oauthClientIds : parsed.oauthClientIds,
+    };
     const ceiling =
       after.allowedPermissions === null
         ? null
@@ -141,18 +164,19 @@ export class PersonalAccessTokenPolicyStore {
         .prepare(
           `UPDATE workspace_personal_access_token_policy
               SET enabled = ?, mcp_enabled = ?, max_lifetime_days = ?, allowed_permissions_json = ?,
-                  revision = revision + 1, updated_at = ?, updated_by_user_id_snapshot = ?
+                  oauth_client_ids_json = ?, revision = revision + 1, updated_at = ?, updated_by_user_id_snapshot = ?
              WHERE id = 1 AND revision = ? AND EXISTS (
                SELECT 1 FROM authorization_audit_events WHERE id = ? AND operation_result = 'applied'
              )
-        RETURNING enabled, mcp_enabled, max_lifetime_days, allowed_permissions_json, revision, updated_at,
-                  updated_by_user_id_snapshot`
+        RETURNING enabled, mcp_enabled, max_lifetime_days, allowed_permissions_json,
+                  oauth_client_ids_json, revision, updated_at, updated_by_user_id_snapshot`
         )
         .bind(
           after.enabled ? 1 : 0,
           after.mcpEnabled ? 1 : 0,
           after.maxLifetimeDays,
           ceiling,
+          after.oauthClientIds === null ? null : JSON.stringify(after.oauthClientIds),
           input.now,
           input.actorUserId,
           input.expectedRevision,

@@ -50,11 +50,11 @@ describe("route policy table", () => {
   });
 
   it("publishes the complete canonical route catalog", () => {
-    expect(routes).toHaveLength(265);
+    expect(routes).toHaveLength(270);
 
     const paths = routes.map((route) => route.path);
-    expect(new Set(paths).size).toBe(202);
-    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(265);
+    expect(new Set(paths).size).toBe(207);
+    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(270);
     expect(routeFor("POST", "/sessions/session-1/sandbox-bootstrap")).toMatchObject({
       authentication: { kind: "handler-authenticated" },
       supportedScmProviders: "all",
@@ -77,6 +77,47 @@ describe("route policy table", () => {
         cacheControl: "no-store",
       });
       expect(routeFor(method, "/mcp")).not.toHaveProperty("personalAccessTokens");
+    }
+  });
+
+  it("serves OAuth sign-in for MCP clients without accepting a token anywhere in it", () => {
+    // The resource metadata is public: clients read it before they hold any credential.
+    expect(routeFor("GET", "/.well-known/oauth-protected-resource/mcp")).toMatchObject({
+      authentication: { kind: "public" },
+      authorization: { kind: "none" },
+      supportedScmProviders: "all",
+    });
+    // The web app publishes the issuer metadata and forwards the token endpoint; nothing else
+    // may call them.
+    for (const [method, path] of [
+      ["GET", "/internal/oauth/authorization-server-metadata"],
+      ["POST", "/internal/oauth/token"],
+    ] as const) {
+      expect(routeFor(method, path)).toMatchObject({
+        authentication: { kind: "web-service" },
+        authorization: { kind: "none" },
+        cacheControl: "no-store",
+      });
+    }
+    // Consent is a signed-in, active user acting for themselves in the browser.
+    for (const path of ["/oauth/authorize/check", "/oauth/authorize/approve"]) {
+      expect(routeFor("POST", path)).toMatchObject({
+        authentication: { kind: "user" },
+        authorization: { kind: "active-self" },
+        cacheControl: "private, no-store",
+      });
+    }
+    // No token takes part in issuing another.
+    for (const [method, path] of [
+      ["GET", "/.well-known/oauth-protected-resource/mcp"],
+      ["GET", "/internal/oauth/authorization-server-metadata"],
+      ["POST", "/internal/oauth/token"],
+      ["POST", "/oauth/authorize/check"],
+      ["POST", "/oauth/authorize/approve"],
+    ] as const) {
+      expect(routeFor(method, path), `${method} ${path}`).not.toHaveProperty(
+        "personalAccessTokens"
+      );
     }
   });
 
@@ -201,10 +242,17 @@ describe("route policy table", () => {
   it("declares every path in the literal-or-parameter grammar", () => {
     // Hono gives `*`, `?`, `{...}` and `.` routing meaning, and raw parameters
     // are read back from the pathname by position, so a path outside this
-    // grammar could be selected by Hono and yield the wrong parameters.
+    // grammar could be selected by Hono and yield the wrong parameters. A
+    // leading literal `.well-known` is the one exception, and only the hosted
+    // MCP server's resource metadata uses it.
     for (const route of routes) {
-      expect(route.path, `${route.method} ${route.path}`).toMatch(/^(\/([A-Za-z0-9_-]+|:\w+))+$/);
+      expect(route.path, `${route.method} ${route.path}`).toMatch(
+        /^(\/\.well-known)?(\/([A-Za-z0-9_-]+|:\w+))+$/
+      );
     }
+    expect(
+      routes.filter((route) => route.path.startsWith("/.well-known/")).map((route) => route.path)
+    ).toEqual(["/.well-known/oauth-protected-resource/mcp"]);
   });
 
   it.each([

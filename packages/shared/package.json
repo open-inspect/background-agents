@@ -86,6 +86,10 @@
       "import": "./dist/types/personal-access-tokens.js",
       "types": "./dist/types/personal-access-tokens.d.ts"
     },
+    "./types/oauth": {
+      "import": "./dist/types/oauth.js",
+      "types": "./dist/types/oauth.d.ts"
+    },
     "./types/commit-signing": {
       "import": "./dist/types/commit-signing.js",
       "types": "./dist/types/commit-signing.d.ts"

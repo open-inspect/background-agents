@@ -261,9 +261,10 @@ can make HTTP requests and maintain WebSocket connections can participate.
 - **Linear**: Agent workflow that starts sessions from Linear issue activity
 - **MCP server**: The control plane serves MCP at `/mcp`, so Claude Code or another MCP client can
   read sessions and automation runs, start and steer sessions, create and trigger automations, and
-  import skills with a personal access token. Each tool call is admitted by the API route it
-  reaches, exactly as a direct call with the token would be. A local stdio server
-  (`packages/mcp-server`) with the same tools is deprecated
+  import skills, signing in with OAuth (which issues the client a personal access token) or with a
+  token the user creates. Each tool call is admitted by the API route it reaches, exactly as a
+  direct call with the token would be. A local stdio server (`packages/mcp-server`) with the same
+  tools is deprecated
 
 All clients see the same session state. Send a prompt from Slack or GitHub, watch the results on
 web. This works because state lives in the control plane, not the client.

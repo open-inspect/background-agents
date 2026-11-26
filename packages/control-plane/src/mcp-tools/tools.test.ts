@@ -1,3 +1,7 @@
+import {
+  isPersonalAccessTokenGrantable,
+  isPersonalAccessTokenReadOnlyPermission,
+} from "@open-inspect/shared/types/personal-access-tokens";
 import { describe, expect, it, vi } from "vitest";
 import { MAX_AUTOMATION_NAME_LENGTH } from "@open-inspect/shared/types/automations";
 import { z } from "zod";
@@ -720,5 +724,96 @@ describe("update_skill_from_git", () => {
     await tool("update_skill_from_git").run(client, { skill_id: "skill/../1" });
 
     expect(get).toHaveBeenCalledWith("/skills/skill%2F..%2F1");
+  });
+});
+
+describe("tool scopes", () => {
+  it("asks only for grantable permissions the tool's description names", () => {
+    for (const tool of TOOLS) {
+      const scopes = tool.scopesFor({});
+      expect(scopes.length, tool.name).toBeGreaterThan(0);
+      for (const scope of scopes) {
+        expect(isPersonalAccessTokenGrantable(scope), `${tool.name} ${scope}`).toBe(true);
+        expect(tool.requires, `${tool.name} ${scope}`).toContain(scope);
+      }
+    }
+  });
+
+  it("asks a read tool for reads only", () => {
+    for (const tool of TOOLS.filter((candidate) => candidate.readOnly)) {
+      expect(tool.scopesFor({}).every(isPersonalAccessTokenReadOnlyPermission), tool.name).toBe(
+        true
+      );
+    }
+  });
+
+  it("adds the use permission for the target a call names", () => {
+    const create = TOOLS.find((tool) => tool.name === "create_session")!;
+    const base = ["sessions.create", "sessions.read", "sessions.collaborate"];
+    expect(create.scopesFor({ prompt: "x", repo_owner: "acme", repo_name: "web" })).toEqual([
+      ...base,
+      "repositories.use",
+    ]);
+    expect(create.scopesFor({ prompt: "x", environment_id: "env_1" })).toEqual([
+      ...base,
+      "environments.use",
+    ]);
+    // Arguments that do not parse name no target.
+    expect(create.scopesFor({ prompt: 1 })).toEqual(base);
+
+    const automation = TOOLS.find((tool) => tool.name === "create_automation")!;
+    expect(
+      automation.scopesFor({
+        name: "n",
+        instructions: "i",
+        schedule_cron: "0 * * * *",
+        environment_ids: ["env_1"],
+      })
+    ).toEqual(["automations.create", "sessions.create", "environments.use"]);
+  });
+});
+
+describe("trigger_automation scope lookup", () => {
+  const trigger = TOOLS.find((tool) => tool.name === "trigger_automation")!;
+  const automation = {
+    automation: { repositories: [{ repoOwner: "acme", repoName: "web" }], environmentIds: [] },
+  };
+
+  it("does not look when the token already holds both use permissions", async () => {
+    const { client, get } = fakeClient({ get: () => automation });
+    await expect(
+      trigger.resolveScopes!(client, { automation_id: "a" }, [
+        "automations.read",
+        "repositories.use",
+        "environments.use",
+      ])
+    ).resolves.toEqual({ needed: [], lookUp: [] });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("asks for automations.read, without looking, when the token cannot read it", async () => {
+    const { client, get } = fakeClient({ get: () => automation });
+    await expect(
+      trigger.resolveScopes!(client, { automation_id: "a" }, ["automations.trigger.own"])
+    ).resolves.toEqual({ needed: [], lookUp: ["automations.read"] });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("names the use permission the automation's targets need", async () => {
+    const { client, get } = fakeClient({ get: () => automation });
+    await expect(
+      trigger.resolveScopes!(client, { automation_id: "a" }, ["automations.read"])
+    ).resolves.toEqual({ needed: ["repositories.use"], lookUp: [] });
+    expect(get).toHaveBeenCalledWith("/automations/a");
+  });
+
+  it("finds out nothing for arguments the tool refuses", async () => {
+    const { client, get } = fakeClient({ get: () => automation });
+    expect(trigger.acceptsArgs({})).toBe(false);
+    await expect(trigger.resolveScopes!(client, {}, ["automations.read"])).resolves.toEqual({
+      needed: [],
+      lookUp: [],
+    });
+    expect(get).not.toHaveBeenCalled();
   });
 });

@@ -1,12 +1,15 @@
 ---
 title: MCP server
-description: Let Claude Code or another MCP client investigate sessions and automation runs, and optionally start and steer sessions, create and run automations, or import skills, through a personal access token.
+description: Let Claude, Claude Code, or another MCP client investigate sessions and automation runs, and optionally start and steer sessions, create and run automations, or import skills, signing in with OAuth or using a personal access token.
 audience: user
 owner: integrations
 status: published
-lastReviewed: "2026-11-25"
+lastReviewed: "2026-11-26"
 relatedCode:
   - packages/control-plane/src/routes/hosted-mcp.ts
+  - packages/control-plane/src/routes/oauth.ts
+  - packages/control-plane/src/oauth/authorization.ts
+  - packages/web/src/app/oauth/authorize/page.tsx
   - packages/control-plane/src/mcp-tools/tools.ts
   - packages/control-plane/src/mcp-tools/client.ts
   - packages/mcp-server/README.md
@@ -14,21 +17,68 @@ relatedCode:
   - packages/control-plane/src/router.policy.test.ts
 ---
 
-The OpenInspect MCP server lets an MCP client such as Claude Code read your sessions and automation runs, and optionally start and steer sessions, create and run automations, or import skills, without opening the web UI. Your control plane serves it at `/mcp`, and a client authenticates with a [personal access token](/integrations/personal-access-tokens).
+The OpenInspect MCP server lets an MCP client such as Claude or Claude Code read your sessions and automation runs, and optionally start and steer sessions, create and run automations, or import skills, without opening the web UI. Your control plane serves it at `/mcp`. A client signs in with OAuth, or uses a [personal access token](/integrations/personal-access-tokens) you give it.
 
-## Set it up
+## Connect with OAuth
+
+Add the server's URL to your client and sign in when it asks. Administrators find the exact URL under **Settings › API policy**; it is your control plane's URL followed by `/mcp`.
+
+![Settings, API policy: the Allow MCP clients switch with the MCP server's URL, the apps that can sign in, the longest token lifetime, and the permissions tokens may hold](/images/administration/api-policy.webp "Settings › API policy. The MCP server's URL is under Allow MCP clients.")
+
+- **Claude** (claude.ai, Desktop, and mobile): add a custom connector with the URL.
+- **Claude Code**:
+
+  ```bash
+  claude mcp add --transport http open-inspect https://<your-control-plane>/mcp
+  ```
+
+  Then run `/mcp` in a session and choose to authenticate.
+
+The client opens a page on OpenInspect, where you sign in if you aren't already. The page names the app by the host that serves it, such as `claude.ai`, with the name the app gives itself, such as Claude Code, and the place it will return you to. Choose what it may do:
+
+- **Read only**, the default, lets it read your sessions, automations, and skills: what the MCP tools read. It cannot change anything.
+- **Hand off work** also lets it start sessions and send them prompts, on the repositories and environments you can use.
+- **Choose permissions** picks individual permissions from those your role holds and your workspace allows, including other reads.
+
+Then choose how long the connection lasts, up to your workspace's lifetime cap, and select **Allow**. The app receives a [personal access token](/integrations/personal-access-tokens) with exactly that grant. It appears under **Settings › Access tokens** named after the app, such as `Claude Code (claude.ai)`, and you can revoke it there like any other. Disconnecting the app in the client does not revoke the token; revoke it in Settings. There is no refresh: when the token expires, the app asks you to sign in again.
+
+The token works wherever a personal access token does, not only at `/mcp`: the app could call the API directly with it, within the same grant.
+
+When a read-only connection tries something it isn't allowed to do, such as sending a prompt, and you could grant it, the client asks you to sign in again for more access, with the extra permissions selected. If you approve within 15 minutes with any write permission, the new token replaces the one that was refused, and the page says which. Choosing **Read only** replaces nothing. Tokens on your other devices are untouched. If more than one of your devices was refused in that time, OpenInspect cannot tell which one is signing in, so it replaces none of them; revoke the old ones under **Settings › Access tokens** if you no longer need them.
+
+```mermaid
+flowchart TB
+    accTitle: Signing an MCP client in, and stepping up for more
+    connect["Add the /mcp URL<br/>to the client"] --> challenge401["/mcp answers 401<br/>and asks for reads"]
+    challenge401 --> consent["Consent page:<br/>Read only by default"]
+    consent -- "Allow" --> token["The client gets<br/>a token with<br/>that grant"]
+    token --> call["The client<br/>calls a tool"]
+    call -- "the token holds<br/>what it needs" --> runs["The tool runs"]
+    call -- "it lacks a write<br/>you could grant" --> challenge403["/mcp answers 403<br/>and marks this token"]
+    challenge403 --> stepup["Consent page again,<br/>the writes selected"]
+    stepup -- "Allow with a write,<br/>within 15 minutes" --> replace["New token; the marked<br/>token is revoked if it<br/>was the only one marked"]
+    stepup -- "Allow with Read only" --> keep["New token;<br/>nothing is replaced"]
+```
+
+Only apps your workspace allows can sign in. By default these are Claude's apps; an administrator can change the list under **Settings › API policy**.
+
+## Connect with a token
+
+A client that cannot sign in with OAuth, or a script, can send a token instead:
 
 1. Create a token under **Settings › Access tokens**. For investigation, select **Read-only**. Add write permissions only if you want the assistant to make changes; see the table below.
-2. Register the server with your client, using your control plane's URL:
+2. Register the server with your client, sending the token as a header:
 
    ```bash
    claude mcp add --transport http open-inspect https://<your-control-plane>/mcp \
      --header "Authorization: Bearer oi_pat_..."
    ```
 
-   Administrators find the exact URL under **Settings › API policy**. A client that only runs local servers can reach it through a bridge such as `mcp-remote` with the same header.
+   A client that only runs local servers can reach it through a bridge such as `mcp-remote` with the same header.
 
-The server is stateless: each request stands alone, so a client checks on a session by calling `get_session` again rather than waiting for a notification. An administrator can turn MCP off under **Settings › API policy**; tokens then keep working with the API directly.
+A token you paste is never asked to step up: a tool it lacks the permission for returns an error naming what is missing, and you create a token with more if you need it.
+
+The server is stateless: each request stands alone, so a client checks on a session by calling `get_session` again rather than waiting for a notification. An administrator can turn MCP off under **Settings › API policy**. That also turns off OAuth sign-in and stops every token an app received by signing in; tokens made in Settings keep working with the API directly.
 
 ### Local server (deprecated)
 
@@ -58,7 +108,7 @@ Its control plane URL must use `https://`; plain `http://` is accepted only for 
 | `trigger_automation`                                                                                                      | **Run your automations** or **Run any automation**, **Create sessions**, and use of its targets |
 | `import_skill_from_git`, `update_skill_from_git`                                                                          | **Manage skills** (administrators), which always comes with **Read skills**                     |
 
-A token without a tool's permission gets an error, which usually names the missing permission or points to the tool's description, where the needed grant is stated. The token never exceeds your own role or your workspace's [API policy](/administration/personal-access-tokens), and nothing it does can stop, archive, or delete a session, open a session's sandbox editor, terminal, or tunnels, delete or pause an automation, delete a skill, or reach secrets or workspace settings. A run started with `trigger_automation` uses only what the token was granted, even where your role allows more.
+A token without a tool's permission gets an error, which usually names the missing permission or points to the tool's description, where the needed grant is stated. A connection made with OAuth is asked to step up instead, when you could grant the permission. The token never exceeds your own role or your workspace's [API policy](/administration/personal-access-tokens), and nothing it does can stop, archive, or delete a session, open a session's sandbox editor, terminal, or tunnels, delete or pause an automation, delete a skill, or reach secrets or workspace settings. A run started with `trigger_automation` uses only what the token was granted, even where your role allows more.
 
 ## Keep the assistant in check
 

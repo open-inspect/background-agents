@@ -19,6 +19,18 @@ const nextConfig: NextConfig = {
         // The generated document supplies its stricter hash-based resource policy.
         headers: [{ key: "Content-Security-Policy", value: "sandbox allow-scripts" }],
       },
+      {
+        // The OAuth consent page grants an app access as the signed-in user, so no other page may
+        // frame it and trick a click onto Allow. Its URL carries the app's request, which no
+        // destination needs as a referrer.
+        source: "/oauth/authorize",
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "private, no-store" },
+        ],
+      },
     ];
   },
 };

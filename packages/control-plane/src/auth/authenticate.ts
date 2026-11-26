@@ -106,6 +106,13 @@ export async function authenticate(
   return { reason: "Unauthorized", status: 401, failedScheme: "none" };
 }
 
+/** Why a live token is refused by the workspace policy, as its holder is told. */
+const DISABLED_REASONS = {
+  tokens: "Personal access tokens are disabled for this workspace",
+  oauth: "MCP clients are disabled for this workspace",
+  oauth_client: "This app is no longer allowed to sign in to this workspace",
+} as const;
+
 async function authenticatePersonalAccessTokenRequest(
   request: Request,
   ctx: AuthenticationRequestServices,
@@ -121,12 +128,13 @@ async function authenticatePersonalAccessTokenRequest(
     if (result.kind === "disabled") {
       logger.warn("Personal access token refused: tokens are disabled", {
         event: "auth.personal_access_token.disabled",
+        disabled_scope: result.scope,
         token_display_prefix: personalAccessTokenDisplayPrefix(token),
         request_id: ctx.request_id,
         trace_id: ctx.trace_id,
       });
       return {
-        reason: "Personal access tokens are disabled for this workspace",
+        reason: DISABLED_REASONS[result.scope],
         status: 401,
         failedScheme: "personal-access-token",
       };
@@ -150,6 +158,7 @@ async function authenticatePersonalAccessTokenRequest(
         userId: credential.userId,
         tokenId: credential.id,
         grant: credential.grant,
+        ...(credential.oauthClientId === null ? {} : { oauthClientId: credential.oauthClientId }),
       },
       request,
     };

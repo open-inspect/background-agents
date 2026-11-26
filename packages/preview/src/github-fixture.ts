@@ -13,6 +13,31 @@ export const FIXTURE_REPOSITORY = {
   owner: { login: "preview-org" },
 };
 
+/**
+ * Client ID metadata documents for the MCP clients OAuth sign-in trusts by default, as their
+ * publishers serve them, so the consent flow can be exercised without contacting them.
+ */
+const OAUTH_CLIENT_METADATA: Readonly<Record<string, object>> = {
+  "https://claude.ai/oauth/mcp-oauth-client-metadata": {
+    client_id: "https://claude.ai/oauth/mcp-oauth-client-metadata",
+    client_name: "Claude",
+    client_uri: "https://claude.ai",
+    redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  },
+  "https://claude.ai/oauth/claude-code-client-metadata": {
+    client_id: "https://claude.ai/oauth/claude-code-client-metadata",
+    client_name: "Claude Code",
+    client_uri: "https://claude.ai",
+    redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  },
+};
+
 /** An installation token for every repository (no body) or for the fixture repository only. */
 function isTokenScope(body: string): boolean {
   if (!body) return true;
@@ -28,7 +53,10 @@ function isTokenScope(body: string): boolean {
   }
 }
 
-/** Exact upstream fixtures and a fail-closed fetch guard, not an OS network sandbox. */
+/**
+ * Exact upstream fixtures (GitHub, and the default OAuth clients' metadata documents) and a
+ * fail-closed fetch guard, not an OS network sandbox.
+ */
 export function installGitHubFixture(options: {
   origins: readonly string[];
   appId: string;
@@ -61,6 +89,11 @@ export function installGitHubFixture(options: {
         return reject(request);
       }
       return response;
+    }
+    const clientMetadata = OAUTH_CLIENT_METADATA[url.href];
+    if (clientMetadata && request.method === "GET") {
+      requests.push(`${request.method} ${url.href}`);
+      return Response.json(clientMetadata);
     }
     if (url.origin !== "https://api.github.com") return reject(request);
     requests.push(`${request.method} ${url.pathname}${url.search}`);

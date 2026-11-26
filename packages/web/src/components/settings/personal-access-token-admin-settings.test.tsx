@@ -67,6 +67,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const OPEN_POLICY: PersonalAccessTokenPolicySnapshot = {
   enabled: true,
   mcpEnabled: true,
+  oauthClientIds: null,
   maxLifetimeDays: null,
   allowedPermissions: null,
   revision: 3,
@@ -151,6 +152,7 @@ describe("PersonalAccessTokenAdminSettings", () => {
         maxLifetimeDays: 30,
         allowedPermissions: ["sessions.read"],
         mcpEnabled: true,
+        oauthClientIds: null,
       },
       3
     );
@@ -173,14 +175,81 @@ describe("PersonalAccessTokenAdminSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
     expect(hooks.save).toHaveBeenCalledWith(
-      { enabled: true, mcpEnabled: false, maxLifetimeDays: null, allowedPermissions: null },
+      {
+        enabled: true,
+        mcpEnabled: false,
+        oauthClientIds: null,
+        maxLifetimeDays: null,
+        allowedPermissions: null,
+      },
       3
+    );
+  });
+
+  it("lists the apps that may sign in with OAuth, defaulting to Claude's", async () => {
+    hooks.save.mockResolvedValue({ status: "saved", policy: { ...OPEN_POLICY, revision: 4 } });
+    const user = userEvent.setup();
+    render(<PersonalAccessTokenAdminSettings />);
+
+    expect(screen.getByRole("radio", { name: /Claude \(default\)/ })).toBeChecked();
+    await user.click(screen.getByRole("radio", { name: /Only these apps/ }));
+    const list = screen.getByLabelText(/Client metadata document URLs/);
+    // The defaults are the starting point for a list of one's own.
+    expect(list).toHaveValue(
+      "https://claude.ai/oauth/mcp-oauth-client-metadata\nhttps://claude.ai/oauth/claude-code-client-metadata"
+    );
+    await user.clear(list);
+    await user.type(list, "http://insecure.example/metadata");
+    await user.click(screen.getByRole("button", { name: "Save policy" }));
+    expect(hooks.save).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(
+      "http://insecure.example/metadata is not the HTTPS URL of an app's client metadata document"
+    );
+
+    await user.clear(list);
+    await user.type(list, "https://client.example/metadata{enter}https://other.example/oauth");
+    await user.click(screen.getByRole("button", { name: "Save policy" }));
+    expect(hooks.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        oauthClientIds: ["https://client.example/metadata", "https://other.example/oauth"],
+      }),
+      3
+    );
+  });
+
+  it("shows the saved client list again after a discard or a conflicting save", async () => {
+    hooks.policy = { ...OPEN_POLICY, oauthClientIds: ["https://a.example/metadata"] };
+    hooks.save.mockResolvedValue({ status: "conflict" });
+    const user = userEvent.setup();
+    render(<PersonalAccessTokenAdminSettings />);
+    const list = () => screen.getByLabelText(/Client metadata document URLs/);
+    expect(list()).toHaveValue("https://a.example/metadata");
+
+    await user.clear(list());
+    await user.type(list(), "https://b.example/metadata");
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(list()).toHaveValue("https://a.example/metadata");
+
+    // A save that loses to another administrator's shows theirs, not the text just typed.
+    await user.clear(list());
+    await user.type(list(), "https://b.example/metadata");
+    hooks.policy = { ...OPEN_POLICY, oauthClientIds: ["https://c.example/metadata"], revision: 4 };
+    await user.click(screen.getByRole("button", { name: "Save policy" }));
+    await waitFor(() => expect(list()).toHaveValue("https://c.example/metadata"));
+
+    // Then changing only the lifetime saves the list that is shown.
+    hooks.save.mockResolvedValue({ status: "saved", policy: hooks.policy });
+    await user.click(screen.getByRole("radio", { name: /30 days/ }));
+    await user.click(screen.getByRole("button", { name: "Save policy" }));
+    expect(hooks.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ oauthClientIds: ["https://c.example/metadata"] }),
+      4
     );
   });
 
   it("hides the MCP switch for a control plane that predates it, and saves without it", async () => {
     // Deploys can briefly pair this app with an older control plane, which refuses the field.
-    const { mcpEnabled: _omitted, ...older } = OPEN_POLICY;
+    const { mcpEnabled: _omitted, oauthClientIds: _alsoOmitted, ...older } = OPEN_POLICY;
     hooks.policy = older as typeof OPEN_POLICY;
     hooks.save.mockResolvedValue({ status: "saved", policy: { ...older, revision: 4 } });
     const user = userEvent.setup();
@@ -213,7 +282,13 @@ describe("PersonalAccessTokenAdminSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
     expect(hooks.save).toHaveBeenCalledWith(
-      { enabled: false, maxLifetimeDays: null, allowedPermissions: [], mcpEnabled: true },
+      {
+        enabled: false,
+        maxLifetimeDays: null,
+        allowedPermissions: [],
+        mcpEnabled: true,
+        oauthClientIds: null,
+      },
       3
     );
     await waitFor(() =>
@@ -236,7 +311,13 @@ describe("PersonalAccessTokenAdminSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
     expect(hooks.save).toHaveBeenCalledWith(
-      { enabled: false, maxLifetimeDays: 30, allowedPermissions: [], mcpEnabled: true },
+      {
+        enabled: false,
+        maxLifetimeDays: 30,
+        allowedPermissions: [],
+        mcpEnabled: true,
+        oauthClientIds: null,
+      },
       3
     );
     await waitFor(() =>
@@ -315,7 +396,13 @@ describe("PersonalAccessTokenAdminSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save policy" }));
 
     expect(hooks.save).toHaveBeenCalledWith(
-      { enabled: true, maxLifetimeDays: 90, allowedPermissions: null, mcpEnabled: true },
+      {
+        enabled: true,
+        maxLifetimeDays: 90,
+        allowedPermissions: null,
+        mcpEnabled: true,
+        oauthClientIds: null,
+      },
       3
     );
   });

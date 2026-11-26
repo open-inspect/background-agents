@@ -9,17 +9,23 @@ import { ErrorBanner } from "@/components/ui/error-banner";
 import { AuthenticationUnavailableError } from "@/lib/authentication-unavailable-error";
 import { getServerAuthSession, type ServerAuthSession } from "@/lib/server-auth-session";
 import { getEnabledSignInProviders } from "@/lib/sign-in-providers";
+import { safeReturnTo, signInPath } from "@/lib/sign-in-return-to";
 import { APP_NAME } from "@/lib/site-config";
 
 export const dynamic = "force-dynamic";
 
-function LoginUnavailable() {
+/** The sign-in page's own address, keeping where it returns to. */
+function loginPath(returnTo: string | undefined): string {
+  return returnTo === undefined ? "/login" : signInPath(returnTo);
+}
+
+function LoginUnavailable({ returnTo }: { returnTo?: string }) {
   return (
     <main className="min-h-screen flex flex-col items-center justify-center gap-4 px-6">
       <ErrorBanner role="alert" className="max-w-md px-6 py-4 text-center">
         Sign-in is temporarily unavailable.
       </ErrorBanner>
-      <Link href="/login" className="text-accent hover:underline">
+      <Link href={loginPath(returnTo)} className="text-accent hover:underline">
         Try again
       </Link>
     </main>
@@ -27,7 +33,7 @@ function LoginUnavailable() {
 }
 
 interface LoginPageProps {
-  searchParams: Promise<{ error?: string | string[] }>;
+  searchParams: Promise<{ error?: string | string[]; returnTo?: string | string[] }>;
 }
 
 const GENERIC_SIGN_IN_ERROR = "An error occurred during sign in. Please try again.";
@@ -52,24 +58,30 @@ function signInErrorMessage(error: string): string {
 }
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const { error, returnTo: requestedReturnTo } = await searchParams;
+  // Only a path on this app; anything else returns home, so this page is never an open redirect.
+  const returnTo = safeReturnTo(requestedReturnTo) ?? undefined;
   let session: ServerAuthSession | null;
   try {
     session = await getServerAuthSession();
-  } catch (error) {
-    if (error instanceof AuthenticationUnavailableError) return <LoginUnavailable />;
-    throw error;
+  } catch (cause) {
+    if (cause instanceof AuthenticationUnavailableError) {
+      return <LoginUnavailable returnTo={returnTo} />;
+    }
+    throw cause;
   }
-  if (session) redirect("/");
+  if (session) redirect(returnTo ?? "/");
 
   let providers;
   try {
     providers = await getEnabledSignInProviders();
-  } catch (error) {
-    if (error instanceof AuthenticationUnavailableError) return <LoginUnavailable />;
-    throw error;
+  } catch (cause) {
+    if (cause instanceof AuthenticationUnavailableError) {
+      return <LoginUnavailable returnTo={returnTo} />;
+    }
+    throw cause;
   }
 
-  const { error } = await searchParams;
   return (
     <main className="min-h-screen flex flex-col items-center justify-center gap-8 px-6">
       <div className="space-y-3 text-center">
@@ -81,7 +93,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           {signInErrorMessage(error)}
         </ErrorBanner>
       )}
-      <SignInProviderButtons providers={providers} />
+      <SignInProviderButtons providers={providers} returnTo={returnTo} />
     </main>
   );
 }

@@ -214,7 +214,7 @@ OpenAI 模型可通过 OAuth 使用你现有的 ChatGPT 订阅，无需单独的
   [GitHub 集成](docs/integrations/GITHUB.md)
 - **Linear 机器人**：在议题中提及智能体或将议题分配给它，即可启动编程会话、发布进度并关联最终的 PR。请参阅
   [Linear 集成](docs/integrations/LINEAR.md)
-- **MCP 服务器**：控制平面在 `/mcp` 提供 MCP 服务，通过个人访问令牌，让 Claude
+- **MCP 服务器**：控制平面在 `/mcp` 提供 MCP 服务，通过 OAuth 登录或个人访问令牌，让 Claude
   Code 或其他 MCP 客户端读取会话和自动化运行记录，并可按需启动和引导会话、创建和运行自动化或导入技能。请参阅
   [MCP 服务器](packages/mcp-server/README.md)
 - **Webhook**：通过经过身份认证的 HTTP POST，从任何外部系统触发会话

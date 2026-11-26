@@ -21,11 +21,12 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
 /**
  * The API policy as this app reads it. Parsed leniently, so the panel keeps working while the
  * control plane and this app run different versions during a deploy: unknown fields are dropped,
- * and the MCP switch is absent from a control plane that predates it.
+ * and the MCP switch and the OAuth app list are absent from a control plane that predates them.
  */
 const workspaceApiPolicySchema = z.object({
   ...personalAccessTokenPolicySnapshotSchema.shape,
   mcpEnabled: z.boolean().optional(),
+  oauthClientIds: z.array(z.string()).nullable().optional(),
 });
 export type WorkspaceApiPolicy = z.infer<typeof workspaceApiPolicySchema>;
 

@@ -49,6 +49,8 @@ export type Principal =
       userId: string;
       tokenId: string;
       grant: readonly PermissionId[];
+      /** Set for a token issued to an MCP client through OAuth sign-in: that client's id. */
+      oauthClientId?: string;
     }
   | { kind: "service"; service: ServiceName; actor: ResolvedIdentity | null }
   /** `sandboxId` is the authenticated sandbox's id when the session runtime reported it. */

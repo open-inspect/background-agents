@@ -5,6 +5,7 @@ import {
 import { readBodyCapped } from "@open-inspect/shared/http-body";
 import { SERVICE_REQUEST_MAX_BODY_BYTES } from "@open-inspect/shared/service-auth";
 import { dispatchWebServiceRequest } from "./control-plane-service";
+import { trustedClientIp } from "./trusted-client-ip";
 
 // Allow for GitHub email pagination and retries before organization evaluation,
 // with additional room for token exchange and persistence.
@@ -62,13 +63,6 @@ function copyRequestHeaders(source: Headers, clientIp?: string | null): Headers 
     headers.set(BROWSER_AUTH_CLIENT_IP_HEADER, clientIp);
   }
   return headers;
-}
-
-function trustedClientIp(request: Request): string | null {
-  if (process.env.VERCEL === "1") {
-    return request.headers.get("X-Vercel-Forwarded-For");
-  }
-  return "cf" in request ? request.headers.get("CF-Connecting-IP") : null;
 }
 
 function getSetCookieValues(headers: Headers): string[] {

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { previewConfig } from "./config";
 import { getCachedInstallationToken } from "@open-inspect/control-plane/src/auth/github-app";
 import type { CredentialScope } from "@open-inspect/control-plane/src/source-control/credential-scope";
+import { DEFAULT_OAUTH_CLIENT_IDS } from "@open-inspect/shared/types/personal-access-tokens";
 import { FIXTURE_REPOSITORY, installGitHubFixture } from "./github-fixture";
 
 describe("GitHub transport boundary", () => {
@@ -40,6 +41,32 @@ describe("GitHub transport boundary", () => {
       globalThis.fetch = original;
     }
   });
+  it("serves the default OAuth clients' metadata documents, and nothing else of theirs", async () => {
+    const config = previewConfig({
+      webOrigin: "http://127.0.0.1:3100",
+      controlPlaneOrigin: "http://127.0.0.1:3100",
+      modalOrigin: "http://127.0.0.1:3100",
+      modalSecret: "secret",
+      teamsEnforcement: "on",
+    });
+    const fixture = installGitHubFixture({
+      origins: [],
+      appId: config.GITHUB_APP_ID!,
+      installationId: config.GITHUB_APP_INSTALLATION_ID!,
+      privateKey: config.GITHUB_APP_PRIVATE_KEY!,
+      token: "fixture-token",
+    });
+    try {
+      for (const clientId of DEFAULT_OAUTH_CLIENT_IDS) {
+        const document = await (await fetch(clientId)).json();
+        expect(document).toMatchObject({ client_id: clientId, token_endpoint_auth_method: "none" });
+      }
+      await expect(fetch("https://claude.ai/oauth/other")).rejects.toThrow("unexpected");
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("rejects unknown Request inputs and redirects without contacting the destination", async () => {
     const server = createServer((_, response) => {
       response.writeHead(302, { Location: "https://example.com/leak" });
