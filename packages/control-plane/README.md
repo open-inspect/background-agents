@@ -791,6 +791,9 @@ pins this list, so adding to it is a visible change:
 
 - reading sessions: `GET /sessions` and `/sessions/:id{,/events,/messages,/diff}`
 - creating a session (`POST /sessions`) and prompting one (`POST /sessions/:id/prompt`)
+- a session's lifecycle: `POST /sessions/:id/{stop,archive,unarchive}` and
+  `PATCH /sessions/:id/title`
+- reading child sessions: `GET /sessions/:id/children` and `/sessions/:id/children/:childId`
 - reading automations: `GET /automations` and `/automations/:id{,/invocations,/runs/:runId}`
 - reading skills: `GET /skills` and `/skills/:id`
 - creating an automation (`POST /automations`) and triggering one (`POST /automations/:id/trigger`)
@@ -820,14 +823,15 @@ Five rules reach past route admission:
 - **A token's `skills.manage` needs `skills.read`.** Every token route that manages skills answers
   with skill or repository content, so issuing refuses `skills.manage` without `skills.read`
   (`permission_prerequisite_missing`), and narrowing drops a `skills.manage` whose `skills.read` did
-  not survive (`PERSONAL_ACCESS_TOKEN_GRANT_PREREQUISITES` in shared). `sessions.collaborate` needs
-  `sessions.read` the same way: collaborating is admitted only past a session's read check, so
-  without it a token could prompt some sessions and not others.
+  not survive (`PERSONAL_ACCESS_TOKEN_GRANT_PREREQUISITES` in shared). `sessions.collaborate` and
+  `sessions.lifecycle` need `sessions.read` the same way: both are admitted only past a session's
+  read check, so without it a token could act on workspace sessions but not on team-owned or private
+  ones, nor on any session under enforced teams.
 - **A token never reads sandbox URLs.** `GET /sessions/:id` strips the editor, terminal, and tunnel
   URLs from a token's snapshot whatever it was granted, as it does for a reader without
   `sessions.sandbox_access`. `sandbox-access` and `tunnel-urls` refuse tokens, and the snapshot must
-  not reopen them. Its `capabilities` likewise report only reading and collaborating for a token,
-  since the lifecycle, sandbox, deletion, and sharing routes refuse tokens. This bounds what a token
+  not reopen them. Its `capabilities` likewise report only reading, collaborating, and lifecycle for
+  a token, since the sandbox, deletion, and sharing routes refuse tokens. This bounds what a token
   reads, not what a prompt can have the agent do in the sandbox.
 - **A token reaches its owner's personal memory only through its grant.** The memory policy judges
   personal memory on the owner's own authorization, which it loads itself, so a token-created
@@ -845,9 +849,16 @@ checks. Some things differ from the browser:
   `providerSelections`, since an explicit selection is resolved before that setting.
 - GitHub credentials are resolved from the stored user record, as for any non-browser principal.
 
-Editing, pausing, or deleting automations, bulk skill import, every other session mutation (stop,
-archive, pull request creation, attachments, children, visibility, and collaborators), the session
-websocket, secrets, and settings refuse tokens.
+Editing, pausing, or deleting automations, bulk skill import, every other session mutation
+(deletion, bulk archive, the cost limit, pull request creation, attachments, spawning, cancelling,
+or prompting children, visibility, and collaborators), the session websocket, secrets, and settings
+refuse tokens.
+
+The child routes also admit the parent session's sandbox token, which skips the permission checks. A
+bearer shaped like a personal access token (`oi_pat_…`) is always authenticated as one, before the
+sandbox fallback is considered, and a rejected one is refused there rather than retried as a sandbox
+token. A token is therefore never admitted as a sandbox, even if its value were a sandbox's
+credential.
 
 The owner's workspace role still decides visibility within a granted permission. For example, an
 administrator's token that holds `sessions.read` sees the sessions the administrator sees.

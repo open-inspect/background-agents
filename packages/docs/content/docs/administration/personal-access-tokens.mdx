@@ -4,7 +4,7 @@ description: Turn personal access tokens or MCP off, cap token lifetime, limit t
 audience: admin
 owner: security
 status: published
-lastReviewed: "2026-11-25"
+lastReviewed: "2026-11-26"
 relatedCode:
   - packages/control-plane/src/routes/personal-access-token-admin.ts
   - packages/control-plane/src/db/personal-access-token-policy.ts
@@ -23,14 +23,18 @@ You need the **Manage personal access tokens** permission (`workspace.personal_a
 
 The policy applies to existing tokens the moment you save it, not only to new ones:
 
-| Setting                          | Effect                                                                                                                                                                                                                                      |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Allow personal access tokens** | Off refuses every token at once and stops members creating new ones. Tokens are not revoked: turning it back on restores them.                                                                                                              |
-| **Allow MCP clients**            | Off answers the MCP server at `/mcp` as though it did not exist. Tokens keep working with the API directly. The setting shows the server's URL to give members.                                                                             |
-| **Longest lifetime**             | Tokens older than this stop working, even if they were issued for longer. New tokens cannot be issued for longer.                                                                                                                           |
-| **Permissions tokens may hold**  | Narrows every token's grant to these permissions, and new tokens cannot be granted others. Workspace administration permissions are never available. Allowing **Manage skills** also allows **Read skills**, which a token needs to use it. |
+| Setting                          | Effect                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Allow personal access tokens** | Off refuses every token at once and stops members creating new ones. Tokens are not revoked: turning it back on restores them.                                                                                                                                                                                                                      |
+| **Allow MCP clients**            | Off answers the MCP server at `/mcp` as though it did not exist. Tokens keep working with the API directly. The setting shows the server's URL to give members.                                                                                                                                                                                     |
+| **Longest lifetime**             | Tokens older than this stop working, even if they were issued for longer. New tokens cannot be issued for longer.                                                                                                                                                                                                                                   |
+| **Permissions tokens may hold**  | Narrows every token's grant to these permissions, and new tokens cannot be granted others. Workspace administration permissions are never available. Allowing **Manage skills** also allows **Read skills**, which a token needs to use it, and allowing **Collaborate in sessions** or **Manage session lifecycle** also allows **Read sessions**. |
 
 Turning tokens off is the fastest response to a suspected leak when you do not know which token leaked. Every policy change is recorded in the [audit log](/administration/audit-log) with the settings before and after, and saving refuses to overwrite a change someone else made since you loaded the page.
+
+## What a token reaches
+
+A token acts within its permissions, but its owner's role still decides which resources it sees. A workspace owner can see every member's private sessions, so a workspace owner's token with **Read sessions** and **Manage session lifecycle** can stop, archive, unarchive, or rename another member's private session. This is the only token write that reaches another member's private session. Each such action is recorded in the audit log as the token's request and as a break-glass access to a private session. Administrators cannot see private sessions, and neither can their tokens. Workspace owners who do not want their assistants to act on members' private sessions should issue tokens without **Manage session lifecycle**, or you can leave it out of **Permissions tokens may hold**.
 
 ## Members' tokens
 

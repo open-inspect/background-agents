@@ -185,8 +185,9 @@ async function handleParticipantProfiles(
 
 /**
  * The capabilities a snapshot reports, limited for a token to what the routes that accept tokens
- * let it do: read and prompt. Lifecycle, sandbox, deletion, and sharing routes refuse tokens
- * whatever the grant holds, so reporting them would tell a client it can do what it cannot.
+ * let it do: read, prompt, and stop, archive, unarchive, or rename. Sandbox, deletion, and sharing
+ * routes refuse tokens whatever the grant holds, so reporting them would tell a client it can do
+ * what it cannot.
  */
 function tokenReachableCapabilities(
   capabilities: SessionCapabilities,
@@ -195,7 +196,6 @@ function tokenReachableCapabilities(
   if (!viaToken) return capabilities;
   return {
     ...capabilities,
-    canManageLifecycle: false,
     canDelete: false,
     canSandbox: false,
     canManageCollaborators: false,
@@ -379,10 +379,14 @@ async function handleBudgetUpdate(
   });
 }
 
-/** Every proxied session operation, by the name its route is known by. */
-const LIFECYCLE = admit({
+/**
+ * Admission for renaming, archiving, and unarchiving a session: session lifecycle, open to
+ * personal access tokens granted `sessions.lifecycle`.
+ */
+const LIFECYCLE_WITH_TOKENS = admit({
   ...GITHUB_USER_OR_SERVICE_ROUTE,
   authorization: requireSession("lifecycle"),
+  personalAccessTokens: "accept",
 });
 
 export const sessionRuntimeProxyRoutes = new Hono<ControlPlaneHonoEnv>();
@@ -411,6 +415,7 @@ sessionRuntimeProxyRoutes.post(
     authorization: requireSession("lifecycle", {
       actorlessGrants: [{ service: "linear-bot" }],
     }),
+    personalAccessTokens: "accept",
   }),
   (c) =>
     dispatchSession(
@@ -518,13 +523,13 @@ sessionRuntimeProxyRoutes.get(
       simpleProxy({ internalPath: SessionInternalPaths.tunnelUrls, runtimeMethod: "GET" })
     )
 );
-sessionRuntimeProxyRoutes.patch("/sessions/:id/title", LIFECYCLE, (c) =>
+sessionRuntimeProxyRoutes.patch("/sessions/:id/title", LIFECYCLE_WITH_TOKENS, (c) =>
   dispatchSession(c, lifecycleProxy(SessionInternalPaths.updateTitle))
 );
-sessionRuntimeProxyRoutes.post("/sessions/:id/archive", LIFECYCLE, (c) =>
+sessionRuntimeProxyRoutes.post("/sessions/:id/archive", LIFECYCLE_WITH_TOKENS, (c) =>
   dispatchSession(c, lifecycleProxy(SessionInternalPaths.archive))
 );
-sessionRuntimeProxyRoutes.post("/sessions/:id/unarchive", LIFECYCLE, (c) =>
+sessionRuntimeProxyRoutes.post("/sessions/:id/unarchive", LIFECYCLE_WITH_TOKENS, (c) =>
   dispatchSession(c, lifecycleProxy(SessionInternalPaths.unarchive))
 );
 sessionRuntimeProxyRoutes.patch(

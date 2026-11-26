@@ -208,6 +208,25 @@ describe("ControlPlaneClient", () => {
     expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
+  it("patches a JSON body, naming the method if the route refuses it", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ title: "Renamed" }));
+    const client = new ControlPlaneClient({ baseUrl: BASE_URL, token: TOKEN });
+
+    await expect(client.patch("/sessions/s1/title", { title: "Renamed" })).resolves.toEqual({
+      title: "Renamed",
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE_URL}/sessions/s1/title`);
+    expect(init.method).toBe("PATCH");
+    expect(init.body).toBe('{"title":"Renamed"}');
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+
+    fetchMock.mockResolvedValueOnce(new Response("Forbidden", { status: 403 }));
+    await expect(client.patch("/sessions/s1/title", { title: "x" })).rejects.toThrow(
+      /PATCH \/sessions\/s1\/title returned 403/
+    );
+  });
+
   it("sends no body and no content type on a GET", async () => {
     fetchMock.mockResolvedValue(jsonResponse({}));
     await new ControlPlaneClient({ baseUrl: BASE_URL, token: TOKEN }).get("/skills");
@@ -298,6 +317,11 @@ describe("ControlPlaneClient", () => {
     await expect(client.post("/automations/a1/trigger", {})).rejects.toThrow(
       /lacks a permission this action needs/
     );
+    // The refusal's reason code travels with the error, so a tool can name its own grant.
+    await expect(client.post("/automations/a1/trigger", {})).rejects.toMatchObject({
+      status: 403,
+      reasonCode: "missing_permission",
+    });
   });
 
   it("names the permission a token was not granted", async () => {

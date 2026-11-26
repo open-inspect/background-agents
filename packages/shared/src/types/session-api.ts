@@ -398,6 +398,11 @@ export const cancelChildSessionRequestSchema = z.object({
 
 export type CancelChildSessionRequest = z.infer<typeof cancelChildSessionRequestSchema>;
 
+/** Trajectory events one child read returns when its `trajectoryLimit` is omitted. */
+export const DEFAULT_CHILD_TRAJECTORY_EVENT_LIMIT = 200;
+/** Largest `trajectoryLimit` one child read accepts. */
+export const MAX_CHILD_TRAJECTORY_EVENT_LIMIT = 1000;
+
 /** Returned by the child Durable Object's GET /internal/child-summary. */
 export interface ChildSessionFinalResponse extends AgentResponse {
   messageId: string;

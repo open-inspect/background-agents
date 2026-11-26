@@ -413,7 +413,11 @@ export const sessionChildRoutes = new Hono<ControlPlaneHonoEnv>();
 
 sessionChildRoutes.get(
   "/sessions/:id/children",
-  admit({ ...GITHUB_SANDBOX_FALLBACK_ROUTE, authorization: requireSession("read") }),
+  admit({
+    ...GITHUB_SANDBOX_FALLBACK_ROUTE,
+    authorization: requireSession("read"),
+    personalAccessTokens: "accept",
+  }),
   (c) => dispatchSession(c, handleListChildren)
 );
 sessionChildRoutes.get(
@@ -421,6 +425,7 @@ sessionChildRoutes.get(
   admit({
     ...GITHUB_SANDBOX_FALLBACK_ROUTE,
     authorization: requireAll(sessionRequirement("read"), sessionRequirement("read", "childId")),
+    personalAccessTokens: "accept",
   }),
   (c) => dispatchSession(c, handleGetChild)
 );

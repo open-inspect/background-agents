@@ -535,14 +535,20 @@ permission as soon as its owner does, and a suspended owner's tokens are refused
 
 - Only routes that explicitly accept tokens admit one; other user routes answer
   `403 personal_access_token_not_accepted`. Today they cover what the MCP server's tools need:
-  listing sessions and reading their state, events, messages, and diffs; creating a session and
-  prompting one; reading automations and skills; creating and triggering automations; and importing
-  skills. A session snapshot read with a token never includes sandbox editor, terminal, or tunnel
-  URLs, and sandbox access, stopping, archiving, and pull request creation still refuse tokens. A
+  listing sessions and reading their state, events, messages, diffs, and child sessions; creating a
+  session and prompting one; stopping, archiving, unarchiving, and renaming one; reading automations
+  and skills; creating and triggering automations; and importing skills. A session snapshot read
+  with a token never includes sandbox editor, terminal, or tunnel URLs, and sandbox access,
+  deletion, bulk archiving, child session writes, and pull request creation still refuse tokens. A
   prompt still has the agent act in the sandbox as the session allows.
-- A token's `sessions.collaborate` needs `sessions.read`, as `skills.manage` needs `skills.read`. A
-  session a token creates includes the owner's personal memory only when the token holds
-  `memories.manage_own`, and it follows the workspace's provider setting for automated use.
+- A token's `sessions.collaborate` and `sessions.lifecycle` need `sessions.read`, as `skills.manage`
+  needs `skills.read`. A `sessions.lifecycle` token is not limited to sessions its owner created: it
+  can stop, archive, unarchive, or rename any session its owner can manage, including a teammate's
+  workspace-visible session. A workspace owner's token can also manage another user's private
+  session through the owner's break-glass visibility, recorded as `session.private_break_glass`; an
+  administrator's token cannot reach private sessions. A session a token creates includes the
+  owner's personal memory only when the token holds `memories.manage_own`, and it follows the
+  workspace's provider setting for automated use.
 - Workspace management permissions (members, roles, secrets, integrations, and settings) are
   withheld from tokens, and the token routes accept only a browser session, so a token can never
   issue or revoke tokens. A token's `skills.manage` also needs `skills.read`.

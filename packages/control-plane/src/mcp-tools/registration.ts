@@ -6,7 +6,7 @@
  * helpers. A client then sees the same tool, and the same refusal text, from either server.
  */
 
-import { ControlPlaneError, type ControlPlaneClient } from "./client";
+import { ControlPlaneError, MISSING_PERMISSION_HINT, type ControlPlaneClient } from "./client";
 import type { ToolDefinition } from "./tools";
 
 /** The name and version both servers report to clients. */
@@ -59,8 +59,22 @@ export async function callTool(
       ],
     };
   } catch (error) {
-    const detail =
-      error instanceof ControlPlaneError || error instanceof Error ? error.message : String(error);
-    return { content: [{ type: "text", text: detail }], isError: true };
+    return { content: [{ type: "text", text: refusalText(tool, error) }], isError: true };
   }
+}
+
+/**
+ * What a failed call tells the model. A resource route refuses a missing permission without
+ * naming it, so the tool names the grant it needs in place of the generic hint.
+ */
+function refusalText(tool: ToolDefinition, error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error instanceof ControlPlaneError && error.reasonCode === "missing_permission") {
+    return error.message.replace(
+      MISSING_PERMISSION_HINT,
+      `This tool needs a token granted ${tool.requires}, and this token lacks one of them, or ` +
+        "its owner no longer holds it. Issue a token that includes them under Settings > Access tokens."
+    );
+  }
+  return error.message;
 }

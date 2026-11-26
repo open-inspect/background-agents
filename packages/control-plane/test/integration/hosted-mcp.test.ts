@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PermissionId } from "@open-inspect/shared/rbac";
 import { PersonalAccessTokenStore } from "../../src/db/personal-access-tokens";
+import { SessionIndexStore } from "../../src/db/session-index";
 import { HOSTED_MCP_MAX_REQUEST_BODY_BYTES } from "../../src/routes/hosted-mcp";
 import { cleanD1Tables } from "./cleanup";
 import {
@@ -19,6 +20,7 @@ import {
   seedActiveUser,
   serviceFetch,
   serviceRequestHeaders,
+  waitForSandboxStatus,
 } from "./helpers";
 
 const BASE = "https://cp.test";
@@ -44,6 +46,22 @@ async function connect(token: string): Promise<Client> {
     // Without the client's abort signal: closing the client aborts it, and workerd reports the
     // abort of an already-answered exchange as an unhandled rejection.
     fetch: (url, init) => SELF.fetch(url, { ...init, signal: undefined }),
+    requestInit: { headers: { Authorization: `Bearer ${token}` } },
+  });
+  const client = new Client({ name: "integration", version: "0" });
+  await client.connect(transport);
+  return client;
+}
+
+/** `connect`, against a Worker running with the given teams enforcement mode. */
+async function connectIn(mode: "off" | "on", token: string): Promise<Client> {
+  const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
+    fetch: (url, init) =>
+      routeRequest(
+        new Request(url, { ...init, signal: undefined }),
+        { ...env, TEAMS_ENFORCEMENT: mode },
+        createExecutionContext()
+      ),
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
   const client = new Client({ name: "integration", version: "0" });
@@ -208,6 +226,176 @@ describe("hosted MCP tools", () => {
     expect(Object.keys(viaMcp!.metadata).sort()).toEqual(Object.keys(viaApi!.metadata).sort());
     // Nothing is recorded against /mcp itself: it grants nothing.
     expect(results.some((row) => row.resource_id === "/mcp")).toBe(false);
+    await client.close();
+  });
+});
+
+describe("hosted MCP session lifecycle and children", () => {
+  it("renames, archives, unarchives, and stops a session as the token's owner, audited to the token", async () => {
+    const { stub, sessionName } = await initSession({ userId: OWNER, title: "Before" });
+    // The test spawn fails on its own; archiving waits on the sandbox, so let that settle first.
+    await waitForSandboxStatus(stub, "failed");
+    const client = await connect(await issueToken(OWNER, ["sessions.read", "sessions.lifecycle"]));
+    const sessions = new SessionIndexStore(env.DB);
+
+    const renamed = await client.callTool({
+      name: "rename_session",
+      arguments: { session_id: sessionName, title: "  After  " },
+    });
+    expect(renamed.isError).toBeFalsy();
+    expect(JSON.parse(textOf(renamed))).toEqual({ title: "After" });
+    expect(await sessions.get(sessionName)).toMatchObject({ title: "After" });
+
+    const archived = await client.callTool({
+      name: "archive_session",
+      arguments: { session_id: sessionName },
+    });
+    expect(archived.isError).toBeFalsy();
+    expect(JSON.parse(textOf(archived))).toMatchObject({ outcome: "archived" });
+    expect(await sessions.get(sessionName)).toMatchObject({ status: "archived" });
+
+    const restored = await client.callTool({
+      name: "unarchive_session",
+      arguments: { session_id: sessionName },
+    });
+    expect(restored.isError).toBeFalsy();
+    expect((await sessions.get(sessionName))?.status).not.toBe("archived");
+
+    const stopped = await client.callTool({
+      name: "stop_session",
+      arguments: { session_id: sessionName },
+    });
+    expect(stopped.isError).toBeFalsy();
+    expect(JSON.parse(textOf(stopped))).toEqual({ status: "stopping" });
+
+    const { results } = await env.DB.prepare(
+      `SELECT principal_kind, actor_user_id_snapshot, resource_id
+         FROM authorization_audit_events
+        WHERE action = 'authorization.request_allowed'
+        ORDER BY occurred_at, rowid`
+    ).all<{ principal_kind: string; actor_user_id_snapshot: string; resource_id: string }>();
+    expect(results).toEqual(
+      ["title", "archive", "unarchive", "stop"].map((route) => ({
+        principal_kind: "personal-access-token",
+        actor_user_id_snapshot: OWNER,
+        resource_id: `/sessions/${sessionName}/${route}`,
+      }))
+    );
+    await client.close();
+  });
+
+  it("refuses the lifecycle tools to a token without sessions.lifecycle, naming it", async () => {
+    const { sessionName } = await initSession({ userId: OWNER, title: "Kept" });
+    const client = await connect(
+      await issueToken(OWNER, ["sessions.read", "sessions.collaborate"])
+    );
+
+    for (const name of ["stop_session", "archive_session", "unarchive_session"]) {
+      const refused = await client.callTool({ name, arguments: { session_id: sessionName } });
+      expect(refused.isError, name).toBe(true);
+      expect(textOf(refused), name).toContain("sessions.lifecycle");
+    }
+    const rename = await client.callTool({
+      name: "rename_session",
+      arguments: { session_id: sessionName, title: "Refused" },
+    });
+    expect(rename.isError).toBe(true);
+    expect(textOf(rename)).toContain("sessions.lifecycle");
+    expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({
+      title: "Kept",
+      status: "created",
+    });
+    await client.close();
+  });
+
+  it.each([
+    // Under legacy enforcement the route names the permission itself.
+    ["off", "permission_required", "This token was not granted sessions.lifecycle"],
+    // Under enforced teams the session resolver refuses without naming it, so the tool does.
+    [
+      "on",
+      "missing_permission",
+      "This tool needs a token granted sessions.read and sessions.lifecycle",
+    ],
+  ] as const)(
+    "names sessions.lifecycle when a read-only token calls a lifecycle tool (teams %s)",
+    async (mode, code, named) => {
+      const { sessionName } = await initSession({ userId: OWNER, title: "Kept" });
+      const client = await connectIn(mode, await issueToken(OWNER, ["sessions.read"]));
+
+      for (const [name, args] of [
+        ["stop_session", {}],
+        ["archive_session", {}],
+        ["unarchive_session", {}],
+        ["rename_session", { title: "Refused" }],
+      ] as const) {
+        const refused = await client.callTool({
+          name,
+          arguments: { session_id: sessionName, ...args },
+        });
+        expect(refused.isError, name).toBe(true);
+        expect(textOf(refused), name).toContain("returned 403");
+        expect(textOf(refused), name).toContain(code);
+        expect(textOf(refused), name).toContain(named);
+      }
+      // Reading still works with the same token.
+      const read = await client.callTool({
+        name: "get_session",
+        arguments: { session_id: sessionName },
+      });
+      expect(read.isError).toBeFalsy();
+      expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({
+        title: "Kept",
+        status: "created",
+      });
+      await client.close();
+    }
+  );
+
+  it("lists and reads a session's children, and never another user's private one", async () => {
+    const parent = await initSession({ userId: OWNER });
+    const child = await initSession({ userId: OWNER, title: "Child task" });
+    const hidden = await initSession({ userId: OTHER, title: "Someone else's" });
+    for (const id of [child.sessionName, hidden.sessionName]) {
+      await env.DB.prepare("UPDATE sessions SET parent_session_id = ? WHERE id = ?")
+        .bind(parent.sessionName, id)
+        .run();
+    }
+    await env.DB.prepare("UPDATE sessions SET visibility = 'private' WHERE id = ?")
+      .bind(hidden.sessionName)
+      .run();
+    const client = await connect(await issueToken(OWNER, ["sessions.read"]));
+
+    const listed = await client.callTool({
+      name: "list_session_children",
+      arguments: { session_id: parent.sessionName },
+    });
+    expect(listed.isError).toBeFalsy();
+    const { children } = JSON.parse(textOf(listed)) as { children: { id: string }[] };
+    expect(children.map((entry) => entry.id)).toEqual([child.sessionName]);
+
+    const read = await client.callTool({
+      name: "get_session_child",
+      arguments: {
+        session_id: parent.sessionName,
+        child_id: child.sessionName,
+        include_result: true,
+        trajectory_limit: 10,
+      },
+    });
+    expect(read.isError).toBeFalsy();
+    expect(JSON.parse(textOf(read))).toMatchObject({
+      session: { id: child.sessionName, title: "Child task" },
+      finalResponse: null,
+      trajectory: { events: [], hasMore: false, limit: 10 },
+    });
+
+    const refused = await client.callTool({
+      name: "get_session_child",
+      arguments: { session_id: parent.sessionName, child_id: hidden.sessionName },
+    });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("returned 404");
     await client.close();
   });
 });

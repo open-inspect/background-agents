@@ -10,6 +10,9 @@ export type SessionTitleValidationResult =
 export type SessionTitleUpdateResult =
   { ok: true; title: string } | { ok: false; reason: SessionTitleUpdateErrorReason; error: string };
 
+/** Longest title a session may be given, counted after trimming. */
+export const MAX_SESSION_TITLE_LENGTH = 200;
+
 export function normalizeSessionTitle(title: unknown): SessionTitleValidationResult {
   if (typeof title !== "string") {
     return {
@@ -28,11 +31,11 @@ export function normalizeSessionTitle(title: unknown): SessionTitleValidationRes
     };
   }
 
-  if (trimmed.length > 200) {
+  if (trimmed.length > MAX_SESSION_TITLE_LENGTH) {
     return {
       ok: false,
       reason: "invalid",
-      error: "title must be 200 characters or fewer",
+      error: `title must be ${MAX_SESSION_TITLE_LENGTH} characters or fewer`,
     };
   }
 

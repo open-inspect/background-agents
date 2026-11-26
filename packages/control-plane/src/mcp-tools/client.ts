@@ -23,7 +23,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export class ControlPlaneError extends Error {
   constructor(
     message: string,
-    readonly status: number | null
+    readonly status: number | null,
+    /** The refusal's `reason_code`, when the control plane gave one. */
+    readonly reasonCode: string | null = null
   ) {
     super(message);
     this.name = "ControlPlaneError";
@@ -44,6 +46,8 @@ export interface ControlPlaneClientConfig {
    */
   fetch?: ControlPlaneFetch;
 }
+
+type HttpMethod = "GET" | "POST" | "PATCH";
 
 interface RequestOptions {
   query?: Record<string, string | number | undefined>;
@@ -98,6 +102,26 @@ function baseUrlOf(value: string): string {
   return url.origin;
 }
 
+/**
+ * What a resource route's `missing_permission` refusal is told, which does not name the
+ * permission. A tool names its own grant in place of this, since it knows what it needs.
+ */
+export const MISSING_PERMISSION_HINT =
+  "This token lacks a permission this action needs, or its owner no longer holds it. " +
+  "The tool's description says which; issue a token that includes it under Settings > Access tokens.";
+
+/** The `reason_code` of a JSON refusal body, if it has one. */
+function reasonCodeOf(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { reason_code } = parsed as { reason_code?: unknown };
+    return typeof reason_code === "string" ? reason_code : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Refusal codes the control plane answers with, and what the user can do about each. */
 function refusalHint(status: number, body: string): string | null {
   if (status === 401) {
@@ -123,10 +147,7 @@ function refusalHint(status: number, body: string): string | null {
   }
   if (reason_code === "missing_permission") {
     // Resource routes refuse without naming the permission; the tool description names it.
-    return (
-      "This token lacks a permission this action needs, or its owner no longer holds it. " +
-      "The tool's description says which; issue a token that includes it under Settings > Access tokens."
-    );
+    return MISSING_PERMISSION_HINT;
   }
   if (code === "personal_access_token_not_accepted") {
     return "This part of the API does not accept personal access tokens.";
@@ -191,8 +212,13 @@ export class ControlPlaneClient {
     return this.sendJson("POST", path, { body, headers: options?.headers });
   }
 
+  /** PATCH a JSON body to a control-plane path and parse the JSON response. */
+  patch(path: string, body: unknown): Promise<unknown> {
+    return this.sendJson("PATCH", path, { body });
+  }
+
   private async sendJson(
-    method: "GET" | "POST",
+    method: HttpMethod,
     path: string,
     options: RequestOptions
   ): Promise<unknown> {
@@ -208,7 +234,7 @@ export class ControlPlaneClient {
   }
 
   private async send(
-    method: "GET" | "POST",
+    method: HttpMethod,
     path: string,
     options: RequestOptions
   ): Promise<{ body: string; status: number }> {
@@ -281,7 +307,8 @@ export class ControlPlaneClient {
       throw new ControlPlaneError(
         `${method} ${path} returned ${response.status}: ${body.slice(0, 500)}` +
           (hint ? `\n${hint}` : ""),
-        response.status
+        response.status,
+        reasonCodeOf(body)
       );
     }
 

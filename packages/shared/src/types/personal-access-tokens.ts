@@ -127,14 +127,17 @@ export const PERSONAL_ACCESS_TOKEN_GRANTABLE_PERMISSIONS: readonly PersonalAcces
  * `skills.read` governs. A role may separate the two, but a token may not: one granted only
  * `skills.manage` would read what its grant deliberately left out.
  *
- * Collaborating on a session is admitted only past its read check, so `sessions.collaborate`
- * without `sessions.read` would prompt some sessions and be refused on others (team-owned ones,
- * and every session under enforced teams). Requiring both makes the grant mean one thing.
+ * Collaborating on a session, and stopping, archiving, or renaming one, are admitted only past
+ * its read check, so `sessions.collaborate` or `sessions.lifecycle` without `sessions.read` would
+ * act on some sessions and be refused on others (team-owned and private ones, even under legacy
+ * enforcement, and every session under enforced teams). Requiring both makes the grant mean one
+ * thing.
  */
 export const PERSONAL_ACCESS_TOKEN_GRANT_PREREQUISITES: Partial<
   Record<PersonalAccessTokenGrantablePermission, readonly PersonalAccessTokenGrantablePermission[]>
 > = {
   "sessions.collaborate": ["sessions.read"],
+  "sessions.lifecycle": ["sessions.read"],
   "skills.manage": ["skills.read"],
 };
 

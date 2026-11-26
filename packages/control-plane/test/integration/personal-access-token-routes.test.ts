@@ -8,6 +8,8 @@ import { createExecutionContext, env, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PermissionId } from "@open-inspect/shared/rbac";
 import { AutomationStore } from "../../src/db/automation-store";
+import { AuthorizationService } from "../../src/authorization/service";
+import { restrictAuthorizationToGrant } from "../../src/authorization/personal-access-token-policy";
 import { PersonalAccessTokenStore } from "../../src/db/personal-access-tokens";
 import { SessionIndexStore } from "../../src/db/session-index";
 import { TeamMembershipStore } from "../../src/db/team-memberships";
@@ -21,7 +23,10 @@ import {
   routeRequest,
   seedActiveUser,
   seedEvents,
+  seedMessage,
+  seedSandboxAuth,
   serviceFetch,
+  waitForSandboxStatus,
 } from "./helpers";
 import { runInSessionDO } from "./session-do-access";
 import { fetchRuns } from "./run-helpers";
@@ -33,6 +38,14 @@ const OTHER = "88888888888888888888888888888888";
 const ADMIN = "99999999999999999999999999999999";
 
 async function issueToken(userId: string, permissions: PermissionId[]): Promise<string> {
+  return (await issueTokenWithId(userId, permissions)).token;
+}
+
+/** `issueToken`, with the id its audit rows and grant are recorded under. */
+async function issueTokenWithId(
+  userId: string,
+  permissions: PermissionId[]
+): Promise<{ token: string; id: string }> {
   const result = await new PersonalAccessTokenStore(env.DB).issue({
     userId,
     name: "integration",
@@ -42,7 +55,7 @@ async function issueToken(userId: string, permissions: PermissionId[]): Promise<
     requestId: "integration",
   });
   if (result.kind !== "issued") throw new Error("token was not issued");
-  return result.token.token;
+  return { token: result.token.token, id: result.token.id };
 }
 
 function withToken(token: string, path: string, init: { method?: string; body?: unknown } = {}) {
@@ -163,22 +176,31 @@ describe("reading sessions with a token", () => {
     const token = await issueToken(OWNER, [
       "sessions.read",
       "sessions.create",
+      "sessions.collaborate",
       "sessions.sandbox_access",
       "sessions.lifecycle",
+      "sessions.delete",
+      "sessions.bulk_archive",
     ]);
     for (const [method, path] of [
       ["GET", `/sessions/${sessionName}/tunnel-urls`],
       ["GET", `/sessions/${sessionName}/sandbox-access`],
-      ["POST", `/sessions/${sessionName}/archive`],
-      ["POST", `/sessions/${sessionName}/stop`],
       ["POST", `/sessions/${sessionName}/pr`],
+      ["DELETE", `/sessions/${sessionName}`],
+      ["POST", "/sessions/batch-archive"],
+      ["PATCH", `/sessions/${sessionName}/budget`],
+      ["POST", `/sessions/${sessionName}/children`],
+      ["POST", `/sessions/${sessionName}/children/child-1/cancel`],
     ] as const) {
       await expectRefusal(
-        await withToken(token, path, { method, body: method === "POST" ? {} : undefined }),
+        await withToken(token, path, { method, body: method === "GET" ? undefined : {} }),
         403,
         "personal_access_token_not_accepted"
       );
     }
+    expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({
+      status: "created",
+    });
   });
 });
 
@@ -272,12 +294,21 @@ describe("reading one session with a token", () => {
         capabilities: {
           canRead: true,
           canCollaborate: true,
-          canManageLifecycle: false,
+          canManageLifecycle: true,
           canDelete: false,
           canSandbox: false,
           canManageCollaborators: false,
           canChangeVisibility: false,
         },
+      },
+    });
+
+    // And within those, only what the token was granted.
+    const reader = await issueToken(OWNER, ["sessions.read"]);
+    const read = await withToken(reader, `/sessions/${sessionName}`);
+    await expect(read.json()).resolves.toMatchObject({
+      session: {
+        capabilities: { canRead: true, canCollaborate: false, canManageLifecycle: false },
       },
     });
   });
@@ -606,6 +637,394 @@ describe("prompting a session with a token", () => {
     });
     expect(response.status).toBe(400);
     expect(await queryDO(stub, "SELECT id FROM messages")).toEqual([]);
+  });
+});
+
+/** The allowed-request audit rows written for one path, oldest first. */
+async function allowedAuditRows(resourceId: string) {
+  const { results } = await env.DB.prepare(
+    `SELECT principal_kind, actor_user_id_snapshot, metadata_json FROM authorization_audit_events
+      WHERE action = 'authorization.request_allowed' AND resource_id = ?
+      ORDER BY occurred_at, rowid`
+  )
+    .bind(resourceId)
+    .all<{ principal_kind: string; actor_user_id_snapshot: string; metadata_json: string }>();
+  return results.map(({ metadata_json, ...row }) => ({
+    ...row,
+    metadata: JSON.parse(metadata_json) as Record<string, unknown>,
+  }));
+}
+
+describe("managing a session's lifecycle with a token", () => {
+  it("renames, archives, unarchives, and stops its owner's session, audited to the token", async () => {
+    const { stub, sessionName } = await initSession({ userId: OWNER, title: "Before" });
+    // The test spawn fails on its own; archiving waits on the sandbox, so let that settle first.
+    await waitForSandboxStatus(stub, "failed");
+    const { token, id: tokenId } = await issueTokenWithId(OWNER, [
+      "sessions.read",
+      "sessions.lifecycle",
+    ]);
+    const sessions = new SessionIndexStore(env.DB);
+
+    const renamed = await withToken(token, `/sessions/${sessionName}/title`, {
+      method: "PATCH",
+      body: { title: "After" },
+    });
+    expect(renamed.status).toBe(200);
+    await expect(renamed.json()).resolves.toEqual({ title: "After" });
+    expect(await sessions.get(sessionName)).toMatchObject({ title: "After" });
+
+    const archived = await withToken(token, `/sessions/${sessionName}/archive`, {
+      method: "POST",
+      body: {},
+    });
+    expect(archived.status).toBe(200);
+    await expect(archived.json()).resolves.toMatchObject({ outcome: "archived" });
+    expect(await sessions.get(sessionName)).toMatchObject({ status: "archived" });
+
+    const restored = await withToken(token, `/sessions/${sessionName}/unarchive`, {
+      method: "POST",
+      body: {},
+    });
+    expect(restored.status).toBe(200);
+    // The fixture never ran a prompt, so its messages imply the draft status it was archived from.
+    await expect(restored.json()).resolves.toEqual({ status: "created" });
+    const afterRestore = await sessions.get(sessionName);
+    expect(afterRestore).not.toBeNull();
+    expect(afterRestore).toMatchObject({ status: "created" });
+
+    const stopped = await withToken(token, `/sessions/${sessionName}/stop`, {
+      method: "POST",
+      body: {},
+    });
+    expect(stopped.status).toBe(200);
+    await expect(stopped.json()).resolves.toEqual({ status: "stopping" });
+
+    for (const route of ["title", "archive", "unarchive", "stop"]) {
+      expect(await allowedAuditRows(`/sessions/${sessionName}/${route}`), route).toEqual([
+        {
+          principal_kind: "personal-access-token",
+          actor_user_id_snapshot: OWNER,
+          metadata: expect.objectContaining({
+            admission: "personal-access-token",
+            personalAccessTokenId: tokenId,
+          }),
+        },
+      ]);
+    }
+  });
+
+  it("stops the prompt the session is processing", async () => {
+    const { stub, sessionName } = await initSession({ userId: OWNER });
+    await waitForSandboxStatus(stub, "failed");
+    const [owner] = await queryDO<{ id: string }>(
+      stub,
+      "SELECT id FROM participants WHERE user_id = ?",
+      OWNER
+    );
+    await seedMessage(stub, {
+      id: "running",
+      authorId: owner!.id,
+      content: "Refactor the parser",
+      source: "web",
+      status: "processing",
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+    });
+    const token = await issueToken(OWNER, ["sessions.read", "sessions.lifecycle"]);
+
+    const stopped = await withToken(token, `/sessions/${sessionName}/stop`, {
+      method: "POST",
+      body: {},
+    });
+    expect(stopped.status).toBe(200);
+    expect(
+      await queryDO<{ status: string }>(stub, "SELECT status FROM messages WHERE id = 'running'")
+    ).toEqual([{ status: "failed" }]);
+  });
+
+  it("needs sessions.lifecycle: sessions.read and sessions.collaborate cannot", async () => {
+    const { sessionName } = await initSession({ userId: OWNER, title: "Kept" });
+    const token = await issueToken(OWNER, ["sessions.read", "sessions.collaborate"]);
+
+    for (const [method, route] of [
+      ["PATCH", "title"],
+      ["POST", "archive"],
+      ["POST", "unarchive"],
+      ["POST", "stop"],
+    ] as const) {
+      const response = await withToken(token, `/sessions/${sessionName}/${route}`, {
+        method,
+        body: { title: "Refused" },
+      });
+      expect(response.status, route).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "permission_required",
+        permission: "sessions.lifecycle",
+      });
+    }
+    expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({
+      title: "Kept",
+      status: "created",
+    });
+  });
+
+  it("loses sessions.lifecycle without sessions.read, which every session's admission needs", async () => {
+    const { sessionName } = await initSession({ userId: OWNER, title: "Kept" });
+    // Issued straight into storage: issuance refuses this grant, but a grant can outlive a rule.
+    const { token, id } = await issueTokenWithId(OWNER, ["sessions.lifecycle"]);
+
+    // The owner holds sessions.lifecycle and the stored grant names it, yet the token acts without
+    // it: narrowing drops a permission whose prerequisite the grant lacks.
+    const owner = await new AuthorizationService(env.DB).getEffectiveAuthorization(OWNER);
+    expect(owner.permissions).toContain("sessions.lifecycle");
+    const [stored] = (await new PersonalAccessTokenStore(env.DB).list(OWNER)).filter(
+      (entry) => entry.id === id
+    );
+    expect(stored?.permissions).toEqual(["sessions.lifecycle"]);
+    expect(restrictAuthorizationToGrant(owner, stored!.permissions).permissions).toEqual([]);
+
+    // So the route refuses the very permission the grant names. Under legacy enforcement it checks
+    // sessions.lifecycle alone on a workspace session, so this refusal is the narrowing at work.
+    const response = await withToken(token, `/sessions/${sessionName}/title`, {
+      method: "PATCH",
+      body: { title: "Refused" },
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "permission_required",
+      permission: "sessions.lifecycle",
+    });
+    expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({ title: "Kept" });
+  });
+
+  it("reaches only sessions its owner can see", async () => {
+    const { sessionName } = await initSession({ userId: OTHER, title: "Theirs" });
+    await env.DB.prepare("UPDATE sessions SET visibility = 'private' WHERE id = ?")
+      .bind(sessionName)
+      .run();
+    const token = await issueToken(OWNER, ["sessions.read", "sessions.lifecycle"]);
+
+    for (const [method, route] of [
+      ["PATCH", "title"],
+      ["POST", "archive"],
+      ["POST", "unarchive"],
+      ["POST", "stop"],
+    ] as const) {
+      const response = await withToken(token, `/sessions/${sessionName}/${route}`, {
+        method,
+        body: { title: "Not mine" },
+      });
+      expect(response.status, route).toBe(404);
+    }
+    expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({
+      title: "Theirs",
+      status: "created",
+    });
+  });
+});
+
+describe("managing a teammate's session with a token", () => {
+  it.each(["off", "on"] as const)(
+    "stops, archives, and renames a session its owner may manage but does not own (teams %s)",
+    async (mode) => {
+      // A workspace-visible session belongs to everyone who can read it, as it does in the browser:
+      // the token reaches every session its owner can manage, not only the owner's own.
+      const { stub, sessionName } = await initSession({ userId: OTHER, title: "Theirs" });
+      await waitForSandboxStatus(stub, "failed");
+      const token = await issueToken(OWNER, ["sessions.read", "sessions.lifecycle"]);
+
+      const renamed = await withTokenIn(mode, token, `/sessions/${sessionName}/title`, {
+        method: "PATCH",
+        body: { title: "Renamed by a teammate" },
+      });
+      expect(renamed.status).toBe(200);
+      const stopped = await withTokenIn(mode, token, `/sessions/${sessionName}/stop`, {
+        method: "POST",
+        body: {},
+      });
+      expect(stopped.status).toBe(200);
+      const archived = await withTokenIn(mode, token, `/sessions/${sessionName}/archive`, {
+        method: "POST",
+        body: {},
+      });
+      expect(archived.status).toBe(200);
+      expect(await new SessionIndexStore(env.DB).get(sessionName)).toMatchObject({
+        userId: OTHER,
+        title: "Renamed by a teammate",
+        status: "archived",
+      });
+    }
+  );
+});
+
+describe("managing another user's private session with a token", () => {
+  it("reaches it through a workspace owner's break-glass visibility, and an administrator's not at all", async () => {
+    // The grant decides which kinds of resource a token reaches; its owner's role decides how many.
+    // A workspace owner can see every private session, so the owner's lifecycle token can act on
+    // them too, audited to the token, while an administrator's token cannot find them.
+    const WORKSPACE_OWNER = "66666666666666666666666666666666";
+    await seedActiveUser(WORKSPACE_OWNER);
+    await env.DB.prepare(
+      "UPDATE user_role_assignments SET role_id = 'role_builtin_owner' WHERE user_id = ?"
+    )
+      .bind(WORKSPACE_OWNER)
+      .run();
+    const { stub, sessionName } = await initSession({ userId: OTHER, title: "Private" });
+    await env.DB.prepare("UPDATE sessions SET visibility = 'private' WHERE id = ?")
+      .bind(sessionName)
+      .run();
+    await waitForSandboxStatus(stub, "failed");
+    const sessions = new SessionIndexStore(env.DB);
+
+    const admin = await issueToken(ADMIN, ["sessions.read", "sessions.lifecycle"]);
+    for (const [method, route] of [
+      ["PATCH", "title"],
+      ["POST", "archive"],
+      ["POST", "stop"],
+    ] as const) {
+      const response = await withToken(admin, `/sessions/${sessionName}/${route}`, {
+        method,
+        body: { title: "By an administrator" },
+      });
+      expect(response.status, `administrator ${route}`).toBe(404);
+    }
+    expect(await sessions.get(sessionName)).toMatchObject({ title: "Private", status: "created" });
+
+    const { token: owner, id: ownerTokenId } = await issueTokenWithId(WORKSPACE_OWNER, [
+      "sessions.read",
+      "sessions.lifecycle",
+    ]);
+    const renamed = await withToken(owner, `/sessions/${sessionName}/title`, {
+      method: "PATCH",
+      body: { title: "By the workspace owner" },
+    });
+    expect(renamed.status).toBe(200);
+    expect(
+      (await withToken(owner, `/sessions/${sessionName}/stop`, { method: "POST", body: {} })).status
+    ).toBe(200);
+    expect(
+      (await withToken(owner, `/sessions/${sessionName}/archive`, { method: "POST", body: {} }))
+        .status
+    ).toBe(200);
+    expect(await sessions.get(sessionName)).toMatchObject({
+      userId: OTHER,
+      visibility: "private",
+      title: "By the workspace owner",
+      status: "archived",
+    });
+    for (const route of ["title", "stop", "archive"]) {
+      expect(await allowedAuditRows(`/sessions/${sessionName}/${route}`), route).toEqual([
+        {
+          principal_kind: "personal-access-token",
+          actor_user_id_snapshot: WORKSPACE_OWNER,
+          metadata: expect.objectContaining({ personalAccessTokenId: ownerTokenId }),
+        },
+      ]);
+    }
+    // Each reach into the private session is also recorded as the owner's break-glass access.
+    const { results: breakGlass } = await env.DB.prepare(
+      `SELECT actor_user_id_snapshot, principal_kind FROM authorization_audit_events
+        WHERE action = 'session.private_break_glass' AND resource_id = ?`
+    )
+      .bind(sessionName)
+      .all<{ actor_user_id_snapshot: string; principal_kind: string }>();
+    expect(breakGlass).toHaveLength(3);
+    expect(new Set(breakGlass.map((row) => row.actor_user_id_snapshot))).toEqual(
+      new Set([WORKSPACE_OWNER])
+    );
+  });
+});
+
+/** Make `childId` a child of `parentId`, as spawning one records it. */
+async function adoptChild(parentId: string, childId: string) {
+  await env.DB.prepare("UPDATE sessions SET parent_session_id = ? WHERE id = ?")
+    .bind(parentId, childId)
+    .run();
+}
+
+describe("reading child sessions with a token", () => {
+  it("lists and reads its owner's children with sessions.read, and is refused without it", async () => {
+    const parent = await initSession({ userId: OWNER });
+    const child = await initSession({ userId: OWNER, title: "Child task" });
+    const hidden = await initSession({ userId: OTHER, title: "Someone else's" });
+    await env.DB.prepare("UPDATE sessions SET visibility = 'private' WHERE id = ?")
+      .bind(hidden.sessionName)
+      .run();
+    await adoptChild(parent.sessionName, child.sessionName);
+    await adoptChild(parent.sessionName, hidden.sessionName);
+    await seedEvents(child.stub, [
+      {
+        id: "child-event",
+        type: "tool_call",
+        data: JSON.stringify({ type: "tool_call", tool: "read_file", status: "completed" }),
+        createdAt: Date.now(),
+      },
+    ]);
+    const reader = await issueToken(OWNER, ["sessions.read"]);
+
+    const list = await withToken(reader, `/sessions/${parent.sessionName}/children`);
+    expect(list.status).toBe(200);
+    const { children } = await list.json<{ children: { id: string }[] }>();
+    // A private child its owner cannot see is left out, as it is for a browser session.
+    expect(children.map((entry) => entry.id)).toEqual([child.sessionName]);
+
+    const read = await withToken(
+      reader,
+      `/sessions/${parent.sessionName}/children/${child.sessionName}?include=trajectory`
+    );
+    expect(read.status).toBe(200);
+    const detail = await read.json<{
+      session: { id: string; title: string };
+      trajectory: { events: unknown[] };
+    }>();
+    expect(detail.session).toMatchObject({ id: child.sessionName, title: "Child task" });
+    expect(detail.trajectory.events).toHaveLength(1);
+    expect(
+      (await withToken(reader, `/sessions/${parent.sessionName}/children/${hidden.sessionName}`))
+        .status
+    ).toBe(404);
+
+    const unrelated = await issueToken(OWNER, ["automations.read"]);
+    await expectRefusal(
+      await withToken(unrelated, `/sessions/${parent.sessionName}/children`),
+      403,
+      "permission_required"
+    );
+    await expectRefusal(
+      await withToken(unrelated, `/sessions/${parent.sessionName}/children/${child.sessionName}`),
+      403,
+      "permission_required"
+    );
+  });
+
+  it("is authenticated as the token, never as the parent's sandbox, on these sandbox routes", async () => {
+    // The child routes also admit the parent session's sandbox, whose bearer credential skips
+    // every permission check. A token must never be mistaken for one, even when the sandbox's
+    // credential is byte for byte the token itself.
+    const parent = await initSession({ userId: OWNER });
+    const child = await initSession({ userId: OWNER });
+    await adoptChild(parent.sessionName, child.sessionName);
+    const token = await issueToken(OWNER, ["automations.read"]);
+    await seedSandboxAuth(parent.stub, { authToken: token, sandboxId: "sb-token-shaped" });
+
+    for (const path of [
+      `/sessions/${parent.sessionName}/children`,
+      `/sessions/${parent.sessionName}/children/${child.sessionName}`,
+    ]) {
+      // Admitted as the parent's sandbox this would answer 200; as the token it lacks sessions.read.
+      await expectRefusal(await withToken(token, path), 403, "permission_required");
+    }
+
+    // Once its owner revokes the token, the same credential is refused outright rather than
+    // retried as the sandbox credential it also is.
+    const [issued] = await new PersonalAccessTokenStore(env.DB).list(OWNER);
+    const revoked = await serviceFetch(`${BASE}/personal-access-tokens/${issued!.id}`, {
+      method: "DELETE",
+      as: { userId: OWNER, role: "member" },
+    });
+    expect(revoked.status).toBe(200);
+    expect((await withToken(token, `/sessions/${parent.sessionName}/children`)).status).toBe(401);
   });
 });
 

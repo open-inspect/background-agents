@@ -179,6 +179,23 @@ describe("issuing personal access tokens", () => {
     expect(results).toEqual([]);
   });
 
+  it.each(["sessions.collaborate", "sessions.lifecycle"])(
+    "refuses to grant %s without sessions.read, which every session's admission needs",
+    async (permission) => {
+      const response = await issue(OWNER, {
+        name: "laptop",
+        permissions: [permission],
+        expiresInDays: 30,
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "permission_prerequisite_missing",
+        permission,
+        requires: "sessions.read",
+      });
+    }
+  );
+
   it.each([
     ["without an expiry", { name: "laptop", permissions: ["sessions.read"] }],
     ["with an empty grant", { name: "laptop", permissions: [], expiresInDays: 30 }],

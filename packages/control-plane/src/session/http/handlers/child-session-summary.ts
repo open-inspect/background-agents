@@ -1,9 +1,11 @@
 import { isStoredFileArtifactType, type ArtifactInfo } from "@open-inspect/shared/types/artifacts";
-import type {
-  ChildSessionDetail,
-  ChildStoredFileSummary,
-  ChildSessionFinalResponse,
-  ChildSessionTrajectory,
+import {
+  DEFAULT_CHILD_TRAJECTORY_EVENT_LIMIT,
+  MAX_CHILD_TRAJECTORY_EVENT_LIMIT,
+  type ChildSessionDetail,
+  type ChildStoredFileSummary,
+  type ChildSessionFinalResponse,
+  type ChildSessionTrajectory,
 } from "@open-inspect/shared/types/session-api";
 import { eventResponseSchema, type EventResponse } from "@open-inspect/shared/types/sandbox-events";
 import {
@@ -25,8 +27,6 @@ export const FINAL_RESPONSE_EVENT_PAGE_LIMIT = 200;
 export const FINAL_RESPONSE_MAX_EVENTS = 1000;
 
 const RECENT_EVENT_DISPLAY_LIMIT = 5;
-const DEFAULT_TRAJECTORY_EVENT_LIMIT = 200;
-const MAX_TRAJECTORY_EVENT_LIMIT = 1000;
 const NOISY_RECENT_EVENT_TYPES = new Set(["token", "heartbeat", "step_start", "step_finish"]);
 const CHILD_SUMMARY_INCLUDE_VALUES = new Set<string>(CHILD_SESSION_DETAIL_INCLUDES);
 
@@ -95,11 +95,11 @@ export function parseChildSummaryOptions(url?: URL): ChildSummaryOptionsResult {
   const trajectoryLimitResult = includeTrajectory
     ? parseLimit(
         url?.searchParams.get("trajectoryLimit"),
-        DEFAULT_TRAJECTORY_EVENT_LIMIT,
-        MAX_TRAJECTORY_EVENT_LIMIT,
+        DEFAULT_CHILD_TRAJECTORY_EVENT_LIMIT,
+        MAX_CHILD_TRAJECTORY_EVENT_LIMIT,
         "trajectoryLimit"
       )
-    : { ok: true as const, value: DEFAULT_TRAJECTORY_EVENT_LIMIT };
+    : { ok: true as const, value: DEFAULT_CHILD_TRAJECTORY_EVENT_LIMIT };
   if (!trajectoryLimitResult.ok) {
     return { ok: false, error: trajectoryLimitResult.error };
   }

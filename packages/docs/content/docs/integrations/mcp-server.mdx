@@ -1,10 +1,10 @@
 ---
 title: MCP server
-description: Let Claude Code or another MCP client investigate sessions and automation runs, and optionally start and steer sessions, create and run automations, or import skills, through a personal access token.
+description: Let Claude Code or another MCP client investigate sessions and automation runs, and optionally start, steer, stop, archive, and rename sessions, create and run automations, or import skills, through a personal access token.
 audience: user
 owner: integrations
 status: published
-lastReviewed: "2026-11-25"
+lastReviewed: "2026-11-26"
 relatedCode:
   - packages/control-plane/src/routes/hosted-mcp.ts
   - packages/control-plane/src/mcp-tools/tools.ts
@@ -14,7 +14,7 @@ relatedCode:
   - packages/control-plane/src/router.policy.test.ts
 ---
 
-The OpenInspect MCP server lets an MCP client such as Claude Code read your sessions and automation runs, and optionally start and steer sessions, create and run automations, or import skills, without opening the web UI. Your control plane serves it at `/mcp`, and a client authenticates with a [personal access token](/integrations/personal-access-tokens).
+The OpenInspect MCP server lets an MCP client such as Claude Code read your sessions, their child sessions, and automation runs, and optionally start, steer, stop, archive, and rename sessions, create and run automations, or import skills, without opening the web UI. Your control plane serves it at `/mcp`, and a client authenticates with a [personal access token](/integrations/personal-access-tokens).
 
 ## Set it up
 
@@ -50,15 +50,19 @@ Its control plane URL must use `https://`; plain `http://` is accepted only for 
 | Tool                                                                                                                      | Needs the token to hold                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `list_sessions`, `get_session`, `get_session_events`, `get_session_messages`, `get_session_diff`, `get_session_diff_file` | **Read sessions**                                                                               |
+| `list_session_children`, `get_session_child`                                                                              | **Read sessions**                                                                               |
 | `create_session`                                                                                                          | **Create sessions**, **Read sessions**, **Collaborate in sessions**, and use of its target      |
 | `send_prompt`                                                                                                             | **Read sessions** and **Collaborate in sessions**                                               |
+| `stop_session`, `archive_session`, `unarchive_session`, `rename_session`                                                  | **Read sessions** and **Manage session lifecycle**                                              |
 | `list_automations`, `list_automation_invocations`, `get_automation_run`                                                   | **Read automations**                                                                            |
 | `list_skills`                                                                                                             | **Read skills**                                                                                 |
 | `create_automation`                                                                                                       | **Create automations**, **Create sessions**, and use of its targets                             |
 | `trigger_automation`                                                                                                      | **Run your automations** or **Run any automation**, **Create sessions**, and use of its targets |
 | `import_skill_from_git`, `update_skill_from_git`                                                                          | **Manage skills** (administrators), which always comes with **Read skills**                     |
 
-A token without a tool's permission gets an error, which usually names the missing permission or points to the tool's description, where the needed grant is stated. The token never exceeds your own role or your workspace's [API policy](/administration/personal-access-tokens), and nothing it does can stop, archive, or delete a session, open a session's sandbox editor, terminal, or tunnels, delete or pause an automation, delete a skill, or reach secrets or workspace settings. A run started with `trigger_automation` uses only what the token was granted, even where your role allows more.
+`stop_session` ends only the prompt a session is working on, not the session: prompts queued behind it then run, and the session takes new ones. A session with a prompt in progress or queued cannot be archived, so wait for its queue to drain before archiving it; stopping alone does not clear the queue. `list_session_children` and `get_session_child` read the child sessions an agent started from a session, including a child's final response and its event history.
+
+A token without a tool's permission gets an error that names the missing permission, or, where the control plane does not say which one, the permissions the tool needs. The token never exceeds your own role or your workspace's [API policy](/administration/personal-access-tokens), and no tool can call the routes that delete a session, change who can see it, start, prompt, or cancel a child session, open a session's sandbox editor, terminal, or tunnels, delete or pause an automation, delete a skill, or reach secrets or workspace settings. A run started with `trigger_automation` uses only what the token was granted, even where your role allows more.
 
 ## Keep the assistant in check
 
@@ -67,6 +71,9 @@ Session transcripts and diffs are content the agent and your repositories produc
 - A session started or prompted this way runs its instructions in a sandbox, as you, straight away. The agent there can run any command the sandbox allows, with that session's secrets and repository access, and can push branches and open pull requests. Withholding the sandbox URLs from a token does not limit this.
 - An automation runs its instructions later, in a sandbox, as you.
 - A skill assigned globally loads into every later session in the workspace.
+- The lifecycle tools reach every session you can manage, not only your own. With **Manage session lifecycle**, a token can stop, archive, or rename a teammate's session wherever you could in the browser. A session stopped this way loses the prompt it was working on; an archived or renamed one can be restored or renamed back.
+- A workspace owner can see every member's private sessions, so a workspace owner's token with **Read sessions** and **Manage session lifecycle** can stop, archive, unarchive, or rename them too. Each such action is recorded in the audit log as the token's, and as a break-glass access to a private session. Administrators' tokens, like administrators, cannot reach private sessions. If you are a workspace owner, issue assistant tokens without **Manage session lifecycle** unless you want this.
+- A prompt can still have the agent start child sessions from its sandbox, though no tool starts one directly.
 
 A read-only token cannot be talked into writing: the control plane refuses the call whatever the assistant sends. The token's grant is the only limit anything enforces.
 

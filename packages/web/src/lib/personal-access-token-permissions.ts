@@ -30,13 +30,13 @@ export const PERSONAL_ACCESS_TOKEN_PERMISSION_COPY = {
   "sessions.collaborate": {
     group: "sessions",
     label: "Collaborate in sessions",
-    description: "Send prompts to sessions you can collaborate in",
+    description: "Send prompts to sessions you can collaborate in. Includes Read sessions.",
     readOnly: false,
   },
   "sessions.lifecycle": {
     group: "sessions",
     label: "Manage session lifecycle",
-    description: "Stop, archive, rename, and restore sessions",
+    description: "Stop, archive, rename, and restore sessions. Includes Read sessions.",
     readOnly: false,
   },
   "sessions.sandbox_access": {

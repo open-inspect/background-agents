@@ -37,12 +37,14 @@ import {
   skillSchema,
 } from "@open-inspect/shared/types/skills";
 import { promptContentSchema } from "@open-inspect/shared/types/prompts";
-import type {
-  CreateSessionRequest,
-  SendPromptRequest,
+import {
+  DEFAULT_CHILD_TRAJECTORY_EVENT_LIMIT,
+  type CreateSessionRequest,
+  type SendPromptRequest,
 } from "@open-inspect/shared/types/session-api";
 import { sessionVisibilitySchema } from "@open-inspect/shared/types/teams";
 import { z } from "zod";
+import { MAX_SESSION_TITLE_LENGTH } from "../session/title";
 import { ControlPlaneError, type ControlPlaneClient } from "./client";
 
 /**
@@ -485,6 +487,153 @@ export const TOOLS: ToolDefinition[] = [
         model: args.model,
         reasoningEffort: args.reasoning_effort,
       }),
+  }),
+  // Session lifecycle. Each write changes the session's state in place, where every later reader
+  // sees it, so each is marked destructive, though archiving and renaming can be undone.
+  defineTool({
+    name: "stop_session",
+    requires: "sessions.read and sessions.lifecycle",
+    title: "Stop a session's current prompt",
+    readOnly: false,
+    destructive: true,
+    description:
+      "Stop the prompt a session is processing, as the web UI's stop button does: the agent is " +
+      "interrupted where it stands and that prompt ends unsuccessfully. Prompts queued behind it " +
+      "still run, and the session stays open for more. Returns status stopping, whether or not " +
+      "anything was running; check with get_session that it is no longer processing.",
+    inputSchema: { session_id: sessionId },
+    run: (client, args) => client.post(`/sessions/${encodeURIComponent(args.session_id)}/stop`, {}),
+  }),
+  defineTool({
+    name: "archive_session",
+    requires: "sessions.read and sessions.lifecycle",
+    title: "Archive a session",
+    readOnly: false,
+    destructive: true,
+    description:
+      "Archive a session, moving it out of the active list and shutting down its sandbox with " +
+      "its state preserved. Refused with 409 while a prompt is processing or queued, and for a " +
+      "cancelled session. stop_session ends only the current prompt and the queue then runs, so " +
+      "wait until get_session shows nothing processing or queued before archiving. Returns the " +
+      "outcome: archived, or already_archived. Undo with unarchive_session.",
+    inputSchema: { session_id: sessionId },
+    run: (client, args) =>
+      client.post(`/sessions/${encodeURIComponent(args.session_id)}/archive`, {}),
+  }),
+  defineTool({
+    name: "unarchive_session",
+    requires: "sessions.read and sessions.lifecycle",
+    title: "Restore an archived session",
+    readOnly: false,
+    destructive: true,
+    description:
+      "Restore an archived session to the status its messages imply, such as completed, or " +
+      "failed when its last prompt was stopped, so it can be prompted again. Starts no work by " +
+      "itself. Refused with 409 when the session is not archived. Returns the restored status.",
+    inputSchema: { session_id: sessionId },
+    run: (client, args) =>
+      client.post(`/sessions/${encodeURIComponent(args.session_id)}/unarchive`, {}),
+  }),
+  defineTool({
+    name: "rename_session",
+    requires: "sessions.read and sessions.lifecycle",
+    title: "Rename a session",
+    readOnly: false,
+    destructive: true,
+    description:
+      "Replace a session's display title, as everyone who can see the session will read it. " +
+      "Returns the stored title.",
+    inputSchema: {
+      session_id: sessionId,
+      title: z
+        .string()
+        // Trimmed and capped as the control plane stores it, so a bad title fails here.
+        .trim()
+        .min(1)
+        .max(MAX_SESSION_TITLE_LENGTH)
+        .describe("The new title"),
+    },
+    run: (client, args) =>
+      client.patch(`/sessions/${encodeURIComponent(args.session_id)}/title`, {
+        title: args.title,
+      }),
+  }),
+  // Child sessions: the sessions an agent spawned from a parent session to work in parallel.
+  defineTool({
+    name: "list_session_children",
+    requires: "sessions.read",
+    title: "List a session's child sessions",
+    readOnly: true,
+    description:
+      "List the child sessions an agent spawned from a session, with each child's status, " +
+      "title, and repository. Lists direct children only, and only those the token's owner can " +
+      "see. Read one with get_session_child, or its timeline with get_session_events.",
+    inputSchema: { session_id: sessionId },
+    run: (client, args) => client.get(`/sessions/${encodeURIComponent(args.session_id)}/children`),
+  }),
+  defineTool({
+    name: "get_session_child",
+    requires: "sessions.read",
+    title: "Read a child session's progress",
+    readOnly: true,
+    description:
+      "Read one child session of a parent: its status, whether a prompt is unfinished, its " +
+      "artifacts, and its last few events. Optionally include the child's final response, and " +
+      "a page of its event trajectory: its most recent events, in the order they happened. Pass " +
+      "the response's trajectory.cursor back for the events before them.",
+    inputSchema: {
+      session_id: sessionId.describe("The parent session's id"),
+      child_id: z
+        .string()
+        .min(1)
+        .describe("The child session's id, children[].id from list_session_children"),
+      include_result: z
+        .boolean()
+        .optional()
+        .describe("Include the child's final response, once it has finished a prompt"),
+      include_trajectory: z
+        .boolean()
+        .optional()
+        .describe("Include one page of the child's event trajectory"),
+      trajectory_limit: z
+        .number()
+        .int()
+        .min(1)
+        // Capped as get_session_events pages are, below what the route serves: a page of events
+        // is all context the model has to hold.
+        .max(MAX_EVENT_LIMIT)
+        .optional()
+        .describe(
+          `Events per trajectory page, defaulting to ${DEFAULT_CHILD_TRAJECTORY_EVENT_LIMIT}. ` +
+            "Implies include_trajectory."
+        ),
+      trajectory_cursor: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("trajectory.cursor from the previous page. Implies include_trajectory."),
+    },
+    run: (client, args) => {
+      // The route ignores a page size or cursor unless the trajectory is included, which would
+      // answer a request for the next page with no page at all.
+      const trajectory =
+        args.include_trajectory ||
+        args.trajectory_limit !== undefined ||
+        args.trajectory_cursor !== undefined;
+      const include = [
+        ...(args.include_result ? ["result"] : []),
+        ...(trajectory ? ["trajectory"] : []),
+      ];
+      return client.get(
+        `/sessions/${encodeURIComponent(args.session_id)}` +
+          `/children/${encodeURIComponent(args.child_id)}`,
+        {
+          include: include.length > 0 ? include.join(",") : undefined,
+          trajectoryLimit: args.trajectory_limit,
+          trajectoryCursor: args.trajectory_cursor,
+        }
+      );
+    },
   }),
   defineTool({
     name: "list_automations",

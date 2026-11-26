@@ -13,8 +13,9 @@
 > them over stdio.
 
 MCP server over the Open-Inspect control plane. It runs locally over stdio, so an MCP client such as
-Claude Code or an IDE can inspect sessions, start and steer them, read automation runs, create and
-run automations, and manage skills without the web UI.
+Claude Code or an IDE can inspect sessions and their child sessions, start, steer, stop, archive,
+and rename them, read automation runs, create and run automations, and manage skills without the web
+UI.
 
 ## Security model
 
@@ -44,6 +45,7 @@ give it the shortest lifetime that works.
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Investigate sessions and automation runs | `sessions.read`, `automations.read`, `skills.read`                                                                            |
 | Also hand work off to sessions and steer | add `sessions.create`, `sessions.collaborate` (which needs `sessions.read`), and `repositories.use` and/or `environments.use` |
+| Also stop, archive, and rename sessions  | add `sessions.lifecycle` (which needs `sessions.read`)                                                                        |
 | Also run existing automations            | add `automations.trigger.own` (or `.any`), `sessions.create`, and the targets' use permission                                 |
 | Also create automations                  | add `automations.create`, `sessions.create`, and `repositories.use` and/or `environments.use`                                 |
 | Also import and update skills            | add `skills.manage` (the picker adds `skills.read` with it)                                                                   |
@@ -76,6 +78,14 @@ Three things limit this:
   what a write is about to create before you approve it.
 - Sessions, automations, and skills created this way are visible in the dashboard and audit log. You
   can stop or archive a session, and delete an automation or skill, there.
+
+A token with `sessions.lifecycle` can also be talked into stopping a session, which loses the prompt
+it was working on, or archiving or renaming one, which you can undo. These tools reach every session
+you can manage, not only your own: a teammate's session you could stop or archive in the web UI, the
+token can too. A workspace owner can see every member's private sessions, so a workspace owner's
+token with `sessions.lifecycle` can stop, archive, unarchive, or rename those as well, audited to
+the token and as break-glass access. An administrator's token cannot reach them. Workspace owners
+who do not want this should issue assistant tokens without `sessions.lifecycle`.
 
 For investigation, a read-only token is the right default.
 
@@ -116,7 +126,9 @@ When a tool fails, its output says why:
   tokens off or capped their lifetime below the token's age. Issue a new one, if tokens are on, and
   update the client configuration.
 - A `403` with `permission_required` names the permission the token was not granted, that your role
-  no longer has, or that your workspace's token policy no longer allows.
+  no longer has, or that your workspace's token policy no longer allows. A `403` with
+  `missing_permission` does not say which permission is missing, so the error names every permission
+  the tool needs.
 
 `claude mcp add` does not check that `--env` values are non-empty. If you fill them from a command,
 check that the command printed something.
@@ -135,6 +147,12 @@ Each tool's description states the grant it needs, so the assistant can tell you
 | `get_session_diff_file`       | `GET /sessions/:id/diff/:revisionId/files/:fileId` | `sessions.read`                                            |
 | `create_session`              | `POST /sessions`, then its first prompt            | `sessions.create`, `sessions.read`, `sessions.collaborate` |
 | `send_prompt`                 | `POST /sessions/:id/prompt`                        | `sessions.read`, `sessions.collaborate`                    |
+| `stop_session`                | `POST /sessions/:id/stop`                          | `sessions.read`, `sessions.lifecycle`                      |
+| `archive_session`             | `POST /sessions/:id/archive`                       | `sessions.read`, `sessions.lifecycle`                      |
+| `unarchive_session`           | `POST /sessions/:id/unarchive`                     | `sessions.read`, `sessions.lifecycle`                      |
+| `rename_session`              | `PATCH /sessions/:id/title`                        | `sessions.read`, `sessions.lifecycle`                      |
+| `list_session_children`       | `GET /sessions/:id/children`                       | `sessions.read`                                            |
+| `get_session_child`           | `GET /sessions/:id/children/:childId`              | `sessions.read`                                            |
 | `list_automations`            | `GET /automations`                                 | `automations.read`                                         |
 | `list_automation_invocations` | `GET /automations/:id/invocations`                 | `automations.read`                                         |
 | `get_automation_run`          | `GET /automations/:id/runs/:runId`                 | `automations.read`                                         |
@@ -184,8 +202,26 @@ The session and its prompts are attributed to you, with three differences from t
 
 A token's `sessions.collaborate` needs `sessions.read`, and the picker adds it. Attachments cannot
 be sent with a prompt. Sandbox access stays in the browser: no tool returns the sandbox's editor,
-terminal, or tunnel URLs, and the token cannot stop, archive, or open a pull request for a session.
-Ask the agent to open one in a prompt.
+terminal, or tunnel URLs, and the token cannot open a pull request for a session. Ask the agent to
+open one in a prompt.
+
+### Session lifecycle and children
+
+- `stop_session` stops only the prompt a session is working on, as the web UI's stop button does.
+  Prompts queued behind it then run, and the session takes new ones.
+- `archive_session` archives a session, shutting down its sandbox with its state kept. It is refused
+  while a prompt is in progress or queued, so wait for the queue to drain (stopping does not clear
+  it), and for a cancelled session. `unarchive_session` restores one.
+- `rename_session` replaces a session's title.
+- `list_session_children` lists the child sessions an agent started from a session, and
+  `get_session_child` reads one: its status, artifacts, and recent events, and optionally its final
+  response (`include_result`) and a page of its event trajectory (`include_trajectory`,
+  `trajectory_limit`, `trajectory_cursor`).
+
+The lifecycle tools need `sessions.lifecycle` with `sessions.read`, which the picker adds; the child
+tools need `sessions.read`. No tool calls the routes that delete a session, change who can see it,
+bulk-archive, or start, prompt, or cancel a child session, though a prompt can still have the agent
+start child sessions from its sandbox.
 
 ### Automation writes
 

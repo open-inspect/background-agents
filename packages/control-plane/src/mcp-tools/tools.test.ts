@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MAX_AUTOMATION_NAME_LENGTH } from "@open-inspect/shared/types/automations";
 import { z } from "zod";
+import { MAX_SESSION_TITLE_LENGTH } from "../session/title";
 import { ControlPlaneError, type ControlPlaneClient } from "./client";
 import { TOOLS, type ToolDefinition } from "./tools";
 import { fakeToolClient as fakeClient } from "./tool-surface.test-support";
@@ -240,6 +241,127 @@ describe("send_prompt", () => {
       reasoningEffort: "high",
     });
     expect(result).toEqual({ messageId: "msg_2", status: "queued" });
+  });
+});
+
+describe("session lifecycle", () => {
+  it.each([
+    ["stop_session", "stop", { status: "stopping" }],
+    ["archive_session", "archive", { status: "archived", outcome: "archived" }],
+    ["unarchive_session", "unarchive", { status: "completed" }],
+  ] as const)("%s posts to the session's %s route", async (name, route, answer) => {
+    const { client, post } = fakeClient({ post: () => answer });
+
+    const result = await tool(name).run(client, { session_id: "sess/1" });
+
+    expect(post).toHaveBeenCalledWith(`/sessions/sess%2F1/${route}`, {});
+    expect(result).toEqual(answer);
+  });
+
+  it("renames with the title trimmed, as the control plane stores it", async () => {
+    const { client, patch } = fakeClient({ patch: () => ({ title: "Fix the flaky test" }) });
+
+    const result = await tool("rename_session").run(client, {
+      session_id: "sess/1",
+      title: "  Fix the flaky test\n",
+    });
+
+    expect(patch).toHaveBeenCalledWith("/sessions/sess%2F1/title", {
+      title: "Fix the flaky test",
+    });
+    expect(result).toEqual({ title: "Fix the flaky test" });
+  });
+
+  it("refuses a title the control plane would refuse, before sending anything", async () => {
+    const { client, patch } = fakeClient({});
+    const rename = tool("rename_session");
+
+    await expect(rename.run(client, { session_id: "s1", title: " " })).rejects.toThrow();
+    await expect(
+      rename.run(client, { session_id: "s1", title: "x".repeat(MAX_SESSION_TITLE_LENGTH + 1) })
+    ).rejects.toThrow();
+    // The cap counts the title as stored, after trimming.
+    await rename.run(client, {
+      session_id: "s1",
+      title: ` ${"x".repeat(MAX_SESSION_TITLE_LENGTH)} `,
+    });
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("child sessions", () => {
+  it("lists a session's children", async () => {
+    const { client, get } = fakeClient({ get: () => ({ children: [] }) });
+
+    await tool("list_session_children").run(client, { session_id: "sess/1" });
+
+    expect(get).toHaveBeenCalledWith("/sessions/sess%2F1/children");
+  });
+
+  it("reads one child with only the summary unless more is asked for", async () => {
+    const { client, get } = fakeClient({ get: () => ({ session: { id: "child/1" } }) });
+
+    await tool("get_session_child").run(client, { session_id: "sess/1", child_id: "child/1" });
+
+    expect(get).toHaveBeenCalledWith("/sessions/sess%2F1/children/child%2F1", {
+      include: undefined,
+      trajectoryLimit: undefined,
+      trajectoryCursor: undefined,
+    });
+  });
+
+  it("includes the final response and a trajectory page, passing the page options through", async () => {
+    const { client, get } = fakeClient({ get: () => ({}) });
+
+    await tool("get_session_child").run(client, {
+      session_id: "s1",
+      child_id: "c1",
+      include_result: true,
+      include_trajectory: true,
+      trajectory_limit: 50,
+      trajectory_cursor: "cursor-1",
+    });
+
+    expect(get).toHaveBeenCalledWith("/sessions/s1/children/c1", {
+      include: "result,trajectory",
+      trajectoryLimit: 50,
+      trajectoryCursor: "cursor-1",
+    });
+  });
+
+  it("includes the trajectory whenever a page of it is asked for", async () => {
+    const { client, get } = fakeClient({ get: () => ({}) });
+
+    await tool("get_session_child").run(client, {
+      session_id: "s1",
+      child_id: "c1",
+      trajectory_cursor: "cursor-2",
+    });
+
+    expect(get).toHaveBeenCalledWith("/sessions/s1/children/c1", {
+      include: "trajectory",
+      trajectoryLimit: undefined,
+      trajectoryCursor: "cursor-2",
+    });
+  });
+
+  it("caps a trajectory page as get_session_events caps its pages", async () => {
+    const { client, get } = fakeClient({});
+
+    await expect(
+      tool("get_session_child").run(client, {
+        session_id: "s1",
+        child_id: "c1",
+        trajectory_limit: 201,
+      })
+    ).rejects.toThrow();
+    expect(get).not.toHaveBeenCalled();
+    await tool("get_session_child").run(client, {
+      session_id: "s1",
+      child_id: "c1",
+      trajectory_limit: 200,
+    });
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });
 

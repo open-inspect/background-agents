@@ -876,6 +876,7 @@ describe("route principal policy", () => {
   it.each([
     { kind: "user" },
     { kind: "user-or-service" },
+    { kind: "user-or-service-with-sandbox-fallback", getSessionId: () => "session-1" },
     { kind: "web-service" },
     { kind: "service" },
   ] as const)(
@@ -890,14 +891,15 @@ describe("route principal policy", () => {
     }
   );
 
-  it.each([{ kind: "user" }, { kind: "user-or-service" }] as const)(
-    "admits a personal access token on a %o route that accepts one",
-    (authentication) => {
-      expect(
-        enforceRoutePrincipal({ authentication, personalAccessTokens: "accept" }, token)
-      ).toBeNull();
-    }
-  );
+  it.each([
+    { kind: "user" },
+    { kind: "user-or-service" },
+    { kind: "user-or-service-with-sandbox-fallback", getSessionId: () => "session-1" },
+  ] as const)("admits a personal access token on a %o route that accepts one", (authentication) => {
+    expect(
+      enforceRoutePrincipal({ authentication, personalAccessTokens: "accept" }, token)
+    ).toBeNull();
+  });
 
   it("never admits a browser user or service through the token opt-in alone", () => {
     expect(
@@ -926,6 +928,8 @@ describe("personal access token reach", () => {
         "GET /automations/:id/runs/:runId",
         "GET /sessions",
         "GET /sessions/:id",
+        "GET /sessions/:id/children",
+        "GET /sessions/:id/children/:childId",
         "GET /sessions/:id/diff",
         "GET /sessions/:id/diff/:revisionId/files/:fileId",
         "GET /sessions/:id/events",
@@ -934,8 +938,12 @@ describe("personal access token reach", () => {
         "GET /skills/:id",
         "POST /automations",
         "POST /automations/:id/trigger",
+        "PATCH /sessions/:id/title",
         "POST /sessions",
+        "POST /sessions/:id/archive",
         "POST /sessions/:id/prompt",
+        "POST /sessions/:id/stop",
+        "POST /sessions/:id/unarchive",
         "POST /skills/:id/reimport",
         "POST /skills/:id/reimport/preview",
         "POST /skills/import",
@@ -957,15 +965,24 @@ describe("personal access token reach", () => {
       ["GET", "/sessions/session-1/tunnel-urls"],
       ["GET", "/sessions/session-1/sandbox-access"],
       ["GET", "/integration-settings/slack/watched-channels"],
-      ["POST", "/sessions/session-1/stop"],
-      ["POST", "/sessions/session-1/archive"],
       ["POST", "/sessions/session-1/pr"],
       ["POST", "/sessions/session-1/attachments"],
       ["POST", "/sessions/session-1/ws-token"],
       ["POST", "/sessions/session-1/children"],
       ["POST", "/sessions/session-1/children/child-1/prompt"],
+      ["POST", "/sessions/session-1/children/child-1/cancel"],
       ["GET", "/sessions/session-1/participants"],
+      // Neighbours of the lifecycle routes that tokens reach: deleting, bulk archiving, and
+      // changing the cost limit, visibility, or collaborators stay closed.
+      ["DELETE", "/sessions/session-1"],
+      ["POST", "/sessions/batch-archive"],
+      ["PATCH", "/sessions/session-1/budget"],
+      ["PUT", "/sessions/session-1/visibility"],
+      ["PUT", "/sessions/session-1/collaborators/user-1"],
+      ["DELETE", "/sessions/session-1/collaborators/user-1"],
     ] as const) {
+      // A path that matched no route would pass vacuously.
+      expect(routeFor(method, path), `${method} ${path}`).toBeDefined();
       expect(routeFor(method, path)?.personalAccessTokens, `${method} ${path}`).toBeUndefined();
     }
   });

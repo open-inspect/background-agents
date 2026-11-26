@@ -193,6 +193,20 @@ describe("PersonalAccessTokensSettings", () => {
     expect(screen.getByLabelText("Manage skills")).not.toBeChecked();
   });
 
+  it("grants session lifecycle only together with reading sessions, and says so", async () => {
+    hooks.permissions = ["sessions.read", "sessions.lifecycle"];
+    const user = userEvent.setup();
+    render(<PersonalAccessTokensSettings />);
+    await user.click(screen.getByRole("button", { name: /New token/ }));
+
+    const lifecycle = screen.getByLabelText("Manage session lifecycle");
+    expect(lifecycle).toHaveAccessibleDescription(/Includes Read sessions\./);
+    await user.click(lifecycle);
+    expect(screen.getByLabelText("Read sessions")).toBeChecked();
+    await user.click(screen.getByLabelText("Read sessions"));
+    expect(lifecycle).not.toBeChecked();
+  });
+
   it("does not offer skill management to a user who cannot read skills", async () => {
     hooks.permissions = ["sessions.read", "skills.manage"];
     const user = userEvent.setup();
