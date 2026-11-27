@@ -104,13 +104,15 @@ jobs:
     steps:
       # The head commit the event named, from the fork if need be (main's tip for
       # a manual run). This is the code the reviewer approved; a later push is a
-      # new run and a new approval.
+      # new run and a new approval. The checkout of a pull_request_target head
+      # is deliberate, so the unsafe-checkout guard is opted out of here.
       - name: Checkout
         uses: actions/checkout@v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+          allow-unsafe-pr-checkout: true
 
       # No caches: a pull_request_target run saves them under main's scope, so
       # code from a fork could plant a cache that production's workflows restore.
@@ -134,13 +136,14 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
         with:
-          terraform_version: "1.14.8"
+          terraform_version: "~1.17.2"
 
       - name: Terraform Init
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           terraform init \
+            -lockfile=readonly \
             -backend-config="access_key=${{ secrets.R2_ACCESS_KEY_ID }}" \
             -backend-config="secret_key=${{ secrets.R2_SECRET_ACCESS_KEY }}" \
             -backend-config="endpoints={s3=\"https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com\"}"
