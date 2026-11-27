@@ -1,0 +1,144 @@
+name: Dependabot auto-merge
+
+# Opt-in: merges a Dependabot pull request whose highest bump is a minor or a patch once every other
+# check on its head commit has finished, at least one passed, and none failed. A major, or a bump
+# whose type Dependabot does not report, is left for a person. The workflow waits for the checks
+# itself instead of arming GitHub's auto-merge, because path-filtered workflows never report on
+# most pull requests and so can't be required checks.
+#
+# Off unless the repository sets the `DEPENDABOT_AUTOMERGE_APP_CLIENT_ID` Actions variable. To
+# enable it:
+#   1. Create a GitHub App with Contents, Pull requests and Workflows: write, and install it on the
+#      repository. Workflows: write lets it merge github-actions bumps.
+#   2. Set the app's client ID as the `DEPENDABOT_AUTOMERGE_APP_CLIENT_ID` repository variable.
+#   3. Store its private key as the `DEPENDABOT_AUTOMERGE_APP_PRIVATE_KEY` *Dependabot* secret.
+#      Runs Dependabot triggers can read only Dependabot secrets.
+#   4. Optional: if a GitHub App (not Actions) posts a check that must gate merges, list its check
+#      names, comma-separated, in the `DEPENDABOT_AUTOMERGE_REQUIRED_CHECKS` repository variable.
+#      The workflow then waits for each of them to appear and pass, however late it registers.
+#
+# Approval and merge use the app's token, never `GITHUB_TOKEN`: a merge made with `GITHUB_TOKEN`
+# fires no `push` workflow, so deploy-on-push workflows would never see the commit. If `main`
+# deploys to production, the checks on the pull request are the only gate.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+# A newer push to the same pull request supersedes the wait on the older head commit.
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # Must equal the job name below; the wait loop skips this job's own check.
+  SELF_CHECK: Merge when green
+  CHECK_POLL_INTERVAL_SECONDS: 30
+
+jobs:
+  auto-merge:
+    name: Merge when green
+    # The private key is a Dependabot secret, which reaches only runs Dependabot itself triggered;
+    # a person's push to a Dependabot branch skips this job.
+    if: >-
+      vars.DEPENDABOT_AUTOMERGE_APP_CLIENT_ID != '' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+      statuses: read
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+      - name: Wait for checks
+        id: wait
+        if: contains(fromJSON('["version-update:semver-minor", "version-update:semver-patch"]'), steps.metadata.outputs.update-type)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REQUIRED_CHECKS: ${{ vars.DEPENDABOT_AUTOMERGE_REQUIRED_CHECKS }}
+        run: |
+          # GitHub creates the workflow runs for an event when it processes the event, so the runs
+          # this pull request triggered are listed even while queued and before their jobs report
+          # checks. Waiting on those runs, not only on the checks reported so far, covers Actions
+          # checks that register late. Path-filtered workflows that don't apply create no run.
+          # Checks from GitHub Apps have no such listing: an App creates its check only after it
+          # receives the event. Checks named in REQUIRED_CHECKS must appear and pass, and a skipped
+          # one stops the merge. For any other App check, the merge also needs two consecutive
+          # all-green polls with the same set of checks, so a check that registers between polls
+          # restarts the wait.
+          required=$(jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))' <<<"$REQUIRED_CHECKS")
+          sleep "$CHECK_POLL_INTERVAL_SECONDS"
+          previous_green=""
+          while :; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100" \
+              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)]")
+            runs_pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+            runs_failed=$(jq -r '.[] | select(.status == "completed" and (.conclusion | IN("success", "skipped", "neutral") | not)) | "\(.name) (\(.conclusion))"' <<<"$runs")
+            checks=$(gh pr checks "$PR_URL" --json name,bucket --jq "map(select(.name != env.SELF_CHECK))")
+            total=$(jq length <<<"$checks")
+            pending=$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$checks")
+            passed=$(jq '[.[] | select(.bucket == "pass")] | length' <<<"$checks")
+            failed=$(jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | .name' <<<"$checks")
+            missing=$(jq -r --argjson required "$required" '[.[].name] as $seen | $required - $seen | .[]' <<<"$checks")
+            # A required check that finished as skipped or neutral did not pass, and won't change.
+            required_skipped=$(jq -r --argjson required "$required" \
+              '[.[] | select(.bucket == "skipping") | .name] as $skipped | $required - ($required - $skipped) | .[] | "\(.) (skipped)"' <<<"$checks")
+            if [ -n "$failed$runs_failed$required_skipped" ]; then
+              echo "::notice::Not merging; these checks or workflow runs did not pass:"
+              { echo "$failed"; echo "$runs_failed"; echo "$required_skipped"; } | sed '/^$/d'
+              exit 0
+            fi
+            if [ "$runs_pending" -gt 0 ]; then
+              echo "$runs_pending workflow run(s) for this commit still running"
+              previous_green=""
+            elif [ -n "$missing" ]; then
+              echo "Waiting for required checks to appear: $(paste -sd, <<<"$missing")"
+              previous_green=""
+            elif [ "$total" -eq 0 ]; then
+              echo "::error::No checks reported on the pull request, so nothing vouches for it"
+              exit 1
+            elif [ "$pending" -gt 0 ]; then
+              echo "$pending of $total checks still running"
+              previous_green=""
+            elif [ "$passed" -eq 0 ]; then
+              echo "::error::Every check was skipped, so nothing vouches for the pull request"
+              exit 1
+            else
+              green_set=$(jq -c '[.[].name] | sort' <<<"$checks")
+              if [ "$green_set" = "$previous_green" ]; then
+                echo "green=true" >>"$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "All $total checks passed; confirming no new check registers"
+              previous_green=$green_set
+            fi
+            sleep "$CHECK_POLL_INTERVAL_SECONDS"
+          done
+      # Minted after the wait, since an app token expires after an hour.
+      - id: token
+        if: steps.wait.outputs.green == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.DEPENDABOT_AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEPENDABOT_AUTOMERGE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Approve and merge
+        if: steps.wait.outputs.green == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --merge --match-head-commit "$HEAD_SHA" "$PR_URL"
