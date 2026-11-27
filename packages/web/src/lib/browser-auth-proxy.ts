@@ -68,7 +68,12 @@ function trustedClientIp(request: Request): string | null {
   if (process.env.VERCEL === "1") {
     return request.headers.get("X-Vercel-Forwarded-For");
   }
-  return "cf" in request ? request.headers.get("CF-Connecting-IP") : null;
+  if ("cf" in request) {
+    return request.headers.get("CF-Connecting-IP");
+  }
+  return process.env.TRUST_X_FORWARDED_FOR === "true"
+    ? request.headers.get("X-Forwarded-For")
+    : null;
 }
 
 function getSetCookieValues(headers: Headers): string[] {

@@ -42,3 +42,12 @@ services:
   # an opt-in profile.
   caddy:
     profiles: !reset []
+
+  # No `:?` on WEB_IMAGE: Compose interpolates services it does not start, and
+  # only a deployment with `web` set starts this one.
+  web:
+    build: !reset null
+    image: ${WEB_IMAGE:-}
+    environment:
+      # Caddy, which trusts no proxy here, overwrites X-Forwarded-For.
+      TRUST_X_FORWARDED_FOR: "true"

@@ -1,4 +1,6 @@
 import type { Code } from "mdast";
+// remark-parse's types declare `fromMarkdownExtensions` on unified's Data.
+import type {} from "remark-parse";
 import type { Processor } from "unified";
 
 /** Mark only fences for which CommonMark actually parsed a closing fence. */

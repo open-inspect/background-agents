@@ -77,7 +77,7 @@ data "aws_iam_policy_document" "instance" {
   statement {
     sid       = "PullImage"
     actions   = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
-    resources = [aws_ecr_repository.control_plane.arn]
+    resources = local.image_repository_arns
   }
 
   # Not scopable to a repository: the token is account-wide by design.

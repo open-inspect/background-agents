@@ -220,6 +220,7 @@ describe("proxyBrowserAuthRequest", () => {
 
   it("forwards Vercel's trusted client IP header on Vercel", async () => {
     process.env.VERCEL = "1";
+    process.env.TRUST_X_FORWARDED_FOR = "true";
     mocks.dispatchControlPlaneFetch.mockResolvedValue(Response.json({ ok: true }));
 
     await proxyBrowserAuthRequest(
@@ -236,6 +237,7 @@ describe("proxyBrowserAuthRequest", () => {
   });
 
   it("forwards Cloudflare's trusted client IP header on Cloudflare", async () => {
+    process.env.TRUST_X_FORWARDED_FOR = "true";
     mocks.dispatchControlPlaneFetch.mockResolvedValue(Response.json({ ok: true }));
     const request = new Request("https://web.example/api/auth/get-session", {
       headers: {
@@ -249,6 +251,33 @@ describe("proxyBrowserAuthRequest", () => {
 
     const [, init] = mocks.dispatchControlPlaneFetch.mock.calls[0] ?? [];
     expect(new Headers(init?.headers).get("X-OpenInspect-Client-IP")).toBe("198.51.100.24");
+  });
+
+  it("forwards X-Forwarded-For when a self-hosted proxy is trusted to set it", async () => {
+    process.env.TRUST_X_FORWARDED_FOR = "true";
+    mocks.dispatchControlPlaneFetch.mockResolvedValue(Response.json({ ok: true }));
+
+    await proxyBrowserAuthRequest(
+      new Request("https://web.example/api/auth/get-session", {
+        headers: { "X-Forwarded-For": "203.0.113.7" },
+      })
+    );
+
+    const [, init] = mocks.dispatchControlPlaneFetch.mock.calls[0] ?? [];
+    expect(new Headers(init?.headers).get("X-OpenInspect-Client-IP")).toBe("203.0.113.7");
+  });
+
+  it("forwards no client IP when no platform header is trusted", async () => {
+    mocks.dispatchControlPlaneFetch.mockResolvedValue(Response.json({ ok: true }));
+
+    await proxyBrowserAuthRequest(
+      new Request("https://web.example/api/auth/get-session", {
+        headers: { "X-Forwarded-For": "192.0.2.55" },
+      })
+    );
+
+    const [, init] = mocks.dispatchControlPlaneFetch.mock.calls[0] ?? [];
+    expect(new Headers(init?.headers).has("X-OpenInspect-Client-IP")).toBe(false);
   });
 
   it("rejects endpoints outside the positive proxy allowlist", async () => {

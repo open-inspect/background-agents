@@ -212,8 +212,10 @@ the stack can start. Every deploy after this is CI's, and the section below sets
 ## 6. Deploys from CI
 
 `.github/workflows/deploy-aws.yml` builds the image, pushes it, moves the deployed version and
-verifies the result — rolling back on its own if the new image does not come up. It authenticates
-with an OIDC token rather than an access key, so no AWS credential is stored in the repository.
+verifies the result — rolling back on its own if the new image does not come up. The steps live in
+`.github/workflows/deploy-aws-image.yml`, which the web app's deploy (below) shares. It
+authenticates with an OIDC token rather than an access key, so no AWS credential is stored in the
+repository.
 
 Two things make that safe rather than merely convenient. The role's trust policy pins both the
 repository and the **GitHub environment** the job asked for, so the environment's own rules are an
@@ -464,6 +466,84 @@ would be among the largest lines above. Caddy on the instance does the ALB's job
 worth revisiting for connection draining and a WAF attach point, but as a later AWS-flavoured
 variation rather than a requirement.
 
+## The web app on the instance
+
+Optional. By default the web app stays on Vercel or Cloudflare and only the control plane runs here.
+Setting `web` runs it on the same instance too, as one more container behind the same Caddy, so the
+deployment needs neither account:
+
+```hcl
+web = { hostname = "app.example.com" }
+```
+
+It needs its own hostname, because the control plane and the web app both serve `/api`. Point it at
+the same `public_ip` (or let `route53_zone_id` create the record); Caddy gets its certificate the
+same way. The module derives the control plane's `WEB_APP_URL` from it. It also needs the
+control-plane image in this account's ECR, which is the default: the instance logs in only to that
+image's registry, and the web image lives there too.
+
+The container reads none of `.env` itself. It gets `SERVICE_AUTH_SECRET_WEB` as its signing key,
+reaches the control plane over the compose network, and trusts the client address Caddy forwards. It
+is capped at 512 MB, so running out of memory restarts the web container rather than the control
+plane. Idle, it takes about 70 MB next to the control plane's 200; size the instance for both.
+
+**Bootstrap the image before the next restart.** The apply turns the compose profile on at once, and
+the stack will not start until the web image exists — the same bootstrap as section 5. The build
+arguments come from Terraform, derived from the control plane's own settings:
+
+```bash
+# From the Terraform environment directory, for the outputs.
+REGISTRY=$(terraform output -raw web_ecr_repository_url)
+BUILD_ARGS_PARAMETER=$(terraform output -raw web_build_args_parameter)
+REGISTRY_HOST=${REGISTRY%%/*}
+aws ecr get-login-password --region "$(echo "$REGISTRY_HOST" | cut -d. -f4)" |
+  docker login --username AWS --password-stdin "$REGISTRY_HOST"
+
+# Shell-quoted, so a value with spaces (an APP_NAME, say) stays one argument.
+BUILD_ARGS=$(aws ssm get-parameter --name "$BUILD_ARGS_PARAMETER" \
+  --query 'Parameter.Value' --output text |
+  jq -r 'to_entries | map("--build-arg=\(.key)=\(.value)" | @sh) | join(" ")')
+
+# The build context is the repository root.
+cd "$(git rev-parse --show-toplevel)"
+eval "docker buildx build --platform linux/arm64 -f packages/web/Dockerfile $BUILD_ARGS \
+  -t '$REGISTRY:latest' --push ."
+```
+
+**Then activate the whole stack once**, on the instance:
+
+```bash
+sudo /usr/local/bin/open-inspect-deploy
+```
+
+The apply only changed what `.env` will say. Until a full activation, Caddy does not serve the web
+hostname and the control plane runs without the new `WEB_APP_URL`. A web deploy cannot do this for
+you, because it activates only the `web` service.
+
+**Deploys** are `.github/workflows/deploy-aws-web.yml`, separate from the control plane's so that a
+web-only change never rebuilds or restarts the control plane. It runs the same steps,
+`deploy-aws-image.yml`, against the web image: pin, build, push, activate only the `web` service,
+check `/favicon.ico` on the web hostname, roll back. Both deploys share one concurrency group per
+environment, so they never activate on the instance at once. Add these to the same GitHub
+environment:
+
+| Variable                           | From                                                 |
+| ---------------------------------- | ---------------------------------------------------- |
+| `AWS_WEB_ECR_REPOSITORY`           | `terraform output -raw web_ecr_repository_url`       |
+| `AWS_WEB_DEPLOYED_IMAGE_PARAMETER` | `terraform output -raw deployed_web_image_parameter` |
+| `AWS_WEB_BUILD_ARGS_PARAMETER`     | `terraform output -raw web_build_args_parameter`     |
+| `AWS_WEB_PUBLIC_URL`               | `https://` + `terraform output -raw web_hostname`    |
+
+To deploy on every push to `main`, set the repository variable `AWS_WEB_DEPLOY_ON_PUSH` to `true`;
+it deploys to the environment `AWS_DEPLOY_ON_PUSH_ENVIRONMENT` names.
+
+GitHub keeps one pending run per concurrency group. A push that changes both images (anything in
+`packages/shared`, say) while a deploy is already running queues both workflows, and the second to
+queue cancels the first. Re-run the cancelled one by hand.
+
+A failed web deploy rolls back the web image only. A control-plane deploy that is already out stays
+out, which is the same independence the two have on Vercel.
+
 ## Not here yet
 
 - **`terraform apply` from CI.** Deploys are automated (section 6), but infrastructure changes are
@@ -474,8 +554,8 @@ variation rather than a requirement.
   alarms that describe the control plane itself need metrics the host does not publish yet; both are
   H-8.
 - **The bots.** The Slack, GitHub and Linear bots remain Cloudflare Workers. A deployment with no
-  Cloudflare account runs the control plane and the web app, and does without them, until that
-  transport lands.
+  Cloudflare account runs the control plane and the web app (on Vercel, or on the instance with
+  `web`), and does without them, until that transport lands.
 
 ## Sandboxes in this account
 

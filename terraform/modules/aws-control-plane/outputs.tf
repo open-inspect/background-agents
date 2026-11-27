@@ -82,3 +82,23 @@ output "ec2_sandbox_image_build_env" {
     EC2_IMAGE_BUILD_BUCKET        = aws_s3_bucket.media.bucket
   } : null
 }
+
+output "web_hostname" {
+  description = "Public FQDN the web app answers on. Null unless `web` is set; point it at `public_ip` like `hostname`."
+  value       = local.web_hostname
+}
+
+output "web_ecr_repository_url" {
+  description = "Registry CI pushes the web image to. Null unless `web` is set."
+  value       = one(aws_ecr_repository.web[*].repository_url)
+}
+
+output "deployed_web_image_parameter" {
+  description = "SSM parameter holding the web image the instance runs, moved and rolled back with `deployed_image_parameter`. Null unless `web` is set."
+  value       = one(aws_ssm_parameter.deployed_web_image[*].name)
+}
+
+output "web_build_args_parameter" {
+  description = "SSM parameter holding the NEXT_PUBLIC_* build arguments CI builds the web image with, as JSON. Null unless `web` is set."
+  value       = one(aws_ssm_parameter.web_build_args[*].name)
+}

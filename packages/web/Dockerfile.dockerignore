@@ -1,0 +1,26 @@
+# The web image builds from the repository root; only what it needs enters the
+# build context. BuildKit reads this file instead of the root .dockerignore
+# because it sits beside packages/web/Dockerfile.
+*
+!package.json
+!package-lock.json
+!packages/shared/
+!packages/web/
+packages/**/node_modules/
+packages/**/dist/
+packages/**/coverage/
+packages/web/.next/
+packages/web/.open-next/
+packages/web/.vercel/
+packages/web/.wrangler/
+packages/web/.env*
+packages/web/.dev.vars
+packages/web/tsconfig.tsbuildinfo
+packages/web/public/mermaid-renderer.html
+# Tests import from sibling packages and the repository's scripts, which are not
+# in the context, and `next build` type-checks every file tsconfig includes.
+packages/web/**/*.test.ts
+packages/web/**/*.test.tsx
+packages/web/**/*.test-fixture.ts
+packages/web/src/test/
+packages/web/vitest.config.ts

@@ -64,3 +64,11 @@ variable "ec2_sandboxes" {
   })
   default = null
 }
+
+variable "web" {
+  description = "Run the web app on this instance, behind the same Caddy, instead of on Vercel or Cloudflare. Null leaves it where it is. `hostname` must differ from the control plane's and resolve to the same Elastic IP. See docs/AWS_BRING_UP.md."
+  type = object({
+    hostname = string
+  })
+  default = null
+}

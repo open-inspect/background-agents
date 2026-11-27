@@ -121,6 +121,7 @@ function runDeploy({
   resolveFails = false,
   goodChecks = 0,
   failOnProbe = 0,
+  deployService = "",
 }) {
   const dir = mkdtempSync(join(tmpdir(), "deploy-aws-"));
   const bin = join(dir, "bin");
@@ -152,6 +153,10 @@ function runDeploy({
       // registry. Pushing either tag changes its resolution, just as ECR does.
       `#!/bin/bash
 echo "docker $*" >>"$STUB_DIR/calls"
+if [ "$1" = build ] && { [ "$2" != -f ] || [ ! -f "$3" ]; }; then
+  echo "docker build needs -f naming an existing Dockerfile" >&2
+  exit 1
+fi
 if [ "$1" = push ]; then printf '%s' "$STUB_NEW_DIGEST" >"$STUB_DIR/registry_digest"; fi
 `,
     ],
@@ -182,6 +187,10 @@ if [ "$1" = push ]; then printf '%s' "$STUB_NEW_DIGEST" >"$STUB_DIR/registry_dig
       INSTANCE_ID: "i-0123456789abcdef0",
       HEALTHCHECK_URL: "https://example.invalid/healthz",
       IMAGE_REF: image,
+      DEPLOY_SERVICE: deployService,
+      // What the workflow's configuration step resolves for the control plane.
+      DOCKERFILE: "packages/control-plane/Dockerfile",
+      BUILD_ARGS_PARAMETER: "",
       // Compressed so the suite runs in seconds rather than minutes.
       COMMAND_POLL_SECONDS: "0",
       COMMAND_TIMEOUT_SECONDS: "5",
@@ -195,7 +204,7 @@ if [ "$1" = push ]; then printf '%s' "$STUB_NEW_DIGEST" >"$STUB_DIR/registry_dig
   let result;
   if (bootstrap) {
     const workflow = readFileSync(
-      new URL("../.github/workflows/deploy-aws.yml", import.meta.url),
+      new URL("../.github/workflows/deploy-aws-image.yml", import.meta.url),
       "utf8"
     );
     const pin = workflow.indexOf("run: scripts/deploy-aws.sh --pin-current-image");
@@ -493,4 +502,21 @@ test("a configuration fetch that fails never reaches the activation", () => {
   const ok = runRemoteCommand(command, { fetchExits: 0 });
   assert.equal(ok.activated, true);
   assert.equal(ok.status, 0);
+});
+
+test("a single-service deploy activates only that service", () => {
+  const run = runDeploy({ previous: OLD, image: NEW, deployService: "web" });
+
+  assert.equal(run.status, 0, run.output);
+  assert.deepEqual(JSON.parse(run.parameters).commands, [
+    "/usr/local/bin/open-inspect-fetch-config && exec bash /opt/open-inspect/deploy.sh web",
+  ]);
+});
+
+test("a service name that is not one refuses before anything moves", () => {
+  const run = runDeploy({ previous: OLD, image: NEW, deployService: 'web"; rm -rf /' });
+
+  assert.equal(run.status, 1);
+  assert.equal(run.deployed, OLD);
+  assert.doesNotMatch(run.calls, /put-parameter|send-command/);
 });

@@ -126,6 +126,11 @@ variable "config" {
     condition     = !contains(keys(var.config), "CONTROL_PLANE_IMAGE")
     error_message = "config must not set CONTROL_PLANE_IMAGE; use control_plane_image_tag for the first boot, and a deploy for every value after it."
   }
+
+  validation {
+    condition     = !contains(keys(var.config), "WEB_IMAGE")
+    error_message = "config must not set WEB_IMAGE; the module creates it when `web` is set, and a deploy moves it after that."
+  }
 }
 
 variable "secret_names" {
@@ -186,6 +191,23 @@ variable "github_deploy" {
   validation {
     condition     = var.github_deploy == null || can(regex("^[^/]+/[^/]+$", var.github_deploy.repository))
     error_message = "github_deploy.repository must be \"owner/name\"."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Web app (optional)
+# ---------------------------------------------------------------------------
+
+variable "web" {
+  description = "Runs the web app on this instance, behind the same Caddy, instead of on Vercel or Cloudflare. Null leaves the web app where it is. `hostname` is the FQDN it answers on; it must differ from `hostname` and, like it, resolve to the Elastic IP before Caddy can obtain its certificate. Setting it also derives the control plane's WEB_APP_URL."
+  type = object({
+    hostname = string
+  })
+  default = null
+
+  validation {
+    condition     = var.web == null || try(lower(var.web.hostname) != lower(var.hostname), false)
+    error_message = "web.hostname must differ from hostname: the control plane and the web app both serve /api and cannot share a host."
   }
 }
 

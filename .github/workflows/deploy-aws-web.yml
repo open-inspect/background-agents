@@ -1,0 +1,41 @@
+# Deploys the web image to an AWS instance that runs the web app (the module's
+# `web` variable); deploy-aws-image.yml does the work. Separate from
+# deploy-aws.yml so that a web-only change never rebuilds or restarts the
+# control plane.
+name: Deploy web (AWS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub environment to deploy"
+        type: choice
+        options:
+          - aws-staging
+          - aws-production
+        default: aws-staging
+  push:
+    branches: [main]
+    paths:
+      # What the web image is built from.
+      - "packages/web/**"
+      - "packages/shared/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/deploy-aws.sh"
+      - ".github/workflows/deploy-aws-web.yml"
+      - ".github/workflows/deploy-aws-image.yml"
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Deploy
+    if: inputs.environment != '' || (vars.AWS_WEB_DEPLOY_ON_PUSH == 'true' && vars.AWS_DEPLOY_ON_PUSH_ENVIRONMENT != '')
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy-aws-image.yml
+    with:
+      environment: ${{ inputs.environment || vars.AWS_DEPLOY_ON_PUSH_ENVIRONMENT }}
+      image: web

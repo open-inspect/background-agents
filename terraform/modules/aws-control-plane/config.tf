@@ -13,6 +13,7 @@ locals {
     "docker-compose.yml"                           = "${local.repository_root}/docker-compose.yml"
     "docker-compose.aws.yml"                       = "${local.repository_root}/docker-compose.aws.yml"
     "packages/control-plane/docker/Caddyfile"      = "${local.repository_root}/packages/control-plane/docker/Caddyfile"
+    "packages/control-plane/docker/Caddyfile.web"  = "${local.repository_root}/packages/control-plane/docker/Caddyfile.web"
     "packages/control-plane/docker/litestream.yml" = "${local.repository_root}/packages/control-plane/docker/litestream.yml"
 
     # Not part of the compose stack: the activation sequence itself. It ships
@@ -67,6 +68,7 @@ locals {
   env_config = merge(
     local.derived_config,
     local.ec2_sandbox_config,
+    local.web_config,
     { for key, value in var.config : key => value if value != "" },
   )
 }

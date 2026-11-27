@@ -3,7 +3,10 @@
 # previous one back if it does not come up healthy.
 #
 #   AWS_REGION=... DEPLOYED_IMAGE_PARAMETER=... INSTANCE_ID=... \
-#   HEALTHCHECK_URL=... IMAGE_REF=... scripts/deploy-aws.sh
+#   HEALTHCHECK_URL=... IMAGE_REF=... [DEPLOY_SERVICE=web] scripts/deploy-aws.sh
+#
+# DEPLOY_SERVICE limits the activation to that one compose service; unset
+# activates the whole stack.
 #
 # Before pushing any tags, pin a bootstrap deployment's rollback reference:
 #   AWS_REGION=... DEPLOYED_IMAGE_PARAMETER=... AWS_ECR_REPOSITORY=... \
@@ -109,6 +112,11 @@ fi
 : "${INSTANCE_ID:?INSTANCE_ID is required}"
 : "${HEALTHCHECK_URL:?HEALTHCHECK_URL is required}"
 : "${IMAGE_REF:?IMAGE_REF is required}"
+DEPLOY_SERVICE="${DEPLOY_SERVICE:-}"
+if ! [[ "$DEPLOY_SERVICE" =~ ^[a-z0-9-]*$ ]]; then
+  log "DEPLOY_SERVICE must be a compose service name"
+  exit 1
+fi
 
 # Fetches and activates on the instance, waiting for the result and printing
 # whatever it wrote. Returns 1 for a confirmed failure, or 2 when execution is
@@ -136,7 +144,7 @@ activate() {
   # Inlining the two steps here is deliberate -- a deploy must not assume how
   # old the instance is -- but it must not lose the `set -e` along with them.
   parameters="$(printf '{"commands":["%s"],"executionTimeout":["%s"]}' \
-    "/usr/local/bin/open-inspect-fetch-config && exec bash /opt/open-inspect/deploy.sh" \
+    "/usr/local/bin/open-inspect-fetch-config && exec bash /opt/open-inspect/deploy.sh${DEPLOY_SERVICE:+ $DEPLOY_SERVICE}" \
     "$execution_timeout")"
 
   # SendCommand has no idempotency token. A lost response must not cause a CLI

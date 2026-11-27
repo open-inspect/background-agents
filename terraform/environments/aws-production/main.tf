@@ -39,6 +39,7 @@ module "control_plane" {
   alarm_topic_arn = var.alarm_topic_arn
   github_deploy   = var.github_deploy
   ec2_sandboxes   = var.ec2_sandboxes
+  web             = var.web
 
   config = merge({
     APP_NAME               = "Open-Inspect"

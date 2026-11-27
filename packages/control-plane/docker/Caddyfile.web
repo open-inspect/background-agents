@@ -1,0 +1,7 @@
+# Selected by docker-compose.yml whenever WEB_DOMAIN is set.
+
+import Caddyfile
+
+{$WEB_DOMAIN} {
+	reverse_proxy web:3000
+}

@@ -1,8 +1,8 @@
 # The control plane without Cloudflare: the Node host, an S3-compatible
 # object store for media and backups, and a Litestream sidecar replicating
 # the global store. This is the stack the AWS instance runs and the local
-# stand-in for it. The web app is not part of it (it stays on Vercel; run
-# `next dev` locally).
+# stand-in for it. The web app joins it only under the opt-in "web" profile;
+# otherwise it stays on Vercel or Cloudflare (run `next dev` locally).
 #
 #   cp .env.example .env   # then fill it in
 #   docker compose up --build
@@ -124,18 +124,56 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # The web app, opt-in: `--profile web`, or COMPOSE_PROFILES=web in .env. It
+  # takes its variables by name, never .env whole, so the control plane's keys
+  # stay out of it. The client bundle inlines its build arguments, which come
+  # from the control plane's own settings of the same names.
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+      args:
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:${PORT:-8787}}
+        NEXT_PUBLIC_APP_NAME: ${APP_NAME:-}
+        NEXT_PUBLIC_SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-}
+        NEXT_PUBLIC_SCM_PROVIDER: ${SCM_PROVIDER:-}
+    image: open-inspect-web:local
+    profiles: ["web"]
+    environment:
+      CONTROL_PLANE_URL: http://app:8787
+      SERVICE_AUTH_SECRET: ${SERVICE_AUTH_SECRET_WEB:-}
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      NODE_OPTIONS: --max-old-space-size=384
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Optional TLS termination: `docker compose --profile tls up` with
-  # CADDY_DOMAIN set and ports 80/443 reachable from the internet.
+  # CADDY_DOMAIN set and ports 80/443 reachable from the internet. WEB_DOMAIN
+  # set serves the web profile's app there too.
   caddy:
     image: caddy:2-alpine
     profiles: ["tls"]
+    command:
+      - caddy
+      - run
+      - --adapter
+      - caddyfile
+      - --config
+      - /etc/caddy/Caddyfile${WEB_DOMAIN:+.web}
     environment:
       CADDY_DOMAIN: ${CADDY_DOMAIN:-}
+      WEB_DOMAIN: ${WEB_DOMAIN:-}
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./packages/control-plane/docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./packages/control-plane/docker/Caddyfile.web:/etc/caddy/Caddyfile.web:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

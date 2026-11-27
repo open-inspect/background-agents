@@ -25,3 +25,7 @@ control_plane_image_tag = "latest"
 # Apply with `{}` first, build the AMI with `terraform output
 # ec2_sandbox_image_build_env`, then name it. docs/EC2_SANDBOX_PROVIDER.md.
 # ec2_sandboxes = { ami_id = "ami-0123456789abcdef0" }
+
+# Optional: serve the web app from this instance too, instead of Vercel or
+# Cloudflare. Point the name at the same Elastic IP. docs/AWS_BRING_UP.md.
+# web = { hostname = "app.example.com" }

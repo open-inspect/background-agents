@@ -10,15 +10,19 @@
 # which is what lets the activation sequence change without a new instance.
 #
 # Run it through `open-inspect-deploy`, which fetches first.
+#
+# Naming services limits the activation to them, without their dependencies.
+# The control plane reads all of `.env`, so a full `up` after only the web
+# image moved would still recreate it and drop its live sessions.
 set -euo pipefail
 
 cd /opt/open-inspect
 compose() { docker compose -f docker-compose.yml -f docker-compose.aws.yml "$@"; }
 
-compose pull
+compose pull "$@"
 
 # Bounded. `--wait` on its own waits indefinitely for a health check that a
 # broken image never passes, and the deploy that sent this cannot start its
 # rollback until this returns -- so an unbounded wait here is how a bad deploy
 # becomes a long outage instead of a short one.
-compose up -d --wait --wait-timeout 180
+compose up -d --wait --wait-timeout 180 ${1:+--no-deps} "$@"

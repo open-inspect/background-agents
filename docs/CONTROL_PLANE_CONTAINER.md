@@ -16,9 +16,11 @@ providers behave the same; only the platform adapters differ.
 | `object-store` | `chrislusf/seaweedfs`   | S3-compatible object storage for media and backups (SeaweedFS). Creates both buckets at startup. Port 9000. |
 | `litestream`   | `litestream/litestream` | Replicates the global store (`/data/global.db`) to the `backups` bucket every second.                       |
 | `caddy`        | `caddy` (profile `tls`) | Optional TLS termination for a public hostname.                                                             |
+| `web`          | built from this repo    | Optional (profile `web`): the web app's standalone Next.js server, capped at 512 MB. Port 3000.             |
 
-The web app is not part of the stack. It stays on Vercel in production and runs with `next dev`
-locally, pointed at the container (see below).
+The web app is opt-in. Without the `web` profile it stays on Vercel or Cloudflare in production and
+runs with `next dev` locally, pointed at the container (see below). On AWS the module's `web`
+variable turns the profile on; see [AWS_BRING_UP.md](./AWS_BRING_UP.md#the-web-app-on-the-instance).
 
 ## Quick start
 
@@ -82,6 +84,11 @@ SERVICE_AUTH_SECRET=<the SERVICE_AUTH_SECRET_WEB value from .env>
 
 Then `npm run dev -w @open-inspect/web`. The container's `WEB_APP_URL` must be the web app's origin
 (`http://localhost:3000` by default), because browser sign-in is origin-bound.
+
+To run the production build in the stack instead, `docker compose --profile web up --build`. It
+signs with `SERVICE_AUTH_SECRET_WEB` from `.env` and reaches the control plane at `http://app:8787`.
+`APP_NAME`, `SANDBOX_PROVIDER` and `SCM_PROVIDER` from `.env` are build arguments, because Next.js
+inlines them into the client bundle, so changing one means rebuilding the image.
 
 ## Sign-in allowlist operations
 

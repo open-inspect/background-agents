@@ -36,6 +36,8 @@ locals {
   # comparison would never match it. `repository` carries whichever form the
   # repository uses -- "owner/name", or "owner@id/name@id" on the immutable
   # subject claims every repository created after 2026-07-15 gets.
+  ssm_parameter_arn_prefix = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter"
+
   github_deploy_subject = try(
     "repo:${var.github_deploy.repository}:environment:${replace(var.github_deploy.environment, ":", "%3A")}",
     null,
@@ -116,7 +118,7 @@ data "aws_iam_policy_document" "github_deploy" {
       "ecr:GetDownloadUrlForLayer",
       "ecr:DescribeImages",
     ]
-    resources = [aws_ecr_repository.control_plane.arn]
+    resources = local.image_repository_arns
   }
 
   # One parameter, not the prefix. A deploy moves the deployed version and
@@ -126,8 +128,19 @@ data "aws_iam_policy_document" "github_deploy" {
     sid     = "MoveDeployedImage"
     actions = ["ssm:GetParameter", "ssm:PutParameter"]
     resources = [
-      "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${aws_ssm_parameter.deployed_image.name}",
+      for parameter in concat([aws_ssm_parameter.deployed_image.name], aws_ssm_parameter.deployed_web_image[*].name) :
+      "${local.ssm_parameter_arn_prefix}${parameter}"
     ]
+  }
+
+  dynamic "statement" {
+    for_each = aws_ssm_parameter.web_build_args[*].name
+
+    content {
+      sid       = "ReadWebBuildArgs"
+      actions   = ["ssm:GetParameter"]
+      resources = ["${local.ssm_parameter_arn_prefix}${statement.value}"]
+    }
   }
 
   # Scoped to this one instance and to the stock shell document. SendCommand

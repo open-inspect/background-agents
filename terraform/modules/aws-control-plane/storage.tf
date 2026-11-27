@@ -187,10 +187,8 @@ resource "aws_ecr_repository" "control_plane" {
   tags = merge(local.tags, { Name = "${var.name}-control-plane" })
 }
 
-resource "aws_ecr_lifecycle_policy" "control_plane" {
-  repository = aws_ecr_repository.control_plane.name
-
-  policy = jsonencode({
+locals {
+  ecr_lifecycle_policy = jsonencode({
     rules = [{
       rulePriority = 1
       description  = "Keep the 20 most recent images"
@@ -202,4 +200,11 @@ resource "aws_ecr_lifecycle_policy" "control_plane" {
       action = { type = "expire" }
     }]
   })
+
+  image_repository_arns = concat([aws_ecr_repository.control_plane.arn], aws_ecr_repository.web[*].arn)
+}
+
+resource "aws_ecr_lifecycle_policy" "control_plane" {
+  repository = aws_ecr_repository.control_plane.name
+  policy     = local.ecr_lifecycle_policy
 }
