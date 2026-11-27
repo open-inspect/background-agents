@@ -176,6 +176,41 @@ describe("POST /webhooks/sentry/:id", () => {
     });
   });
 
+  it("runs a regression automation for the documented issue alert shape", async () => {
+    const automation = await createSentryAutomation({ event_type: "issue.regression" });
+    // Sentry's documented issue alert payload: the event only, no data.issue.
+    const body = JSON.stringify({
+      action: "triggered",
+      data: {
+        event: {
+          event_id: "evt-regressed-1",
+          issue_id: "24680",
+          url: "https://sentry.io/api/0/projects/test-org/test-project/events/evt-regressed-1/",
+          title: "TypeError",
+          level: "error",
+        },
+        triggered_rule: "A resolved issue regresses",
+      },
+    });
+    const signature = await signSentryPayload(body, SENTRY_TEST_SECRET);
+
+    const response = await SELF.fetch(`https://test.local/webhooks/sentry/${automation.id}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Sentry-Hook-Resource": "event_alert",
+        "sentry-hook-signature": signature,
+      },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, accepted: true });
+    await vi.waitFor(async () => {
+      expect(await fetchRuns(automation.id)).toHaveLength(1);
+    });
+  });
+
   it("accepts valid signature (does not return 401)", async () => {
     const automation = await createSentryAutomation();
     const body = JSON.stringify(sentryIssuePayload);

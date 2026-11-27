@@ -149,6 +149,23 @@ describe("normalizeSentryEvent", () => {
     expect(event.contextBlock).toContain("Alert rule: Very Important Alert!");
   });
 
+  it("labels a documented-shape alert as a regression for a regression automation", () => {
+    const event = expectNormalized(
+      normalizeSentryEvent(documentedEventAlertPayload, "auto-1", "event_alert", "issue.regression")
+    );
+    expect(event.eventType).toBe("issue.regression");
+    expect(event.triggerKey).toBe("sentry_regression:1117540176:e4874d664c3540c1a32eab185f12c5ab");
+    expect(event.concurrencyKey).toBe("sentry_issue:1117540176");
+  });
+
+  it("labels a documented-shape alert as a new issue for an issue.created automation", () => {
+    const event = expectNormalized(
+      normalizeSentryEvent(documentedEventAlertPayload, "auto-1", "event_alert", "issue.created")
+    );
+    expect(event.eventType).toBe("issue.created");
+    expect(event.triggerKey).toBe("sentry_issue:1117540176");
+  });
+
   it("takes a documented-shape alert's level from its level tag when event.level is absent", () => {
     const { level: _level, ...eventWithoutLevel } = documentedEventAlertPayload.data.event;
     const payload = {
