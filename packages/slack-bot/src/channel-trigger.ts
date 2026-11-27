@@ -7,9 +7,16 @@
  * path stays cheap.
  */
 
-import { addReaction, getChannelInfo, getPermalink } from "@open-inspect/shared/slack";
+import {
+  addReaction,
+  getChannelInfo,
+  getMessage,
+  getPermalink,
+  getUserInfo,
+} from "@open-inspect/shared/slack";
 import {
   normalizeSlackEvent,
+  normalizeSlackReaction,
   type SlackAutomationEvent,
   type SlackChannelMeta,
 } from "@open-inspect/shared/triggers";
@@ -84,6 +91,84 @@ export async function handleChannelTrigger(
   if (!normalized) {
     return;
   }
+
+  await forwardSlackEvent(env, normalized, traceId);
+}
+
+/**
+ * Forward a reaction on a message in a watched channel as a
+ * `reaction.added` event. The bot's own reactions (👀 on accepted work) never
+ * count, and the reacted-to message is fetched because Slack sends only its ts.
+ */
+export async function handleReactionTrigger(
+  event: {
+    user?: string;
+    reaction?: string;
+    item?: { type: string; channel?: string; ts?: string };
+    event_ts?: string;
+  },
+  env: Env,
+  traceId: string | undefined
+): Promise<void> {
+  const { user, reaction, item, event_ts: eventTs } = event;
+  if (!user || !reaction || !eventTs || item?.type !== "message") return;
+  const { channel, ts } = item;
+  if (!channel || !ts) return;
+
+  const identity = await getBotIdentity(env, traceId);
+  if (!identity) {
+    log.warn("slack_trigger.skip", { trace_id: traceId, reason: "no_bot_user_id" });
+    return;
+  }
+  if (user === identity.userId) return;
+
+  const watched = await getWatchedChannels(env, traceId);
+  if (!watched.has(channel)) return;
+
+  // `reaction_added` has no bot marker, so look the reactor up. A bot's reaction
+  // carries its bot id to face the same opt-in gate and hourly limit as its posts.
+  const reactor = await getUserInfo(env.SLACK_BOT_TOKEN, user);
+  if (!reactor.ok) {
+    log.warn("slack_trigger.reaction_reactor", {
+      trace_id: traceId,
+      channel_id: channel,
+      user_id: user,
+      slack_error: reactor.error,
+    });
+    return;
+  }
+  const botId = reactor.user.is_bot ? (reactor.user.profile?.bot_id ?? user) : undefined;
+
+  const lookup = await getMessage(env.SLACK_BOT_TOKEN, channel, ts);
+  if (!lookup.ok || !lookup.message) {
+    log.warn("slack_trigger.reaction_message", {
+      trace_id: traceId,
+      channel_id: channel,
+      message_ts: ts,
+      slack_error: lookup.ok ? "message_not_found" : lookup.error,
+    });
+    return;
+  }
+  const message = lookup.message;
+
+  const normalized = normalizeSlackReaction(
+    {
+      channel,
+      user,
+      botId,
+      reaction,
+      eventTs,
+      message: {
+        ts: message.ts,
+        thread_ts: message.thread_ts,
+        text: message.text ?? "",
+        // A bot's message names no person, even when Slack reports its bot user.
+        user: message.bot_id ? undefined : message.user,
+      },
+    },
+    await fetchChannelMeta(env, channel, ts)
+  );
+  if (!normalized) return;
 
   await forwardSlackEvent(env, normalized, traceId);
 }

@@ -150,6 +150,27 @@ describe("POST /internal/thread-context", () => {
     expect(parsePayload(threadContext).map((r) => r.text)).toEqual(["root"]);
   });
 
+  it("excludes the reacted-to message while bounding the window by the reaction time", async () => {
+    mockGetThreadMessages.mockResolvedValue({
+      ok: true,
+      messages: [
+        { ts: "1.000001", text: "root", user: "U111" },
+        { ts: "5.000000", text: "reacted to", user: "U111" },
+        { ts: "6.000000", text: "before the reaction", user: "U111" },
+        { ts: "8.000000", text: "after the reaction", user: "U111" },
+      ],
+    });
+
+    const res = await post({
+      channel: "C1",
+      threadTs: "1.000001",
+      ts: "5.000000",
+      beforeTs: "7.0",
+    });
+    const { threadContext } = (await res.json()) as { threadContext: string };
+    expect(parsePayload(threadContext).map((r) => r.text)).toEqual(["root", "before the reaction"]);
+  });
+
   it("retains file-only messages as URL-free annotations without forwarding bytes", async () => {
     mockGetThreadMessages.mockResolvedValue({
       ok: true,

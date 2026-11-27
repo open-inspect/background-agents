@@ -132,6 +132,10 @@ export function ConditionBuilder({
       case "slack_actor":
         newCondition = { type: "slack_actor", operator: "include", value: [] };
         break;
+      // Emoji for reaction.added triggers.
+      case "slack_reaction":
+        newCondition = { type: "slack_reaction", operator: "any_of", value: [] };
+        break;
       default:
         return;
     }
@@ -390,6 +394,14 @@ function ConditionEditor({
           values={condition.value}
           onValuesChange={(value) => onChange({ ...condition, value })}
           placeholder="Add Slack user or bot ID (e.g. U0123ABCD, B0123ABCD)..."
+        />
+      );
+    case "slack_reaction":
+      return (
+        <TagInput
+          values={condition.value}
+          onChange={(value) => onChange({ ...condition, value })}
+          placeholder="Add emoji name (e.g. ticket)..."
         />
       );
     default:

@@ -1,6 +1,7 @@
 import { isValidTimeZone, validateAutomationCron } from "@open-inspect/shared/cron";
 import {
   conditionRegistry,
+  DEFAULT_SLACK_EVENT_TYPE,
   hasSlackActorIncludeList,
   hasValidSlackChannelCondition,
   triggerSources,
@@ -139,7 +140,7 @@ export function createAutomationFormDraft(
       scheduleTz: initialValues.scheduleTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       maxRetries: initialValues.maxRetries ?? 0,
       maxConcurrentRuns: initialValues.maxConcurrentRuns ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
-      eventType: initialValues.eventType ?? "",
+      eventType: initialValues.eventType ?? defaultEventType(initialValues.triggerType),
       conditions: initialValues.triggerConfig?.conditions ?? [],
       includeBotMessages: initialValues.triggerConfig?.slack?.includeBotMessages === true,
       sentryClientSecret: "",
@@ -294,6 +295,10 @@ export function requiresRepositoryContext(triggerType: AutomationTriggerType): b
   return triggerType === "github_event" || triggerType === "linear_event";
 }
 
+function defaultEventType(triggerType: AutomationTriggerType | undefined): string {
+  return triggerType === "slack_event" ? DEFAULT_SLACK_EVENT_TYPE : "";
+}
+
 export function requiresEventType(triggerType: AutomationTriggerType): boolean {
   const source = triggerSources.find((candidate) => candidate.triggerType === triggerType);
   return Boolean(source?.supportsEventTypes && source.eventTypes.length > 0);
@@ -310,7 +315,7 @@ export function transitionAutomationTriggerType(
   return {
     ...trigger,
     type: nextType,
-    eventType: eventTypeStillValid ? trigger.eventType : "",
+    eventType: eventTypeStillValid ? trigger.eventType : defaultEventType(nextType),
     conditions: [],
     includeBotMessages: false,
   };

@@ -44,6 +44,7 @@ function createBody(overrides: Record<string, unknown>) {
     repoOwner: "acme",
     repoName: "web-app",
     triggerType: "slack_event",
+    eventType: "message.posted",
     ...overrides,
   };
 }
@@ -103,6 +104,7 @@ describe("POST /automations — slack_event validation (integration)", () => {
           name: "Team Slack triage",
           instructions: "Investigate the report",
           triggerType: "slack_event",
+          eventType: "message.posted",
           teamId: TEAM,
           triggerConfig: {
             conditions: [{ type: "slack_channel", operator: "any_of", value: ["C1"] }],
@@ -158,6 +160,33 @@ describe("POST /automations — slack_event validation (integration)", () => {
     // text_match is optional; the channel-only config passes validation and only
     // later fails at repo resolution in the test env.
     expect(res.status).not.toBe(400);
+  });
+
+  it("accepts a slack_event without an eventType, as clients before reaction triggers send", async () => {
+    const res = await postAutomation(
+      createBody({
+        eventType: undefined,
+        triggerConfig: {
+          conditions: [{ type: "slack_channel", operator: "any_of", value: ["C1"] }],
+        },
+      })
+    );
+    expect(res.status).not.toBe(400);
+  });
+
+  it("rejects a reaction emoji that normalizes to nothing (400)", async () => {
+    const res = await postAutomation(
+      createBody({
+        eventType: "reaction.added",
+        triggerConfig: {
+          conditions: [
+            { type: "slack_channel", operator: "any_of", value: ["C1"] },
+            { type: "slack_reaction", operator: "any_of", value: [":"] },
+          ],
+        },
+      })
+    );
+    expect(res.status).toBe(400);
   });
 
   it("rejects slack trigger options on a non-slack trigger (400)", async () => {
@@ -279,6 +308,35 @@ describe("PUT /automations/:id — slack_event validation (integration)", () => 
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ code: "channel_team_mismatch" });
     expect((await store.getById(auto.id))?.name).toBe(auto.name);
+  });
+
+  it("updates a Slack automation stored without an event type", async () => {
+    const store = new AutomationStore(env.DB);
+    const auto = makeSlackAutomation({
+      event_type: null,
+      trigger_config: JSON.stringify({
+        conditions: [{ type: "slack_channel", operator: "any_of", value: ["C1"] }],
+      }),
+    });
+    await store.create(auto);
+
+    const response = await putAutomation(auto.id, { name: "Renamed" });
+    expect(response.status).toBe(200);
+    expect((await store.getById(auto.id))?.name).toBe("Renamed");
+  });
+
+  it("rejects switching to reaction.added without a slack_reaction condition (400)", async () => {
+    const store = new AutomationStore(env.DB);
+    const auto = makeSlackAutomation({
+      trigger_config: JSON.stringify({
+        conditions: [{ type: "slack_channel", operator: "any_of", value: ["C1"] }],
+      }),
+    });
+    await store.create(auto);
+
+    const response = await putAutomation(auto.id, { eventType: "reaction.added" });
+    expect(response.status).toBe(400);
+    expect((await store.getById(auto.id))?.event_type).toBe(auto.event_type);
   });
 
   it("rejects a non-array conditions on update with 400, not 500", async () => {

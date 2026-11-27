@@ -20,6 +20,7 @@ const threadContextRequestSchema = z.object({
   channel: z.string().min(1),
   threadTs: z.string().min(1).optional(),
   ts: z.string().min(1),
+  beforeTs: z.string().min(1).optional(),
   signature: z.string().min(1),
 });
 
@@ -55,10 +56,14 @@ threadContextRoutes.post("/internal/thread-context", async (c) => {
     return c.json({ error: "unauthorized" }, 401);
   }
 
-  const { channel, threadTs, ts } = parsed.data;
+  const { channel, threadTs, ts, beforeTs } = parsed.data;
   let threadContext = "";
   try {
-    threadContext = await buildThreadContextForTrigger(c.env, { channel, threadTs, ts }, traceId);
+    threadContext = await buildThreadContextForTrigger(
+      c.env,
+      { channel, threadTs, ts, beforeTs },
+      traceId
+    );
   } catch (error) {
     // Never fail the caller: it launches with the plain context block instead.
     log.warn("slack.thread_context.build", {
