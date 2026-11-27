@@ -22,6 +22,7 @@ import type {
   AutomationRunStatus,
 } from "@open-inspect/shared/types/automations";
 import {
+  AUTOMATION_RUN_SUPERSEDED_SKIP_REASON,
   automationInvocationStatusSchema,
   DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
 } from "@open-inspect/shared/types/automations";
@@ -107,6 +108,11 @@ export interface AutomationRow {
    * rows built for insert may omit it; the column defaults to DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
    */
   max_concurrent_runs?: number;
+  /**
+   * 1 when a new event firing cancels the run in flight for its concurrency key instead of being
+   * skipped. Optional so rows built for insert may omit it; the column defaults to 0.
+   */
+  cancel_in_progress?: number;
   created_by: string;
   user_id: string | null;
   owner_team_id: string | null;
@@ -283,6 +289,9 @@ export interface AutomationEnvironmentRow {
  */
 export type InvocationActorKind = "person" | "bot" | "system" | "unknown";
 
+/** A run a replacing firing ended, as the supersede update left it. */
+export type SupersededRun = Pick<AutomationRunRow, "id" | "invocation_id" | "session_id">;
+
 export interface AutomationInvocationRow {
   id: string;
   automation_id: string;
@@ -402,6 +411,7 @@ export function toAutomation(
     maxRetries: row.max_retries ?? 0,
     sandboxTimeoutMs: row.sandbox_timeout_ms ?? null,
     maxConcurrentRuns: row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+    cancelInProgress: row.cancel_in_progress === 1,
     createdBy: row.created_by,
     userId: row.user_id,
     ownerTeamId: row.owner_team_id,
@@ -558,8 +568,8 @@ export class AutomationStore {
           trigger_type, schedule_cron, schedule_tz, harness, model, reasoning_effort, enabled, next_run_at,
           consecutive_failures, created_by, user_id, created_at, updated_at, deleted_at,
            event_type, trigger_config, trigger_auth_data, owner_team_id, schedule_once_at, max_retries,
-           sandbox_timeout_ms, max_concurrent_runs)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           sandbox_timeout_ms, max_concurrent_runs, cancel_in_progress)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         row.id,
@@ -586,7 +596,8 @@ export class AutomationStore {
         row.schedule_once_at,
         row.max_retries ?? 0,
         row.sandbox_timeout_ms ?? null,
-        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS
+        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+        row.cancel_in_progress ?? 0
       );
   }
 
@@ -812,6 +823,7 @@ export class AutomationStore {
       "max_retries",
       "sandbox_timeout_ms",
       "max_concurrent_runs",
+      "cancel_in_progress",
       "event_type",
       "trigger_config",
       "trigger_auth_data",
@@ -1258,6 +1270,18 @@ export class AutomationStore {
     return (result.meta?.changes ?? 0) > 0;
   }
 
+  /** Whether the run is still running on the session its launch claimed. */
+  async isRunActiveForSession(id: string, sessionId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 AS active FROM automation_runs
+         WHERE id = ? AND session_id = ? AND status = 'running'`
+      )
+      .bind(id, sessionId)
+      .first<{ active: number }>();
+    return row !== null;
+  }
+
   /**
    * Overturn a sweep-declared timeout with the completion callback that
    * eventually arrived. `execution_timeout` is the only terminal state the
@@ -1553,12 +1577,51 @@ export class AutomationStore {
     advanceSchedule?: ScheduleAdvance;
     /** Team grants version the targets were authorized against; a change refuses admission. */
     teamGrantsVersion?: TeamGrantsVersion;
-  }): Promise<{ inserted: boolean }> {
+    /**
+     * Replace the automation's active runs for this concurrency key instead of
+     * yielding to them. They are marked skipped in the same batch as the insert,
+     * so a firing that is refused (stale grants) or deduplicated (its trigger key
+     * is already recorded) leaves them running.
+     */
+    supersede?: { concurrencyKey: string; now: number };
+  }): Promise<{ inserted: boolean; superseded?: SupersededRun[] }> {
     const invocation = params.invocation;
     const overlap = this.overlapPredicate(invocation.automation_id, params.overlapScope);
     const grantsGuard = teamGrantsGuard(params.teamGrantsVersion);
     const scheduleGuard = this.scheduledInvocationGuard(invocation);
     const statements: SqlStatement[] = [];
+    if (params.supersede) {
+      // RETURNING reads the rows as written, so a session a launch claimed just
+      // before this update is returned and cancelled; a claim after it fails,
+      // since claims require a starting run.
+      statements.push(
+        this.db
+          .prepare(
+            `UPDATE automation_runs SET status = 'skipped', skip_reason = ?, completed_at = ?
+             WHERE automation_id = ?
+               AND status IN ${ACTIVE_RUN_STATUSES_SQL}
+               AND invocation_id IN (
+                 SELECT id FROM automation_invocations
+                 WHERE automation_id = ? AND concurrency_key = ?
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM automation_invocations WHERE automation_id = ? AND trigger_key = ?
+               ) ${grantsGuard.sql}
+             RETURNING id, invocation_id, session_id`
+          )
+          .bind(
+            AUTOMATION_RUN_SUPERSEDED_SKIP_REASON,
+            params.supersede.now,
+            invocation.automation_id,
+            invocation.automation_id,
+            params.supersede.concurrencyKey,
+            invocation.automation_id,
+            invocation.trigger_key,
+            ...grantsGuard.params
+          )
+      );
+    }
+    const insertIndex = statements.length;
     statements.push(
       this.db
         .prepare(
@@ -1627,7 +1690,9 @@ export class AutomationStore {
     }
 
     const results = await this.db.batch(statements);
-    return { inserted: (results[0]?.meta?.changes ?? 0) > 0 };
+    const inserted = (results[insertIndex]?.meta?.changes ?? 0) > 0;
+    if (!params.supersede) return { inserted };
+    return { inserted, superseded: (results[0]?.results ?? []) as SupersededRun[] };
   }
 
   /**

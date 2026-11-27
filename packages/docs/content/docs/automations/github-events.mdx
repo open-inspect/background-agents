@@ -158,7 +158,7 @@ Event firings are keyed per event rather than per automation, so unrelated event
 | Check Suite Completed  | Per check suite   | Per check suite                 |
 | Workflow Run Completed | Per workflow run  | Per run attempt                 |
 
-A second event that lands in an active concurrency scope is skipped rather than queued.
+A second event that lands in an active concurrency scope is skipped rather than queued, unless the automation has **Replace the run in progress** turned on. Then the new event ends the run in progress for that scope and starts its own, so the newest push to a pull request is the one that runs. The ended run shows as **Skipped** with reason `superseded`, and Open-Inspect asks its session to stop. Stopping the session is best effort: if that request fails, the old session can keep working until it finishes on its own, but nothing it reports changes the run. Replacing happens only after the new event passes the team's repository grant and its model provider routing resolves, so a refused event never stops a run. A repeated delivery of the same event (the same action on the same head commit) is deduplicated: it neither replaces the run nor starts another. It works within one automation: an event for a different automation on the same pull request does not stop this one's run. Only an event in the same concurrency scope replaces a run, and each issue comment is its own scope, so a new comment starts its own run.
 
 ## Troubleshooting
 

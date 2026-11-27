@@ -106,6 +106,12 @@ export const DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS = 1;
 const maxConcurrentRunsSchema = z.number().int().min(1).max(MAX_AUTOMATION_CONCURRENT_RUNS);
 
 /**
+ * Skip reason on a run that a newer event for the same concurrency key replaced, for an
+ * automation with `cancelInProgress` set.
+ */
+export const AUTOMATION_RUN_SUPERSEDED_SKIP_REASON = "superseded";
+
+/**
  * Validate target-count rules shared by automation clients and the API.
  * Repository-scoped triggers bind to exactly one repository and no
  * environments; fan-out is schedule-only; both target kinds share one cap.
@@ -197,6 +203,12 @@ const automationSchema = z.object({
    * Defaulted so a web build that deploys before its control plane still parses responses.
    */
   maxConcurrentRuns: z.number().default(DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS),
+  /**
+   * Whether a new GitHub event firing cancels the automation's run still in flight for the same
+   * concurrency key (for example the same pull request) instead of being skipped. Defaulted so a
+   * web build that deploys before its control plane still parses responses.
+   */
+  cancelInProgress: z.boolean().default(false),
   createdBy: z.string(),
   userId: z.string().refine(isCanonicalUserId, "Invalid canonical user ID").nullable(),
   ownerTeamId: z.string().nullable(),
@@ -304,6 +316,11 @@ export const createAutomationRequestSchema = z.object({
    * set above 1. Omission means DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
    */
   maxConcurrentRuns: maxConcurrentRunsSchema.optional(),
+  /**
+   * A new event cancels the run in flight for the same concurrency key instead of being skipped.
+   * Only GitHub event triggers may set it. Omission means false.
+   */
+  cancelInProgress: z.boolean().optional(),
 });
 export type CreateAutomationRequest = z.input<typeof createAutomationRequestSchema>;
 
@@ -333,6 +350,11 @@ export const updateAutomationRequestSchema = z.object({
    * set above 1. Lowering it never interrupts firings already in flight.
    */
   maxConcurrentRuns: maxConcurrentRunsSchema.optional(),
+  /**
+   * A new event cancels the run in flight for the same concurrency key instead of being skipped.
+   * Only GitHub event triggers may set it; turning it on never cancels a run by itself.
+   */
+  cancelInProgress: z.boolean().optional(),
 });
 export type UpdateAutomationRequest = z.input<typeof updateAutomationRequestSchema>;
 

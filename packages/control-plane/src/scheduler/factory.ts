@@ -47,7 +47,7 @@ import { SlackBotTriggerPolicy } from "./slack-bot-trigger-policy";
 import { WebhookEventHandler } from "./webhook-event-handler";
 import { SlackChannelStore } from "../db/slack-channel-store";
 import { admitGitHubEvent } from "../automation/github-event-admission";
-import { enqueueAutomationFirstPrompt } from "./session-prompt";
+import { cancelSupersededSession, enqueueAutomationFirstPrompt } from "./session-prompt";
 
 /** Assemble scheduler collaborators without starting database or network work. */
 export function createScheduler(
@@ -119,6 +119,8 @@ export function createScheduler(
     store,
     sessions,
     enqueueFirstPrompt: (input) => enqueueAutomationFirstPrompt(env, input),
+    cancelSession: (sessionId, automationId) =>
+      cancelSupersededSession(env, sessionId, `automation:${automationId}`),
     continuity,
     executionDeadlineMs: resolveDeadlineMs,
     clock: Date,
@@ -144,6 +146,8 @@ export function createScheduler(
     attribution,
     isAuthorized: (request) => isAutomationExecutionAuthorized(db, request),
     resolveRepositories: (repositories) => resolveAutomationRepositories(env, repositories),
+    cancelSession: (sessionId, automationId) =>
+      cancelSupersededSession(env, sessionId, `automation:${automationId}`),
     clock: Date,
     crypto: schedulerCrypto,
     log,

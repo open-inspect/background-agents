@@ -779,6 +779,21 @@ describe("AutomationStore (D1 integration)", () => {
       expect(await store.setRunExecutionDeadline("run-done", now + 600_000)).toBe(false);
     });
 
+    it("reports a claimed run active for its own session only while it is running", async () => {
+      const store = new AutomationStore(env.DB);
+      const now = Date.now();
+      await store.create(makeAutomation({ id: "auto-rec8" }));
+      await seedRun(makeRun("auto-rec8", { id: "run-live", status: "starting", created_at: now }));
+
+      await store.claimRunSession("run-live", "sess-live", now, now + 60_000);
+      expect(await store.isRunActiveForSession("run-live", "sess-live")).toBe(true);
+      expect(await store.isRunActiveForSession("run-live", "sess-other")).toBe(false);
+
+      await store.updateRun("run-live", { status: "skipped", completed_at: now });
+      expect(await store.isRunActiveForSession("run-live", "sess-live")).toBe(false);
+      expect(await store.setRunExecutionDeadline("run-live", now + 600_000)).toBe(false);
+    });
+
     // A pre-0079 worker can claim a run after the migration's backfill and
     // before it is replaced; that row has no deadline of its own.
     it("holds a run that never claimed a deadline to the default deadline from its start", async () => {

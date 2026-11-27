@@ -184,6 +184,9 @@ function invocationHarness() {
         }),
     },
     failures: { applyInvocationOutcome: vi.fn().mockResolvedValue(undefined) },
+    cancelSession: vi
+      .fn<AutomationInvocationServiceDeps["cancelSession"]>()
+      .mockResolvedValue(true),
     clock: { now: () => 1_000 },
     crypto: { generateId: () => `id-${++id}` },
     log,
@@ -346,6 +349,125 @@ describe("AutomationInvocationService", () => {
       expect.objectContaining({ actor_kind: "bot", skip_reason: "concurrent_run_active" }),
       undefined
     );
+    expect(deps.store.insertInvocationGuarded).not.toHaveBeenCalled();
+  });
+
+  describe("cancel in progress", () => {
+    const replacing = { ...automation, cancel_in_progress: 1 };
+    const prEvent = {
+      automation: replacing,
+      source: "event" as const,
+      actorKind: "person" as const,
+      triggerKey: "github:delivery-2",
+      concurrencyKey: "pr:42",
+    };
+
+    const oldRun = { id: "old-run", invocation_id: "old-invocation", session_id: "old-session" };
+
+    it("supersedes the key's active runs in the insert batch, then cancels their sessions", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.store.insertInvocationGuarded.mockResolvedValue({
+        inserted: true,
+        superseded: [oldRun],
+      });
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "started" });
+
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ supersede: { concurrencyKey: "pr:42", now: 1_000 } })
+      );
+      expect(deps.cancelSession).toHaveBeenCalledExactlyOnceWith("old-session", replacing.id);
+      expect(deps.store.insertSkippedInvocation).not.toHaveBeenCalled();
+      expect(deps.store.insertInvocationGuarded.mock.invocationCallOrder[0]).toBeLessThan(
+        deps.cancelSession.mock.invocationCallOrder[0]!
+      );
+    });
+
+    it("starts the new firing when the superseded session cannot be cancelled", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.store.insertInvocationGuarded.mockResolvedValue({
+        inserted: true,
+        superseded: [oldRun],
+      });
+      deps.cancelSession.mockResolvedValue(false);
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "started" });
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledOnce();
+    });
+
+    it("cancels nothing when the batch refused the firing", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.store.insertInvocationGuarded.mockResolvedValue({ inserted: false, superseded: [] });
+
+      await service.start(prEvent);
+
+      expect(deps.cancelSession).not.toHaveBeenCalled();
+    });
+
+    it("leaves the active run alone when the new firing is not authorized", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.isAuthorized.mockResolvedValue(false);
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "unauthorized" });
+      expect(deps.store.insertInvocationGuarded).not.toHaveBeenCalled();
+      expect(deps.cancelSession).not.toHaveBeenCalled();
+    });
+
+    it("asks for the supersede even when the pre-check saw no active run", async () => {
+      // A run for the key became active between the pre-check and the batch: the
+      // batch still replaces it rather than recording an overlap skip.
+      const { deps, service } = invocationHarness();
+      deps.store.insertInvocationGuarded.mockResolvedValue({
+        inserted: true,
+        superseded: [oldRun],
+      });
+
+      await expect(service.start(prEvent)).resolves.toMatchObject({ outcome: "started" });
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ supersede: { concurrencyKey: "pr:42", now: 1_000 } })
+      );
+      expect(deps.cancelSession).toHaveBeenCalledExactlyOnceWith("old-session", replacing.id);
+      expect(deps.store.insertSkippedInvocation).not.toHaveBeenCalled();
+    });
+
+    it("does not supersede for a firing whose provider routing was refused", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.getActiveRunForKey.mockResolvedValue(run({ session_id: "old-session" }));
+      deps.admission.resolveProviderAuth.mockResolvedValue({ error: new Error("no account") });
+      deps.store.insertInvocationGuarded.mockResolvedValue({ inserted: false, superseded: [] });
+
+      await service.start(prEvent);
+
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ supersede: undefined })
+      );
+      expect(deps.cancelSession).not.toHaveBeenCalled();
+    });
+
+    it("does not ask an automation without the setting to supersede", async () => {
+      const { deps, service } = invocationHarness();
+
+      await expect(service.start({ ...prEvent, automation })).resolves.toMatchObject({
+        outcome: "started",
+      });
+      expect(deps.store.insertInvocationGuarded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ supersede: undefined })
+      );
+    });
+
+    it("still skips manual firings at the limit", async () => {
+      const { deps, service } = invocationHarness();
+      deps.store.isAtConcurrencyLimit.mockResolvedValue(true);
+
+      await expect(
+        service.start({ automation: replacing, source: "manual", actorKind: "person" })
+      ).resolves.toEqual({ outcome: "blocked", reason: "concurrent_run_active" });
+      expect(deps.store.insertInvocationGuarded).not.toHaveBeenCalled();
+    });
   });
 });
 

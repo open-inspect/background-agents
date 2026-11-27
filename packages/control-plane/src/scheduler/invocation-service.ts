@@ -13,6 +13,7 @@ import {
   type AutomationRepositoryInsert,
   type AutomationEnvironmentRow,
   type TeamGrantsVersion,
+  type SupersededRun,
 } from "../db/automation-store";
 import type { TeamStore } from "../db/teams";
 import type { AutomationExecutionAuthorizationRequest } from "../automation/authorization-guard";
@@ -113,6 +114,11 @@ export interface AutomationInvocationServiceDeps {
   attribution: Pick<AutomationAttributionService, "resolve">;
   launcher: Pick<AutomationRunLaunchService, "launch" | "recordFailure">;
   failures: Pick<AutomationFailureService, "applyInvocationOutcome">;
+  /**
+   * Best-effort cancel of a superseded run's session; resolves false when the session could not
+   * be reached. Never throws.
+   */
+  cancelSession(sessionId: string, automationId: string): Promise<boolean>;
   clock: Pick<DateConstructor, "now">;
   crypto: Pick<typeof Crypto, "generateId">;
   log: Logger;
@@ -163,7 +169,16 @@ export class AutomationInvocationService {
       overlapScope.kind === "concurrencyKey"
         ? (await store.getActiveRunForKey(automation.id, concurrencyKey)) !== null
         : await store.isAtConcurrencyLimit(automation.id);
-    if (blocked) {
+    // An automation with cancel_in_progress replaces its run in flight for the
+    // event's key instead of skipping the event. The active run is ended only in
+    // the insert's batch, once this firing is known to be authorized, so a firing
+    // that is refused never cancels the run it would have replaced. Every such
+    // firing asks for the supersede, not only one the pre-check saw blocked: a run
+    // that becomes active after the pre-check is replaced too. With no active run
+    // the supersede matches nothing.
+    const supersedesOnInsert =
+      overlapScope.kind === "concurrencyKey" && automation.cancel_in_progress === 1;
+    if (blocked && !supersedesOnInsert) {
       return this.recordOverlapSkip(params, { advanceSchedule: true });
     }
 
@@ -274,6 +289,16 @@ export class AutomationInvocationService {
         ? await this.deps.admission.resolveProviderAuth(automation)
         : { providerAuth: [] };
 
+    // Only a firing that can launch something replaces the run in flight. One whose
+    // provider routing was refused, or whose every target failed, takes its usual
+    // failure path and leaves the active run alone (or records the overlap skip).
+    const canLaunch =
+      !("error" in providerAuthSnapshot) &&
+      launchCandidates.some((child) => {
+        const target = launchTargets.get(child.id);
+        return !(target && "error" in target);
+      });
+
     const invocation: AutomationInvocationRow = {
       id: invocationId,
       automation_id: automation.id,
@@ -290,12 +315,17 @@ export class AutomationInvocationService {
     };
 
     let inserted: boolean;
+    let superseded: SupersededRun[] = [];
     try {
-      ({ inserted } = await store.insertInvocationGuarded({
+      ({ inserted, superseded = [] } = await store.insertInvocationGuarded({
         invocation,
         children,
         overlapScope,
         teamGrantsVersion,
+        supersede:
+          supersedesOnInsert && overlapScope.kind === "concurrencyKey" && canLaunch
+            ? { concurrencyKey: overlapScope.concurrencyKey, now }
+            : undefined,
         advanceSchedule:
           source === "schedule" &&
           params.scheduledAt !== undefined &&
@@ -322,6 +352,13 @@ export class AutomationInvocationService {
         };
       }
       throw e;
+    }
+
+    // Only after the batch committed: the replaced runs are already terminal,
+    // so a cancel that fails leaves a session finishing unobserved, never two
+    // active runs for one key.
+    if (superseded.length > 0) {
+      await this.cancelSupersededSessions(automation.id, superseded, invocationId);
     }
 
     if (!inserted && teamGrantsVersion) {
@@ -436,6 +473,32 @@ export class AutomationInvocationService {
     skipReason: string
   ): Promise<StartInvocationResult> {
     return this.recordSkip({ ...params, source: "event" }, skipReason);
+  }
+
+  /** Ask the sessions of runs a replacing firing ended to stop. Never throws. */
+  private async cancelSupersededSessions(
+    automationId: string,
+    superseded: SupersededRun[],
+    replacedBy: string
+  ): Promise<void> {
+    const outcomes = await Promise.all(
+      superseded.map(async (run) => ({
+        run,
+        cancelled:
+          run.session_id === null || (await this.deps.cancelSession(run.session_id, automationId)),
+      }))
+    );
+    for (const { run, cancelled } of outcomes) {
+      this.deps.log.info("Superseded an active run for a newer event", {
+        event: "scheduler.run_superseded",
+        automation_id: automationId,
+        run_id: run.id,
+        invocation_id: run.invocation_id,
+        session_id: run.session_id,
+        replaced_by: replacedBy,
+        session_cancelled: cancelled,
+      });
+    }
   }
 
   /**

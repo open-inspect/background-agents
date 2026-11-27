@@ -7,7 +7,10 @@ import { sendPromptResponseSchema } from "@open-inspect/shared/types/session-api
 import type { CorrelationContext } from "../logger";
 import { promptRequestLookupSchema, SessionInternalPaths } from "../session/contracts";
 import type { EnqueuePromptRequest } from "../session/enqueue-prompt-contract";
-import { createSessionRuntimeClient } from "../session/runtime-client";
+import {
+  createSessionRuntimeClient,
+  createSessionRuntimeClientForTrace,
+} from "../session/runtime-client";
 import type { Env } from "../types";
 
 export type SchedulerPromptRequest = Pick<
@@ -133,4 +136,33 @@ export async function enqueueAutomationFirstPrompt(
  */
 export function firstPromptRequestId(runId: string): string {
   return `automation-run:${runId}`;
+}
+
+/**
+ * Bound on one cancel of a superseded run's session. A stalled session must not hold up the
+ * firing that replaces it: the run is already terminal, so a failed cancel only lets the old
+ * session finish its work unobserved.
+ */
+export const SUPERSEDED_SESSION_CANCEL_TIMEOUT_MS = 10_000;
+
+/**
+ * Ask a superseded run's session to stop. 404 (no such session) and 409 (it already ended)
+ * leave nothing to cancel, so they count as done. Never throws.
+ */
+export async function cancelSupersededSession(
+  env: Env,
+  sessionId: string,
+  traceId: string
+): Promise<boolean> {
+  try {
+    const response = await createSessionRuntimeClientForTrace(env, traceId).fetch(
+      sessionId,
+      SessionInternalPaths.cancel,
+      { method: "POST", signal: AbortSignal.timeout(SUPERSEDED_SESSION_CANCEL_TIMEOUT_MS) }
+    );
+    await response.body?.cancel();
+    return response.ok || response.status === 404 || response.status === 409;
+  } catch {
+    return false;
+  }
 }

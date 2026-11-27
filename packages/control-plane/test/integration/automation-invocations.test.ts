@@ -437,6 +437,99 @@ describe("automation invocations (D1 integration)", () => {
       expect(blocked.inserted).toBe(false);
     });
 
+    it("supersedes only the key's active runs, so the replacing firing is admitted", async () => {
+      const store = new AutomationStore(env.DB);
+      await store.create(
+        makeAutomation({ id: "auto-g4", trigger_type: "github_event", cancel_in_progress: 1 })
+      );
+      const insertFor = (key: string, triggerKey: string, status: "running" | "starting") =>
+        store.insertInvocationGuarded({
+          invocation: makeInvocation("auto-g4", {
+            source: "event",
+            trigger_key: triggerKey,
+            concurrency_key: key,
+          }),
+          children: [makeChild("auto-g4", { status, repo_owner: "acme", repo_name: "api" })],
+          overlapScope: { kind: "concurrencyKey", concurrencyKey: key },
+        });
+      await insertFor("pr:42", "pr:42:opened", "running");
+      await insertFor("pr:43", "pr:43:opened", "running");
+
+      const replace = (triggerKey: string) =>
+        store.insertInvocationGuarded({
+          invocation: makeInvocation("auto-g4", {
+            source: "event",
+            trigger_key: triggerKey,
+            concurrency_key: "pr:42",
+          }),
+          children: [
+            makeChild("auto-g4", { status: "starting", repo_owner: "acme", repo_name: "api" }),
+          ],
+          overlapScope: { kind: "concurrencyKey", concurrencyKey: "pr:42" },
+          supersede: { concurrencyKey: "pr:42", now: 5_000 },
+        });
+
+      // A redelivery of the event that owns the active run never stops that run.
+      await expect(replace("pr:42:opened")).resolves.toEqual({ inserted: false, superseded: [] });
+      expect(await countRows("automation_runs", "status = 'running'")).toBe(2);
+
+      const replacing = await replace("pr:42:synchronize");
+      expect(replacing.inserted).toBe(true);
+      expect(replacing.superseded).toHaveLength(1);
+      const [superseded] = replacing.superseded!;
+
+      const ended = await env.DB.prepare(
+        "SELECT status, skip_reason, completed_at FROM automation_runs WHERE id = ?"
+      )
+        .bind(superseded!.id)
+        .first();
+      expect(ended).toEqual({ status: "skipped", skip_reason: "superseded", completed_at: 5_000 });
+      // pr:43's run, and the replacing firing's own new child, are untouched.
+      expect(await countRows("automation_runs", "status = 'running'")).toBe(1);
+      expect(await countRows("automation_runs", "status = 'starting'")).toBe(1);
+      expect(await store.getInvocationRunAggregate(superseded!.invocation_id)).toMatchObject({
+        total: 1,
+        active: 0,
+        skipped: 1,
+      });
+    });
+
+    it("leaves the active run alone when stale team grants refuse the replacing firing", async () => {
+      const store = new AutomationStore(env.DB);
+      await store.create(
+        makeAutomation({ id: "auto-g5", trigger_type: "github_event", cancel_in_progress: 1 })
+      );
+      await store.insertInvocationGuarded({
+        invocation: makeInvocation("auto-g5", {
+          source: "event",
+          trigger_key: "pr:42:opened",
+          concurrency_key: "pr:42",
+        }),
+        children: [
+          makeChild("auto-g5", { status: "running", repo_owner: "acme", repo_name: "api" }),
+        ],
+        overlapScope: { kind: "concurrencyKey", concurrencyKey: "pr:42" },
+      });
+
+      const refused = await store.insertInvocationGuarded({
+        invocation: makeInvocation("auto-g5", {
+          source: "event",
+          trigger_key: "pr:42:synchronize",
+          concurrency_key: "pr:42",
+        }),
+        children: [
+          makeChild("auto-g5", { status: "starting", repo_owner: "acme", repo_name: "api" }),
+        ],
+        overlapScope: { kind: "concurrencyKey", concurrencyKey: "pr:42" },
+        // No such team, so the grants guard fails exactly as a changed version would.
+        teamGrantsVersion: { teamId: "team-missing", version: 1 },
+        supersede: { concurrencyKey: "pr:42", now: 5_000 },
+      });
+
+      expect(refused).toEqual({ inserted: false, superseded: [] });
+      expect(await countRows("automation_runs", "status = 'running'")).toBe(1);
+    });
+
     it("rolls back the whole batch (including the advance) on a cron double-fire", async () => {
       const store = new AutomationStore(env.DB);
       await store.create(makeAutomation({ id: "auto-g4", next_run_at: 1_000 }));
