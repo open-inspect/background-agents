@@ -79,6 +79,7 @@ export const sentryEventAlertSchema = z.object({
   action: z.string(),
   data: z.object({
     event: z.object({
+      event_id: z.string().optional(),
       issue_id: sentryIdentifierSchema,
       url: z.string(),
       web_url: z.string().optional(),

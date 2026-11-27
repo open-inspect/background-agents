@@ -94,7 +94,12 @@ async function handleSentryWebhook(
   const payload = isRecord(parsedPayload) ? parsedPayload : {};
 
   const sentryResource = request.headers.get("sentry-hook-resource");
-  const normalization = normalizeSentryEvent(payload, automationId, sentryResource);
+  const normalization = normalizeSentryEvent(
+    payload,
+    automationId,
+    sentryResource,
+    automation.event_type
+  );
   if (normalization.status === "skipped") {
     const logData = {
       event: "sentry.webhook_skipped",

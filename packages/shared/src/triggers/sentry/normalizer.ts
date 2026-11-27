@@ -23,10 +23,19 @@ export type SentryNormalizationResult =
       reason: "unsupported_action" | "unknown_resource" | "invalid_shape";
     };
 
+/**
+ * Normalize a Sentry webhook payload.
+ *
+ * `configuredEventType` is the event type of the automation whose endpoint received the
+ * payload. The issue alert shape Sentry documents carries no issue state, so an alert for
+ * a regressed issue looks the same as one for a new issue. That shape takes the event type
+ * from the automation the alert rule was pointed at instead.
+ */
 export function normalizeSentryEvent(
   payload: Record<string, unknown>,
   automationId?: string,
-  sentryHookResource?: string | null
+  sentryHookResource?: string | null,
+  configuredEventType?: string | null
 ): SentryNormalizationResult {
   if (
     sentryHookResource &&
@@ -113,13 +122,18 @@ export function normalizeSentryEvent(
       const projectSlug = /\/projects\/[^/]+\/([^/]+)\/events\//.exec(event.url)?.[1];
       if (projectSlug) {
         const level = event.level ?? event.tags?.find(([key]) => key === "level")?.[1] ?? "error";
+        const isRegression = configuredEventType === "issue.regression";
+        // An issue regresses more than once, so each regressing event is its own firing.
+        const triggerKey = isRegression
+          ? `sentry_regression:${event.issue_id}:${event.event_id ?? event.url}`
+          : `sentry_issue:${event.issue_id}`;
         return {
           status: "normalized",
           event: {
             source: "sentry",
             automationId: automationId ?? "",
-            eventType: "issue.created",
-            triggerKey: `sentry_issue:${event.issue_id}`,
+            eventType: isRegression ? "issue.regression" : "issue.created",
+            triggerKey,
             concurrencyKey: `sentry_issue:${event.issue_id}`,
             sentryProject: projectSlug,
             sentryLevel: level,
