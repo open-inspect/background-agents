@@ -139,6 +139,19 @@ export interface GetRepositoryConfig {
   name: string;
 }
 
+/** Commit status states shared by the providers that post them. */
+export type CommitStatusState = "pending" | "success" | "failure" | "error";
+
+/** A commit status to post on one commit, keyed by its context. */
+export interface CreateCommitStatusConfig extends GetRepositoryConfig {
+  sha: string;
+  state: CommitStatusState;
+  /** Label the status is keyed by; a later post with the same context replaces it. */
+  context: string;
+  description?: string;
+  targetUrl?: string;
+}
+
 export interface ListBranchesResult {
   branches: { name: string }[];
   cached: boolean;
@@ -488,6 +501,16 @@ export interface SourceControlProvider {
     config: GetRepositoryConfig & { blobId: string; maxBytes: number },
     scope: CredentialScope
   ): Promise<Uint8Array>;
+
+  /**
+   * Post a commit status on one commit, replacing any earlier status with the same
+   * context there.
+   *
+   * App-authenticated. Providers that cannot post statuses throw a permanent error.
+   *
+   * @throws SourceControlProviderError
+   */
+  createCommitStatus(config: CreateCommitStatusConfig, scope: CredentialScope): Promise<void>;
 
   /**
    * Read the current state of a pull request.

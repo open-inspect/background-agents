@@ -872,6 +872,67 @@ describe("automation create route", () => {
       );
     });
 
+    it.each([
+      ["a schedule trigger", { triggerType: "schedule" }],
+      [
+        "PR Closed",
+        {
+          triggerType: "github_event",
+          eventType: "pull_request.closed",
+          repositories: [{ repoOwner: "acme", repoName: "web-app" }],
+        },
+      ],
+      [
+        "Issue Opened",
+        {
+          triggerType: "github_event",
+          eventType: "issues.opened",
+          repositories: [{ repoOwner: "acme", repoName: "web-app" }],
+        },
+      ],
+    ])("refuses a commit status context on %s", async (_label, trigger) => {
+      const { scheduleCron: _cron, scheduleTz: _tz, ...eventBody } = validBody;
+      const base = trigger.triggerType === "schedule" ? validBody : eventBody;
+      const res = await callRoute("POST", "/automations", {
+        body: { ...base, ...trigger, commitStatusContext: "open-inspect" },
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error:
+          "commitStatusContext is only valid for GitHub PR Opened, PR Updated and PR Ready for Review triggers",
+      });
+      expect(mockStore.bindAutomationInsert).not.toHaveBeenCalled();
+    });
+
+    it("stores no commit status context by default", async () => {
+      mockStore.getById.mockResolvedValue(sampleRow);
+
+      const res = await callRoute("POST", "/automations", { body: validBody });
+
+      expect(res.status).toBe(201);
+      expect(mockStore.bindAutomationInsert).toHaveBeenLastCalledWith(
+        expect.objectContaining({ commit_status_context: null })
+      );
+    });
+
+    it("rejects a blank or overlong commit status context", async () => {
+      const { scheduleCron: _cron, scheduleTz: _tz, ...eventBody } = validBody;
+      for (const commitStatusContext of ["   ", "x".repeat(101)]) {
+        const res = await callRoute("POST", "/automations", {
+          body: {
+            ...eventBody,
+            triggerType: "github_event",
+            eventType: "pull_request.synchronize",
+            repositories: [{ repoOwner: "acme", repoName: "web-app" }],
+            commitStatusContext,
+          },
+        });
+        expect(res.status).toBe(400);
+      }
+      expect(mockStore.bindAutomationInsert).not.toHaveBeenCalled();
+    });
+
     it("rejects repo-less repo-scoped triggers", async () => {
       const res = await callRoute("POST", "/automations", {
         body: {

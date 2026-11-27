@@ -15,6 +15,8 @@ export {
   getGitHubConclusionOptions,
   getGitHubEventConditionTypes,
   isGitHubConditionSupported,
+  GITHUB_COMMIT_STATUS_EVENT_TYPES,
+  githubEventSupportsCommitStatus,
 } from "./webhook-types";
 export const githubSource: TriggerSourceDefinition = {
   source: "github",

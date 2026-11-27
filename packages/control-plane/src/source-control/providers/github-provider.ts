@@ -29,6 +29,7 @@ import type {
   CredentialScope,
   ResolvedCommit,
   RepositoryTree,
+  CreateCommitStatusConfig,
 } from "../types";
 import {
   readResponseBytesWithinLimit,
@@ -815,6 +816,31 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
     }
   }
 
+  async createCommitStatus(
+    config: CreateCommitStatusConfig,
+    scope: CredentialScope
+  ): Promise<void> {
+    const operation = "create commit status";
+    const response = await this.appFetch(
+      `/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(
+        config.name
+      )}/statuses/${encodeURIComponent(config.sha)}`,
+      scope,
+      operation,
+      "application/vnd.github+json",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          state: config.state,
+          context: config.context,
+          ...(config.description !== undefined ? { description: config.description } : {}),
+          ...(config.targetUrl !== undefined ? { target_url: config.targetUrl } : {}),
+        }),
+      }
+    );
+    if (!response.ok) throw await githubResponseError(response, operation);
+  }
+
   async resolveCommit(
     config: GetRepositoryConfig & { ref: string },
     scope: CredentialScope
@@ -917,7 +943,8 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
     path: string,
     scope: CredentialScope,
     operation: string,
-    accept: string
+    accept: string,
+    init: { method?: string; body?: string } = {}
   ): Promise<Response> {
     if (!this.appConfig) {
       throw new SourceControlProviderError(
@@ -936,7 +963,12 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
         Authorization: `Bearer ${token}`,
         "User-Agent": this.userAgent,
       };
-      let response = await fetchWithTimeout(`${GITHUB_API_BASE}${path}`, { headers });
+      const request = {
+        ...init,
+        headers:
+          init.body !== undefined ? { ...headers, "Content-Type": "application/json" } : headers,
+      };
+      let response = await fetchWithTimeout(`${GITHUB_API_BASE}${path}`, request);
       if (response.status === 401) {
         await invalidateInstallationTokenCache(
           env,
@@ -947,7 +979,8 @@ export class GitHubSourceControlProvider implements SourceControlProvider {
           forceRefresh: true,
         });
         response = await fetchWithTimeout(`${GITHUB_API_BASE}${path}`, {
-          headers: { ...headers, Authorization: `Bearer ${refreshedToken}` },
+          ...request,
+          headers: { ...request.headers, Authorization: `Bearer ${refreshedToken}` },
         });
       }
       return response;

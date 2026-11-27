@@ -9,6 +9,7 @@ import {
 } from "@open-inspect/shared/cron";
 import {
   conditionRegistry,
+  githubEventSupportsCommitStatus,
   normalizeSlackChannelConditions,
   validateTriggerConditions,
   type TriggerConfig,
@@ -117,6 +118,20 @@ function exceedsSerializedConcurrency(maxConcurrentRuns: number | undefined): bo
   return (
     maxConcurrentRuns !== undefined && maxConcurrentRuns > DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS
   );
+}
+
+/**
+ * A commit status needs a head commit to land on, so only PR events that point at the
+ * pull request's current head may post one.
+ */
+const COMMIT_STATUS_PR_EVENTS_ONLY_ERROR =
+  "commitStatusContext is only valid for GitHub PR Opened, PR Updated and PR Ready for Review triggers";
+
+function commitStatusAllowed(
+  triggerType: AutomationTriggerType,
+  eventType: string | null | undefined
+): boolean {
+  return triggerType === "github_event" && githubEventSupportsCommitStatus(eventType);
 }
 
 async function handleCreateAutomation(
@@ -267,6 +282,9 @@ async function handleCreateAutomation(
 
   const eventTypeError = getTriggerEventTypeError(triggerType, body.eventType);
   if (eventTypeError) return error(eventTypeError, 400);
+  if (body.commitStatusContext && !commitStatusAllowed(triggerType, body.eventType)) {
+    return error(COMMIT_STATUS_PR_EVENTS_ONLY_ERROR, 400);
+  }
   const triggerOptionsError = getTriggerOptionsError(triggerType, body.triggerConfig);
   if (triggerOptionsError) return error(triggerOptionsError, 400);
 
@@ -412,6 +430,7 @@ async function handleCreateAutomation(
     max_retries: body.maxRetries ?? 0,
     sandbox_timeout_ms: body.sandboxTimeoutMs ?? null,
     max_concurrent_runs: body.maxConcurrentRuns ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+    commit_status_context: body.commitStatusContext ?? null,
     created_by: enforced.participantUserId,
     user_id: resolvedUserId,
     created_at: now,
@@ -808,6 +827,21 @@ async function handleUpdateAutomation(
     body.eventType !== undefined ? body.eventType : (existing.event_type ?? undefined);
   const eventTypeError = getTriggerEventTypeError(existingTriggerType, effectiveEventType);
   if (eventTypeError) return error(eventTypeError, 400);
+  // Judged against the context the automation will have after this write, so moving a
+  // reporting automation to an event without a head commit has to clear it too.
+  const effectiveCommitStatusContext =
+    body.commitStatusContext !== undefined
+      ? body.commitStatusContext
+      : (existing.commit_status_context ?? null);
+  if (
+    effectiveCommitStatusContext &&
+    !commitStatusAllowed(existingTriggerType, effectiveEventType)
+  ) {
+    return error(COMMIT_STATUS_PR_EVENTS_ONLY_ERROR, 400);
+  }
+  if (body.commitStatusContext !== undefined) {
+    updateFields.commit_status_context = body.commitStatusContext;
+  }
   const triggerOptionsError = getTriggerOptionsError(existingTriggerType, body.triggerConfig);
   if (triggerOptionsError) return error(triggerOptionsError, 400);
 

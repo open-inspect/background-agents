@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   dedupeConditionsBySemanticKey,
+  githubEventSupportsCommitStatus,
   isGitHubConditionCompatible,
   triggerSources,
   TRIGGER_TYPE_TO_SOURCE,
@@ -11,6 +12,7 @@ import {
   type TriggerCondition,
 } from "@open-inspect/shared/triggers";
 import {
+  MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH,
   MAX_AUTOMATION_CONCURRENT_RUNS,
   MAX_AUTOMATION_RETRIES,
 } from "@open-inspect/shared/types/automations";
@@ -374,6 +376,29 @@ export function AutomationTriggerConfigurationFields({
             Found in your Sentry Custom Integration settings. This will be encrypted and stored
             securely.
           </p>
+        </div>
+      )}
+
+      {value.type === "github_event" && githubEventSupportsCommitStatus(value.eventType) && (
+        <div>
+          <label
+            htmlFor="automation-commit-status-context"
+            className="block text-sm font-medium text-foreground mb-1.5"
+          >
+            Commit status
+          </label>
+          <Input
+            id="automation-commit-status-context"
+            value={value.commitStatusContext}
+            onChange={(event) => update({ commitStatusContext: event.target.value })}
+            placeholder="open-inspect"
+            maxLength={MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH}
+          />
+          <FieldDescription>
+            Post a commit status with this name on the pull request&apos;s head commit: pending
+            while the run is in progress, then success or failure. Branch protection can require it.
+            Leave empty to post none. Requires the GitHub App&apos;s Commit statuses permission.
+          </FieldDescription>
         </div>
       )}
 

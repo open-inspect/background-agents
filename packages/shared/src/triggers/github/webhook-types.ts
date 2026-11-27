@@ -127,6 +127,21 @@ export const GITHUB_WEBHOOK_EVENT_CATALOG = [
 
 const NO_GITHUB_EVENT_CONDITIONS: readonly ConditionType[] = [];
 
+/**
+ * GitHub events whose head commit an automation can report a commit status on: pull
+ * request events that point at the PR's current head. PR Closed is left out, since a
+ * status posted after close gates nothing.
+ */
+export const GITHUB_COMMIT_STATUS_EVENT_TYPES: readonly string[] = [
+  "pull_request.opened",
+  "pull_request.synchronize",
+  "pull_request.ready_for_review",
+];
+
+export function githubEventSupportsCommitStatus(eventType: string | null | undefined): boolean {
+  return eventType != null && GITHUB_COMMIT_STATUS_EVENT_TYPES.includes(eventType);
+}
+
 export function getGitHubEventConditionTypes(eventType: string): readonly ConditionType[] {
   const entry = GITHUB_WEBHOOK_EVENT_CATALOG.find(
     ({ event, action }) => `${event}.${action}` === eventType

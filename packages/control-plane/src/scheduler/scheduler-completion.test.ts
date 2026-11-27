@@ -61,6 +61,9 @@ function harness() {
         .fn<SchedulerDeps["slack"]["notifyCompletion"]>()
         .mockResolvedValue(undefined),
     },
+    commitStatus: {
+      publish: vi.fn<SchedulerDeps["commitStatus"]["publish"]>().mockResolvedValue(null),
+    },
     invocations: {
       start: vi.fn<SchedulerDeps["invocations"]["start"]>(),
       retryDue: vi.fn<SchedulerDeps["invocations"]["retryDue"]>(),
@@ -162,6 +165,48 @@ describe("Scheduler.runComplete", () => {
     expect(deps.store.completeTimedOutRun).toHaveBeenCalledExactlyOnceWith("run-1", nowMs);
     expect(deps.failures.applyInvocationOutcome).not.toHaveBeenCalled();
     expect(deps.slack.notifyCompletion).toHaveBeenCalledExactlyOnceWith(timedOutRun, completion);
+    expect(deps.commitStatus.publish).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "run-1", status: "completed", failure_reason: null }),
+      undefined
+    );
+  });
+
+  it.each([
+    { success: true, status: "completed", failure_reason: null },
+    { success: false, status: "failed", failure_reason: "Sandbox crashed" },
+  ] as const)(
+    "publishes the $status commit status under the firing's recorded target",
+    async ({ success, status, failure_reason }) => {
+      const { deps, scheduler } = harness();
+      deps.store.getRunById.mockResolvedValue({ ...run, invocation_trigger_metadata: "{meta}" });
+
+      await scheduler.runComplete({ ...completion, success, error: failure_reason ?? undefined });
+
+      expect(deps.commitStatus.publish).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: "run-1", status, failure_reason }),
+        "{meta}"
+      );
+    }
+  );
+
+  it("publishes the commit status even when failure accounting rejects", async () => {
+    const { deps, scheduler } = harness();
+    deps.failures.applyInvocationOutcome.mockRejectedValue(new Error("D1 unavailable"));
+
+    await expect(scheduler.runComplete(completion)).rejects.toThrow("D1 unavailable");
+
+    expect(deps.commitStatus.publish).toHaveBeenCalledOnce();
+    expect(deps.slack.notifyCompletion).not.toHaveBeenCalled();
+  });
+
+  it("publishes no commit status for an ignored duplicate callback", async () => {
+    const { deps, scheduler } = harness();
+    deps.store.updateRun.mockResolvedValue(false);
+    deps.store.completeTimedOutRun.mockResolvedValue(false);
+
+    await scheduler.runComplete(completion);
+
+    expect(deps.commitStatus.publish).not.toHaveBeenCalled();
   });
 
   it("propagates a run update error without accounting or publication", async () => {

@@ -849,6 +849,81 @@ describe("automation read, update, and delete routes", () => {
       expect(mockBatch).not.toHaveBeenCalled();
     });
 
+    describe("commit status context", () => {
+      const reviewer = {
+        ...sampleRow,
+        trigger_type: "github_event",
+        schedule_cron: null,
+        schedule_tz: null,
+        event_type: "pull_request.synchronize",
+        trigger_config: JSON.stringify({ conditions: [] }),
+      };
+
+      it("sets and trims it on a PR Updated automation", async () => {
+        mockStore.getById.mockResolvedValue(reviewer);
+
+        const res = await callRoute("PUT", "/automations/auto-1", {
+          body: { commitStatusContext: "  open-inspect  " },
+        });
+
+        expect(res.status).toBe(200);
+        expect(mockStore.bindAutomationUpdate).toHaveBeenCalledWith(
+          "auto-1",
+          expect.objectContaining({ commit_status_context: "open-inspect" })
+        );
+      });
+
+      it("clears it with null", async () => {
+        mockStore.getById.mockResolvedValue({ ...reviewer, commit_status_context: "open-inspect" });
+
+        const res = await callRoute("PUT", "/automations/auto-1", {
+          body: { commitStatusContext: null },
+        });
+
+        expect(res.status).toBe(200);
+        expect(mockStore.bindAutomationUpdate).toHaveBeenCalledWith(
+          "auto-1",
+          expect.objectContaining({ commit_status_context: null })
+        );
+      });
+
+      it("refuses moving a reporting automation to an event without a head commit", async () => {
+        mockStore.getById.mockResolvedValue({ ...reviewer, commit_status_context: "open-inspect" });
+
+        const res = await callRoute("PUT", "/automations/auto-1", {
+          body: { eventType: "pull_request.closed" },
+        });
+
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({
+          error:
+            "commitStatusContext is only valid for GitHub PR Opened, PR Updated and PR Ready for Review triggers",
+        });
+        expect(mockStore.bindAutomationUpdate).not.toHaveBeenCalled();
+      });
+
+      it("allows that move when the same edit clears the context", async () => {
+        mockStore.getById.mockResolvedValue({ ...reviewer, commit_status_context: "open-inspect" });
+
+        const res = await callRoute("PUT", "/automations/auto-1", {
+          body: { eventType: "pull_request.closed", commitStatusContext: null },
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it("refuses it on a schedule automation", async () => {
+        mockStore.getById.mockResolvedValue(sampleRow);
+
+        const res = await callRoute("PUT", "/automations/auto-1", {
+          body: { commitStatusContext: "open-inspect" },
+        });
+
+        expect(res.status).toBe(400);
+        expect(mockStore.bindAutomationUpdate).not.toHaveBeenCalled();
+      });
+    });
+
     it("rejects an event type change that would leave incompatible conditions", async () => {
       mockStore.getById.mockResolvedValue({
         ...sampleRow,

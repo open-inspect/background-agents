@@ -714,6 +714,81 @@ describe("automation cron submission", () => {
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("maxConcurrentRuns");
   });
 
+  it("submits a trimmed commit status context for a PR Updated automation", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <AutomationForm
+        mode="edit"
+        submitting={false}
+        onSubmit={onSubmit}
+        initialValues={{
+          name: "Review PRs",
+          repositories: singleRepository,
+          model: "openai/gpt-5.4",
+          instructions: "Review incoming PRs.",
+          triggerType: "github_event",
+          eventType: "pull_request.synchronize",
+          triggerConfig: { conditions: [] },
+        }}
+      />
+    );
+
+    await user.type(screen.getByLabelText("Commit status"), "  open-inspect ");
+    fireEvent.submit(container.querySelector("form")!);
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ commitStatusContext: "open-inspect" })
+    );
+  });
+
+  it("hides the commit status for PR Closed and clears a stored one on submit", () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <AutomationForm
+        mode="edit"
+        submitting={false}
+        onSubmit={onSubmit}
+        initialValues={{
+          name: "Close out",
+          repositories: singleRepository,
+          model: "openai/gpt-5.4",
+          instructions: "Tidy up.",
+          triggerType: "github_event",
+          eventType: "pull_request.closed",
+          triggerConfig: { conditions: [] },
+          commitStatusContext: "open-inspect",
+        }}
+      />
+    );
+
+    expect(screen.queryByLabelText("Commit status")).not.toBeInTheDocument();
+    fireEvent.submit(container.querySelector("form")!);
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ commitStatusContext: null }));
+  });
+
+  it("submits no commit status context for a schedule automation", () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <AutomationForm
+        mode="edit"
+        submitting={false}
+        onSubmit={onSubmit}
+        initialValues={{
+          name: "Daily review",
+          repositories: singleRepository,
+          model: "openai/gpt-5.4",
+          scheduleCron: "0 9 * * *",
+          scheduleTz: "UTC",
+          instructions: "Review the repo.",
+        }}
+      />
+    );
+
+    fireEvent.submit(container.querySelector("form")!);
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("commitStatusContext");
+  });
+
   it("neither shows nor submits launch retries for an event-triggered automation", () => {
     const onSubmit = vi.fn();
     const { container } = render(

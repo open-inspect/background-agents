@@ -145,6 +145,12 @@ context. Review it using the GitHub CLI.
 Do not open a new pull request; comment on the existing one.
 ```
 
+## Commit status
+
+PR Opened, PR Updated and PR Ready for Review automations can post a **Commit status** on the pull request's head commit. Enter a name, for example `open-inspect`. Each run reports `pending` when it starts, then `success` or `failure` when it finishes, and links to its session. Require that name in branch protection to block merging until the run succeeds.
+
+The commit is the one the event named, so a new push gets its own status from its own run. Skipped runs post nothing, and a status GitHub refuses never fails the run. The GitHub App needs the **Commit statuses: Read & write** permission. If statuses do not appear, ask an operator to add it in the App's settings. For an App that is already installed, the owner of each account it is installed on must then approve the new permission, from the request GitHub sends or under **Settings > Applications > Installed GitHub Apps**. Until they approve, GitHub refuses the statuses.
+
 ## Concurrency and deduplication
 
 Event firings are keyed per event rather than per automation, so unrelated events can run at the same time:

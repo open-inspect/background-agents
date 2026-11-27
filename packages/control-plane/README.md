@@ -333,6 +333,11 @@ manual invocations may have an active run at once. It counts invocations, not ru
 firing holds one slot; a firing at the bound is skipped (schedule) or rejected with `409` (manual).
 One-shots and other trigger types keep the default.
 
+A `github_event` automation on `pull_request.opened`, `.synchronize` or `.ready_for_review` may set
+`commitStatusContext`. Its firings record the event's head SHA in the invocation's
+`trigger_metadata`, and each run posts a commit status there through the GitHub App: `pending` once
+it starts, `success` or `failure` from the run-complete callback or the recovery sweep.
+
 #### Webhook triggers
 
 Webhook automations are called with their API key (`Authorization: Bearer <key>`) instead of a user

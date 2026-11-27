@@ -361,6 +361,7 @@ function recoveryHarness() {
       getStaleFailureResetCandidates: vi.fn().mockResolvedValue([]),
     },
     failures: { applyInvocationOutcome: vi.fn().mockResolvedValue(undefined) },
+    commitStatus: { refresh: vi.fn().mockResolvedValue(undefined) },
     executionDeadlineMs: () => 10_000,
     clock: { now: () => 1_000 },
     log,
@@ -452,6 +453,22 @@ describe("AutomationRecoveryService", () => {
     );
     expect(deps.failures.applyInvocationOutcome).toHaveBeenCalledExactlyOnceWith("auto-1", "inv-1");
     expect(deps.store.getStaleFailureResetCandidates).toHaveBeenCalled();
+  });
+
+  it("refreshes the commit status of every run it failed", async () => {
+    const { deps, service } = recoveryHarness();
+    const orphan = run({ id: "run-1", status: "starting" });
+    const timedOut = run({ id: "run-2" });
+    deps.store.getOrphanedStartingRuns.mockResolvedValue([orphan]);
+    deps.store.getRunsPastExecutionDeadline.mockResolvedValue([timedOut]);
+    await service.recoverRuns();
+    expect(deps.commitStatus.refresh).toHaveBeenCalledExactlyOnceWith([orphan, timedOut]);
+  });
+
+  it("refreshes no commit status when it failed nothing", async () => {
+    const { deps, service } = recoveryHarness();
+    await service.recoverRuns();
+    expect(deps.commitStatus.refresh).not.toHaveBeenCalled();
   });
 
   it("runs the finalization sweep even when there are no recoverable runs", async () => {

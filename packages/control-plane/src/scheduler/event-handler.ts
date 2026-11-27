@@ -17,6 +17,10 @@ import { composeAutomationPrompt } from "./event-prompt";
 import { recordEventLaunch, logEventResult } from "./event-outcome";
 import type { SlackEventHandler } from "./slack-event-handler";
 import type { WebhookEventHandler } from "./webhook-event-handler";
+import {
+  buildCommitStatusTriggerMetadata,
+  type AutomationCommitStatusService,
+} from "./commit-status-service";
 
 export interface AutomationEventHandlerDeps {
   store: Pick<AutomationStore, "getById" | "getAutomationsForEvent">;
@@ -27,6 +31,7 @@ export interface AutomationEventHandlerDeps {
   ): Promise<SchedulerEventResult>;
   slack: Pick<SlackEventHandler, "handle">;
   webhook: Pick<WebhookEventHandler, "handle">;
+  commitStatus: Pick<AutomationCommitStatusService, "publishAndReconcile">;
   log: Logger;
 }
 
@@ -38,8 +43,9 @@ export class AutomationEventHandler {
     const { store, invocations, log } = this.deps;
     switch (event.source) {
       case "github":
-        return this.deps.admitGitHubEvent(event, (automation, repositories) =>
-          invocations.start({
+        return this.deps.admitGitHubEvent(event, async (automation, repositories) => {
+          const triggerMetadata = buildCommitStatusTriggerMetadata(automation, event);
+          const result = await invocations.start({
             automation,
             repositories,
             source: "event",
@@ -48,13 +54,23 @@ export class AutomationEventHandler {
             actorKind: event.actorKind ?? "unknown",
             triggerKey: event.triggerKey,
             concurrencyKey: event.concurrencyKey,
+            triggerMetadata,
             eventRepositoryId: event.repositoryId,
             instructionsOverride: composeAutomationPrompt(
               event.contextBlock,
               automation.instructions
             ),
-          })
-        );
+          });
+          // Pending once the run exists; a run that failed to launch reports failure.
+          if (result.outcome === "started" && triggerMetadata) {
+            await Promise.all(
+              result.runs.map((run) =>
+                this.deps.commitStatus.publishAndReconcile(run, triggerMetadata)
+              )
+            );
+          }
+          return result;
+        });
       case "slack":
         return this.deps.slack.handle(event);
       case "webhook":

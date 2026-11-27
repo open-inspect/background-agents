@@ -3,6 +3,7 @@ import {
   normalizeWebhookEvent,
   type LinearAutomationEvent,
   type SentryAutomationEvent,
+  type GitHubAutomationEvent,
   type SlackAutomationEvent,
 } from "@open-inspect/shared/triggers";
 import type { AutomationRow, AutomationRunRow } from "../db/automation-store";
@@ -130,6 +131,86 @@ function optedIn(row: AutomationRow, actors = ["BALERTS", "U1"]): AutomationRow 
     }),
   };
 }
+
+describe("GitHub event commit statuses", () => {
+  const prEvent: GitHubAutomationEvent = {
+    source: "github",
+    eventType: "pull_request.synchronize",
+    triggerKey: "pr:42:synchronize:abc123",
+    concurrencyKey: "pr:42",
+    repositoryId: 7,
+    repoOwner: "acme",
+    repoName: "web",
+    pullRequest: { number: 42, headSha: "abc123" },
+    contextBlock: "PR #42",
+    meta: {},
+  };
+  const reviewer: AutomationRow = {
+    ...automation,
+    trigger_type: "github_event",
+    event_type: "pull_request.synchronize",
+    commit_status_context: "open-inspect",
+  };
+  const startedRun = { id: "run-1", automation_id: reviewer.id } as AutomationRunRow;
+
+  function fireThroughAdmission(
+    deps: ReturnType<typeof eventHandlerHarness>["deps"],
+    row: AutomationRow
+  ) {
+    deps.admitGitHubEvent.mockImplementation(async (_event, fire) => {
+      await fire(row, []);
+      return { triggered: 1, skipped: 0, steered: 0, invocationIds: ["inv-1"] };
+    });
+  }
+
+  it("records the head commit on the firing and posts pending for each started run", async () => {
+    const { deps, handler } = eventHandlerHarness();
+    deps.invocations.start.mockResolvedValue({
+      outcome: "started",
+      invocationId: "inv-1",
+      runs: [startedRun],
+      launched: 1,
+    });
+    fireThroughAdmission(deps, reviewer);
+
+    await handler.handle(prEvent);
+
+    const triggerMetadata = deps.invocations.start.mock.calls[0]![0].triggerMetadata;
+    expect(JSON.parse(triggerMetadata!)).toEqual({
+      commitStatus: {
+        repositoryId: 7,
+        repoOwner: "acme",
+        repoName: "web",
+        sha: "abc123",
+        context: "open-inspect",
+      },
+    });
+    expect(deps.commitStatus.publishAndReconcile).toHaveBeenCalledExactlyOnceWith(
+      startedRun,
+      triggerMetadata
+    );
+  });
+
+  it("posts nothing for an automation without a commit status context", async () => {
+    const { deps, handler } = eventHandlerHarness();
+    fireThroughAdmission(deps, { ...reviewer, commit_status_context: null });
+
+    await handler.handle(prEvent);
+
+    expect(deps.invocations.start.mock.calls[0]![0].triggerMetadata).toBeNull();
+    expect(deps.commitStatus.publishAndReconcile).not.toHaveBeenCalled();
+  });
+
+  it("posts nothing for a firing that was skipped", async () => {
+    const { deps, handler } = eventHandlerHarness();
+    deps.invocations.start.mockResolvedValue({ outcome: "skipped", invocationId: "inv-1" });
+    fireThroughAdmission(deps, reviewer);
+
+    await handler.handle(prEvent);
+
+    expect(deps.commitStatus.publishAndReconcile).not.toHaveBeenCalled();
+  });
+});
 
 describe("Slack event ownership", () => {
   it("accepts an injected factory returning only the public policy contract", async () => {
@@ -520,6 +601,11 @@ function eventHandlerHarness() {
     admitGitHubEvent: vi.fn<AutomationEventHandlerDeps["admitGitHubEvent"]>(),
     slack: { handle: vi.fn<SlackEventHandler["handle"]>() },
     webhook: { handle: vi.fn<WebhookEventHandler["handle"]>() },
+    commitStatus: {
+      publishAndReconcile: vi
+        .fn<AutomationEventHandlerDeps["commitStatus"]["publishAndReconcile"]>()
+        .mockResolvedValue(undefined),
+    },
     log,
   } satisfies AutomationEventHandlerDeps;
   return { deps, handler: new AutomationEventHandler(deps) };

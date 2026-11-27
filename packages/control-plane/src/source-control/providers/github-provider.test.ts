@@ -111,6 +111,83 @@ describe("GitHubSourceControlProvider", () => {
     });
   });
 
+  describe("createCommitStatus", () => {
+    const status = {
+      owner: "acme",
+      name: "web",
+      sha: "abc123",
+      state: "pending" as const,
+      context: "open-inspect",
+      description: "Open-Inspect run in progress",
+      targetUrl: "https://inspect.example.com/session/s1",
+    };
+
+    it("posts the status on the commit with the installation token", async () => {
+      mockGetCachedInstallationToken.mockResolvedValue("installation-token");
+      mockFetchWithTimeout.mockResolvedValue(new Response("{}", { status: 201 }));
+      const provider = new GitHubSourceControlProvider({ appConfig: fakeAppConfig });
+
+      await expect(provider.createCommitStatus(status, repositoryScope)).resolves.toBeUndefined();
+
+      expect(mockGetCachedInstallationToken).toHaveBeenCalledWith(
+        fakeAppConfig,
+        expect.anything(),
+        {
+          scope: repositoryScope,
+        }
+      );
+      const [url, init] = mockFetchWithTimeout.mock.calls[0]!;
+      expect(url).toBe("https://api.github.com/repos/acme/web/statuses/abc123");
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer installation-token",
+          "Content-Type": "application/json",
+        }),
+      });
+      expect(JSON.parse(init!.body as string)).toEqual({
+        state: "pending",
+        context: "open-inspect",
+        description: "Open-Inspect run in progress",
+        target_url: "https://inspect.example.com/session/s1",
+      });
+    });
+
+    it("throws when GitHub refuses the status", async () => {
+      mockGetCachedInstallationToken.mockResolvedValue("installation-token");
+      mockFetchWithTimeout.mockResolvedValue(
+        new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+          status: 403,
+        })
+      );
+      const provider = new GitHubSourceControlProvider({ appConfig: fakeAppConfig });
+
+      await expect(provider.createCommitStatus(status, repositoryScope)).rejects.toBeInstanceOf(
+        SourceControlProviderError
+      );
+    });
+
+    it("retries once with a fresh token after a 401, keeping the request body", async () => {
+      mockGetCachedInstallationToken
+        .mockResolvedValueOnce("stale-token")
+        .mockResolvedValueOnce("fresh-token");
+      mockGetInstallationTokenCacheKey.mockResolvedValue("cache-key");
+      mockFetchWithTimeout
+        .mockResolvedValueOnce(new Response("", { status: 401 }))
+        .mockResolvedValueOnce(new Response("{}", { status: 201 }));
+      const provider = new GitHubSourceControlProvider({ appConfig: fakeAppConfig });
+
+      await provider.createCommitStatus(status, repositoryScope);
+
+      const retry = mockFetchWithTimeout.mock.calls[1]![1]!;
+      expect(retry).toMatchObject({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer fresh-token" }),
+      });
+      expect(JSON.parse(retry.body as string)).toMatchObject({ state: "pending" });
+    });
+  });
+
   describe("getRepository", () => {
     it("maps GitHub repository metadata from a valid API response", async () => {
       mockFetchWithTimeout.mockResolvedValue(

@@ -1,6 +1,7 @@
 import { isValidTimeZone, validateAutomationCron } from "@open-inspect/shared/cron";
 import {
   conditionRegistry,
+  githubEventSupportsCommitStatus,
   hasSlackActorIncludeList,
   hasValidSlackChannelCondition,
   triggerSources,
@@ -44,6 +45,8 @@ export interface AutomationFormValues {
   sandboxTimeoutMs?: number | null;
   /** Firings allowed in flight at once; submitted for recurring schedule triggers only. */
   maxConcurrentRuns?: number;
+  /** GitHub PR-event triggers only: commit status context, or null to post none. */
+  commitStatusContext?: string | null;
   instructions: string;
   triggerType: AutomationTriggerType;
   eventType?: string;
@@ -64,6 +67,8 @@ export interface AutomationTriggerDraft {
   conditions: TriggerCondition[];
   /** Slack triggers only: let other bots' messages trigger the automation. */
   includeBotMessages: boolean;
+  /** GitHub PR-event triggers only: commit status context; empty posts none. */
+  commitStatusContext: string;
   sentryClientSecret: string;
 }
 
@@ -142,6 +147,7 @@ export function createAutomationFormDraft(
       eventType: initialValues.eventType ?? "",
       conditions: initialValues.triggerConfig?.conditions ?? [],
       includeBotMessages: initialValues.triggerConfig?.slack?.includeBotMessages === true,
+      commitStatusContext: initialValues.commitStatusContext ?? "",
       sentryClientSecret: "",
     },
     agent: {
@@ -169,6 +175,7 @@ export function automationToFormValues(automation: Automation): InitialAutomatio
     maxRetries: automation.maxRetries,
     sandboxTimeoutMs: automation.sandboxTimeoutMs,
     maxConcurrentRuns: automation.maxConcurrentRuns,
+    commitStatusContext: automation.commitStatusContext,
     instructions: automation.instructions,
     triggerType: automation.triggerType,
     eventType: automation.eventType ?? undefined,
@@ -481,6 +488,15 @@ function buildSubmissionValues({
     values.triggerConfig.slack = { includeBotMessages: true };
   }
   if (draft.trigger.eventType) values.eventType = draft.trigger.eventType;
+  if (draft.trigger.type === "github_event") {
+    // Sent as null when the event cannot carry one, so switching a reporting
+    // automation to another event clears its context instead of being refused.
+    const commitStatusContext = draft.trigger.commitStatusContext.trim();
+    values.commitStatusContext =
+      githubEventSupportsCommitStatus(draft.trigger.eventType) && commitStatusContext
+        ? commitStatusContext
+        : null;
+  }
   if (draft.trigger.type === "sentry" && mode === "create") {
     values.sentryClientSecret = draft.trigger.sentryClientSecret.trim();
   }

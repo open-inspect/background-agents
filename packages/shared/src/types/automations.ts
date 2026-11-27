@@ -105,6 +105,19 @@ export const DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS = 1;
 
 const maxConcurrentRunsSchema = z.number().int().min(1).max(MAX_AUTOMATION_CONCURRENT_RUNS);
 
+/** Longest commit status context an automation may post under; GitHub allows 255. */
+export const MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH = 100;
+
+/**
+ * Commit status context a PR-event automation reports under (for example `open-inspect`),
+ * so branch protection can require it. Leading and trailing whitespace is trimmed.
+ */
+export const automationCommitStatusContextSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_AUTOMATION_COMMIT_STATUS_CONTEXT_LENGTH);
+
 /**
  * Validate target-count rules shared by automation clients and the API.
  * Repository-scoped triggers bind to exactly one repository and no
@@ -197,6 +210,11 @@ const automationSchema = z.object({
    * Defaulted so a web build that deploys before its control plane still parses responses.
    */
   maxConcurrentRuns: z.number().default(DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS),
+  /**
+   * Commit status context posted on the pull request's head commit for each run, or null
+   * when the automation posts none. Defaulted for control planes that predate it.
+   */
+  commitStatusContext: z.string().nullable().default(null),
   createdBy: z.string(),
   userId: z.string().refine(isCanonicalUserId, "Invalid canonical user ID").nullable(),
   ownerTeamId: z.string().nullable(),
@@ -304,6 +322,11 @@ export const createAutomationRequestSchema = z.object({
    * set above 1. Omission means DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
    */
   maxConcurrentRuns: maxConcurrentRunsSchema.optional(),
+  /**
+   * Commit status context to post on the PR head for each run. GitHub Event triggers on
+   * PR Opened, PR Updated or PR Ready for Review only; omission or null posts none.
+   */
+  commitStatusContext: automationCommitStatusContextSchema.nullable().optional(),
 });
 export type CreateAutomationRequest = z.input<typeof createAutomationRequestSchema>;
 
@@ -333,6 +356,8 @@ export const updateAutomationRequestSchema = z.object({
    * set above 1. Lowering it never interrupts firings already in flight.
    */
   maxConcurrentRuns: maxConcurrentRunsSchema.optional(),
+  /** Commit status context for PR-event runs; null stops posting, omission keeps it. */
+  commitStatusContext: automationCommitStatusContextSchema.nullable().optional(),
 });
 export type UpdateAutomationRequest = z.input<typeof updateAutomationRequestSchema>;
 

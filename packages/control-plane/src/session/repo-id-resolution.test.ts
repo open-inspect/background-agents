@@ -25,6 +25,7 @@ function stubProvider(
     listTree: () => notUsedHere("listTree"),
     readBlob: () => notUsedHere("readBlob"),
     getPullRequest: () => notUsedHere("getPullRequest"),
+    createCommitStatus: () => notUsedHere("createCommitStatus"),
     generatePushAuth: () => notUsedHere("generatePushAuth"),
     generateCredentialHelperAuth: () => notUsedHere("generateCredentialHelperAuth"),
     buildManualPullRequestUrl: () => notUsedHere("buildManualPullRequestUrl"),
