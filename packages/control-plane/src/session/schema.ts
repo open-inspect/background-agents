@@ -76,6 +76,11 @@ const STEP_USAGE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS step_usage (
   created_at INTEGER NOT NULL
 )`;
 
+const SESSION_COST_DAILY_TABLE_SQL = `CREATE TABLE IF NOT EXISTS session_cost_daily (
+  day_index INTEGER PRIMARY KEY,
+  cost_usd REAL NOT NULL
+)`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sandbox_preservation (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -187,6 +192,9 @@ CREATE TABLE IF NOT EXISTS events (
 -- Per-step usage, distinct from the timeline and from cumulative session cost.
 ${STEP_USAGE_TABLE_SQL};
 
+-- Session cost per UTC day it was incurred (day index = epoch ms / 86400000).
+${SESSION_COST_DAILY_TABLE_SQL};
+
 -- Artifacts (PRs, screenshots, video recordings, preview URLs)
 CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY,
@@ -292,6 +300,7 @@ CREATE INDEX IF NOT EXISTS idx_participants_user ON participants(user_id);
 
 import { createLogger } from "../logger";
 import type { SqlStorage } from "./sql-storage";
+import { MS_PER_DAY } from "../db/utc-day";
 
 const schemaLog = createLogger("schema");
 
@@ -822,6 +831,18 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
       env TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     )`,
+  },
+  {
+    id: 61,
+    description: "Book session cost per UTC day, seeding prior cost on the creation day",
+    run: (sql) => {
+      sql.exec(SESSION_COST_DAILY_TABLE_SQL);
+      sql.exec(
+        `INSERT INTO session_cost_daily (day_index, cost_usd)
+         SELECT created_at / ${MS_PER_DAY}, total_cost FROM session WHERE total_cost > 0
+         ON CONFLICT (day_index) DO NOTHING`
+      );
+    },
   },
 ];
 

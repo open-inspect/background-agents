@@ -1,6 +1,7 @@
 import {
   ANALYTICS_DAYS,
   ANALYTICS_SCOPES,
+  ANALYTICS_SPEND_SOURCES,
   DEFAULT_ANALYTICS_DAYS,
   DEFAULT_ANALYTICS_SCOPE,
   type AnalyticsBreakdownEntry,
@@ -9,6 +10,8 @@ import {
   type AnalyticsPullRequestFunnel,
   type AnalyticsScope,
   type AnalyticsSessionOriginEntry,
+  type AnalyticsSpendSource,
+  type AnalyticsSpendSourceEntry,
 } from "@open-inspect/shared/types/analytics";
 import type { SpawnSource } from "@open-inspect/shared/types/sessions";
 
@@ -51,6 +54,26 @@ export const ANALYTICS_SOURCE_LABELS: Record<SpawnSource, string> = {
   "linear-bot": "Linear",
   agent: "Agent sub-sessions",
   automation: "Automations",
+};
+
+export const ANALYTICS_SPEND_SOURCE_LABELS: Record<AnalyticsSpendSource, string> = {
+  user: "User / app",
+  "slack-bot": "Slack",
+  "linear-bot": "Linear",
+  "github-review": "Code review",
+  "github-mention": "PR @mention",
+  automation: "Automations",
+  agent: "Agent sub-sessions",
+};
+
+export const ANALYTICS_SPEND_SOURCE_COLORS: Record<AnalyticsSpendSource, string> = {
+  user: "var(--chart-1)",
+  "slack-bot": "var(--chart-2)",
+  "linear-bot": "var(--chart-3)",
+  "github-review": "var(--chart-4)",
+  "github-mention": "var(--chart-5)",
+  automation: "var(--chart-6)",
+  agent: "var(--chart-7)",
 };
 
 export const ANALYTICS_TABS = ["overview", "usage", "cost", "pull-requests", "people"] as const;
@@ -395,4 +418,42 @@ export function getCommonRepositoryOwner(keys: readonly string[]): string | null
 
 export function formatRepositoryName(key: string, commonOwner: string | null): string {
   return commonOwner && key.startsWith(`${commonOwner}/`) ? key.slice(commonOwner.length + 1) : key;
+}
+
+export type DailySpend = { date: string } & Record<AnalyticsSpendSource, number>;
+
+export function getDailySpendBySource(dashboard: AnalyticsDashboardResponse): DailySpend[] {
+  const byDate = new Map(dashboard.spend.daily.map((point) => [point.date, point.sources]));
+  return getAnalyticsWindowDates(dashboard.window).map((date) => {
+    const sources = byDate.get(date) ?? {};
+    const spend = Object.fromEntries(
+      ANALYTICS_SPEND_SOURCES.map((source) => [source, sources[source] ?? 0])
+    ) as Record<AnalyticsSpendSource, number>;
+    return { date, ...spend };
+  });
+}
+
+export const RUN_RATE_DAYS = 7;
+export const RUN_RATE_PERIOD_DAYS = 30;
+
+export function getMonthlySpendRunRate(dashboard: AnalyticsDashboardResponse): number {
+  const today = new Date(dashboard.window.endAt).toISOString().slice(0, 10);
+  const completeDays = getDailySpendBySource(dashboard)
+    .filter((day) => day.date < today)
+    .slice(-RUN_RATE_DAYS);
+  const spend = completeDays.reduce((sum, day) => sum + getDaySpend(day), 0);
+  return completeDays.length > 0 ? (spend / completeDays.length) * RUN_RATE_PERIOD_DAYS : 0;
+}
+
+export function getDaySpend(day: DailySpend): number {
+  return ANALYTICS_SPEND_SOURCES.reduce((sum, source) => sum + day[source], 0);
+}
+
+export function getSpendChange(entry: Pick<AnalyticsSpendSourceEntry, "cost" | "previousCost">) {
+  return entry.previousCost > 0 ? (entry.cost - entry.previousCost) / entry.previousCost : null;
+}
+
+export function getSpendSourceLabel(entry: AnalyticsSpendSourceEntry): string {
+  if (entry.source !== "automation") return ANALYTICS_SPEND_SOURCE_LABELS[entry.source];
+  return entry.automationName ?? "Deleted automation";
 }

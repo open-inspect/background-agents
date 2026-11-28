@@ -4,6 +4,17 @@ import type { TeamsEnforcementMode } from "../authorization/teams-enforcement";
 
 export type SessionReadScope = SessionViewer | { kind: "internal"; reason: string };
 
+/** Analytics counts what the reader may see, minus private sessions; internal reads count everything. */
+export function analyticsVisibilityPredicate(
+  alias: string,
+  readScope: SessionReadScope,
+  mode: TeamsEnforcementMode
+): { sql: string; params: unknown[] } {
+  return readScope.kind === "internal"
+    ? { sql: "", params: [] }
+    : visibleSessionsPredicate(alias, readScope, { mode, excludePrivate: true });
+}
+
 /** A SQL visibility check on a persisted session row, before pagination or aggregation. */
 export function visibleSessionsPredicate(
   alias: string,

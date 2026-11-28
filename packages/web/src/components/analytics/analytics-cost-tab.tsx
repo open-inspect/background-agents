@@ -4,6 +4,8 @@ import { AnalyticsKpiStrip } from "./analytics-kpis";
 import { AnalyticsPanel } from "./analytics-panel";
 import { AnalyticsCostTable } from "./cost-table";
 import { AnalyticsRunsTable } from "./runs-table";
+import { AnalyticsSpendPerDayChart } from "./spend-per-day-chart";
+import { AnalyticsSpendSourceTable } from "./spend-source-table";
 import { AnalyticsTokenTotals } from "./token-totals";
 
 /** What the sessions in scope cost, and where the spend goes. */
@@ -11,6 +13,19 @@ export function AnalyticsCostTab({ dashboard }: { dashboard: AnalyticsDashboardR
   return (
     <div className="space-y-4">
       <AnalyticsKpiStrip items={getCostKpis(dashboard)} />
+      <AnalyticsPanel
+        title="Spend per day"
+        description="Booked on the day the cost was incurred, not the day the session started"
+      >
+        <AnalyticsSpendPerDayChart dashboard={dashboard} />
+      </AnalyticsPanel>
+      <AnalyticsPanel
+        title="By source"
+        description="What started the work. Sub-sessions count toward the source of the session that spawned them; previous is the equally long period before."
+        bodyClassName="pt-2"
+      >
+        <AnalyticsSpendSourceTable dashboard={dashboard} />
+      </AnalyticsPanel>
       <div className="grid gap-4 xl:grid-cols-2">
         <AnalyticsPanel title="By model" bodyClassName="pt-2">
           <AnalyticsCostTable dashboard={dashboard} dimension="model" />

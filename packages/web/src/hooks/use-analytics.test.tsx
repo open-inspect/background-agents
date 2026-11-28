@@ -64,6 +64,7 @@ const snapshot = {
     harnesses: [],
   },
   runs: [],
+  spend: { daily: [], sources: [] },
 } satisfies AnalyticsDashboardResponse;
 
 describe("useAnalyticsDashboard", () => {

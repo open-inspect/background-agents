@@ -48,7 +48,7 @@ describe("AnalyticsDashboardStore", () => {
             ...emptyResult(),
             results: [{ source: "agent", user_key: "user-1", display_name: "Ada", sessions: 2 }],
           };
-        if (index === 19)
+        if (index === 21)
           return {
             ...emptyResult(),
             results: [
@@ -106,11 +106,11 @@ describe("AnalyticsDashboardStore", () => {
     });
 
     expect(batch).toHaveBeenCalledTimes(1);
-    expect(statements).toHaveLength(20);
-    expect(batchedStatements).toHaveLength(20);
+    expect(statements).toHaveLength(22);
+    expect(batchedStatements).toHaveLength(22);
     expect(batchedStatements.every((statement) => statements.includes(statement))).toBe(true);
-    expect(queries[19]).toContain("root.spawn_source IN (?)");
-    expect(statements[19].bind).toHaveBeenCalledWith(
+    expect(queries[21]).toContain("root.spawn_source IN (?)");
+    expect(statements[21].bind).toHaveBeenCalledWith(
       1_699_395_200_000,
       1_700_000_000_000,
       "agent",

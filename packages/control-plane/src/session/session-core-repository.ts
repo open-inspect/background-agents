@@ -10,8 +10,12 @@ import {
   type SessionRow,
 } from "./types";
 import { DEFAULT_BASE_BRANCH } from "../repos/default-branch";
+import type { SessionDailyCost } from "../db/session-index";
+import { MS_PER_DAY } from "../db/utc-day";
+import { z } from "zod";
 
 const sessionCostRowSchema = sessionRowSchema.pick({ total_cost: true });
+const dailyCostRowSchema = z.object({ day_index: z.number().int(), cost_usd: z.number() });
 
 /** Data for upserting a session. */
 export interface UpsertSessionData {
@@ -200,7 +204,25 @@ export class SessionCoreRepository {
     const parsed = sessionCostRowSchema.safeParse(row);
     if (!parsed.success)
       throw new SessionStorageIntegrityError("Malformed persisted session cost row");
+    this.sql.exec(
+      `INSERT INTO session_cost_daily (day_index, cost_usd) VALUES (?, ?)
+       ON CONFLICT (day_index) DO UPDATE SET cost_usd = cost_usd + excluded.cost_usd`,
+      Math.floor(updatedAt / MS_PER_DAY),
+      cost
+    );
     return parsed.data.total_cost;
+  }
+
+  listDailyCosts(): SessionDailyCost[] {
+    const rows = this.sql
+      .exec(`SELECT day_index, cost_usd FROM session_cost_daily ORDER BY day_index`)
+      .toArray();
+    return rows.map((row) => {
+      const parsed = dailyCostRowSchema.safeParse(row);
+      if (!parsed.success)
+        throw new SessionStorageIntegrityError("Malformed persisted daily cost row");
+      return { dayIndex: parsed.data.day_index, costUsd: parsed.data.cost_usd };
+    });
   }
 
   setSessionBudget(maxCostUsd: number | null, exhausted: boolean, updatedAt: number): void {

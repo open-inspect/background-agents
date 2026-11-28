@@ -54,6 +54,19 @@ import { z } from "zod";
 
 const CHILD_ADMISSION_LEASE_TTL_MS = 5 * 60 * 1000;
 
+const DAILY_COST_PARAMETERS_PER_ROW = 2;
+const SESSION_ID_BINDS_PER_DAILY_COST_STATEMENT = 2;
+const DAILY_COST_ROWS_PER_STATEMENT = Math.floor(
+  (MAX_D1_QUERY_PARAMETERS - SESSION_ID_BINDS_PER_DAILY_COST_STATEMENT) /
+    DAILY_COST_PARAMETERS_PER_ROW
+);
+
+/** A session's cost on one UTC day; `dayIndex` is epoch milliseconds / `MS_PER_DAY`. */
+export interface SessionDailyCost {
+  dayIndex: number;
+  costUsd: number;
+}
+
 export interface ChildAdmissionLease {
   token: string;
   childSessionId: string;
@@ -789,29 +802,54 @@ export class SessionIndexStore {
       reasoningTokens: number;
       cacheReadTokens: number;
       cacheWriteTokens: number;
+      dailyCosts: readonly SessionDailyCost[];
     }
   ): Promise<boolean> {
-    const result = await this.db
-      .prepare(
-        `UPDATE sessions SET total_cost = ?, active_duration_ms = ?, message_count = ?, pr_count = ?,
-           input_tokens = ?, output_tokens = ?, reasoning_tokens = ?, cache_read_tokens = ?,
-           cache_write_tokens = ?
-         WHERE id = ?`
-      )
-      .bind(
-        metrics.totalCost,
-        metrics.activeDurationMs,
-        metrics.messageCount,
-        metrics.prCount,
-        metrics.inputTokens,
-        metrics.outputTokens,
-        metrics.reasoningTokens,
-        metrics.cacheReadTokens,
-        metrics.cacheWriteTokens,
-        id
-      )
-      .run();
+    const [result] = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE sessions SET total_cost = ?, active_duration_ms = ?, message_count = ?, pr_count = ?,
+             input_tokens = ?, output_tokens = ?, reasoning_tokens = ?, cache_read_tokens = ?,
+             cache_write_tokens = ?
+           WHERE id = ?`
+        )
+        .bind(
+          metrics.totalCost,
+          metrics.activeDurationMs,
+          metrics.messageCount,
+          metrics.prCount,
+          metrics.inputTokens,
+          metrics.outputTokens,
+          metrics.reasoningTokens,
+          metrics.cacheReadTokens,
+          metrics.cacheWriteTokens,
+          id
+        ),
+      this.db.prepare("DELETE FROM session_usage_daily WHERE session_id = ?").bind(id),
+      ...this.prepareDailyCostInserts(id, metrics.dailyCosts),
+    ]);
     return (result.meta?.changes ?? 0) > 0;
+  }
+
+  private prepareDailyCostInserts(
+    id: string,
+    dailyCosts: readonly SessionDailyCost[]
+  ): SqlStatement[] {
+    const statements: SqlStatement[] = [];
+    for (let start = 0; start < dailyCosts.length; start += DAILY_COST_ROWS_PER_STATEMENT) {
+      const chunk = dailyCosts.slice(start, start + DAILY_COST_ROWS_PER_STATEMENT);
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO session_usage_daily (session_id, day_index, cost_usd)
+             SELECT ?, day.column1, day.column2
+             FROM (VALUES ${chunk.map(() => "(?, ?)").join(", ")}) day
+             WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?)`
+          )
+          .bind(id, ...chunk.flatMap((day) => [day.dayIndex, day.costUsd]), id)
+      );
+    }
+    return statements;
   }
 
   /**

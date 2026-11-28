@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { applyMigrations, initSchema, MIGRATIONS, SCHEMA_SQL } from "./schema";
 import type { SqlResult, SqlStorage } from "./sql-storage";
 import { createNodeSqlStorage } from "../node/sqlite-storage";
+import { MS_PER_DAY } from "../db/utc-day";
 
 /**
  * Create a mock SqlStorage that tracks calls and supports per-query data.
@@ -327,6 +328,34 @@ describe("applyMigrations", () => {
       migrated.close();
     }
   });
+
+  it.each([
+    { totalCost: 4.5, expected: [{ day_index: 20_000, cost_usd: 4.5 }] },
+    { totalCost: 0, expected: [] },
+  ])(
+    "seeds the daily cost ledger of an existing DO with $totalCost on its creation day",
+    ({ totalCost, expected }) => {
+      const migration = MIGRATIONS.find(({ id }) => id === 61);
+      if (typeof migration?.run !== "function") throw new Error("Expected function migration 61");
+      const db = new DatabaseSync(":memory:");
+      try {
+        const sql = createDatabaseSql(db);
+        initSchema(sql);
+        db.exec("DROP TABLE session_cost_daily");
+        db.prepare(
+          "INSERT INTO session (id, total_cost, created_at, updated_at) VALUES ('s', ?, ?, ?)"
+        ).run(totalCost, 20_000 * MS_PER_DAY + 5, 20_003 * MS_PER_DAY);
+
+        migration.run(sql);
+
+        expect(db.prepare("SELECT day_index, cost_usd FROM session_cost_daily").all()).toEqual(
+          expected
+        );
+      } finally {
+        db.close();
+      }
+    }
+  );
 
   it("adds WebSocket authorization lease state for fresh and migrated DOs", () => {
     expect(SCHEMA_SQL).toContain("authorization_expires_at INTEGER NOT NULL");

@@ -426,6 +426,7 @@ export class SessionStatusService {
       reasoningTokens: tokens.reasoningTokens ?? 0,
       cacheReadTokens: tokens.cacheReadTokens ?? 0,
       cacheWriteTokens: tokens.cacheWriteTokens ?? 0,
+      dailyCosts: this.repository.listDailyCosts(),
     });
   }
 }

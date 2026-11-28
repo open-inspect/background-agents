@@ -56,6 +56,9 @@ describe("codex accounting", () => {
     expect(await queryDO(stub, "SELECT total_cost, budget_exhausted FROM session")).toEqual([
       { total_cost: 1.25, budget_exhausted: 0 },
     ]);
+    expect(await queryDO(stub, "SELECT cost_usd FROM session_cost_daily")).toEqual([
+      { cost_usd: 1.25 },
+    ]);
     const trace = await traceUsage();
     expect(trace.usage).toHaveLength(1);
     expect(trace.usage[0]).toMatchObject({

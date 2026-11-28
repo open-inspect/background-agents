@@ -10,11 +10,12 @@ import type {
 } from "@open-inspect/shared/types/analytics";
 import type { SpawnSource } from "@open-inspect/shared/types/sessions";
 import type { HarnessId } from "@open-inspect/shared/harnesses";
-import { SessionIndexStore } from "../../src/db/session-index";
+import { SessionIndexStore, type SessionDailyCost } from "../../src/db/session-index";
 import { TeamMembershipStore } from "../../src/db/team-memberships";
 import { SessionRunStore } from "../../src/db/session-run-store";
 import { AnalyticsStore } from "../../src/db/analytics-store";
 import { AnalyticsDashboardStore } from "../../src/db/analytics-dashboard-store";
+import { MS_PER_DAY } from "../../src/db/utc-day";
 import { cleanD1Tables } from "./cleanup";
 import { routeRequest, serviceFetch, serviceRequestHeaders } from "./helpers";
 
@@ -43,6 +44,7 @@ async function seedSession(
     visibility?: "workspace" | "team" | "private";
     parentSessionId?: string;
     spawnSource?: SpawnSource;
+    githubReview?: boolean;
     harness?: HarnessId;
     automationId?: string;
     model?: string;
@@ -54,6 +56,7 @@ async function seedSession(
     messageCount: number;
     prCount: number;
     tokens?: AnalyticsTokenTotals;
+    dailyCosts?: SessionDailyCost[];
   }
 ): Promise<void> {
   await store.create({
@@ -74,6 +77,7 @@ async function seedSession(
     scmLogin: input.scmLogin,
     userId: input.userId,
     parentSessionId: input.parentSessionId,
+    githubReview: input.githubReview,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
   });
@@ -88,6 +92,7 @@ async function seedSession(
     reasoningTokens: input.tokens?.reasoningTokens ?? 0,
     cacheReadTokens: input.tokens?.cacheReadTokens ?? 0,
     cacheWriteTokens: input.tokens?.cacheWriteTokens ?? 0,
+    dailyCosts: input.dailyCosts ?? [],
   });
 }
 
@@ -1462,5 +1467,87 @@ describe("Analytics API", () => {
     ).json<AnalyticsDashboardResponse>();
     expect(dashboard.breakdowns.provider).toEqual(providers);
     expect(dashboard.breakdowns.model).toEqual(models);
+  });
+
+  it("books spend on the day incurred, attributed to the root's source, against the previous window", async () => {
+    const store = new SessionIndexStore(env.DB);
+    const day = 20_000;
+    await env.DB.prepare(
+      `INSERT INTO automations
+      (id, name, instructions, trigger_type, schedule_tz, model, enabled, consecutive_failures, created_by, created_at, updated_at)
+      VALUES ('daily', 'Daily', 'Test', 'schedule', 'UTC', 'openai/gpt-5', 1, 0, 'test-user', 1, 1)`
+    ).run();
+    const sessions: Array<{
+      id: string;
+      spawnSource: SpawnSource;
+      parentSessionId?: string;
+      githubReview?: boolean;
+      automationId?: string;
+      visibility?: "private";
+      days: Array<[number, number]>;
+    }> = [
+      {
+        id: "web",
+        spawnSource: "user",
+        days: [
+          [day - 6, 100],
+          [day + 1, 5],
+          [day + 4, 2],
+          [day + 10, 1],
+        ],
+      },
+      { id: "web-child", spawnSource: "agent", parentSessionId: "web", days: [[day + 5, 0.5]] },
+      { id: "review", spawnSource: "github-bot", githubReview: true, days: [[day + 4, 3]] },
+      { id: "mention", spawnSource: "github-bot", githubReview: false, days: [[day + 6, 1]] },
+      { id: "auto", spawnSource: "automation", automationId: "daily", days: [[day + 3, 4]] },
+      { id: "hidden", spawnSource: "user", visibility: "private", days: [[day + 4, 50]] },
+    ];
+    for (const session of sessions) {
+      await seedSession(store, {
+        ...session,
+        repoOwner: null,
+        repoName: null,
+        scmLogin: null,
+        status: "completed",
+        createdAt: day * MS_PER_DAY,
+        updatedAt: day * MS_PER_DAY,
+        totalCost: session.days.reduce((sum, [, cost]) => sum + cost, 0),
+        activeDurationMs: 0,
+        messageCount: 0,
+        prCount: 0,
+        dailyCosts: session.days.map(([dayIndex, costUsd]) => ({ dayIndex, costUsd })),
+      });
+    }
+    const dashboard = new AnalyticsDashboardStore(env.DB, { kind: "service", teamId: null }, "on");
+    const endAt = (day + 10) * MS_PER_DAY + 3_600_000;
+    const window = { days: 7 as const, startAt: endAt - 7 * MS_PER_DAY, endAt };
+
+    const all = (await dashboard.get({ ...window, scope: "all" })).spend;
+    const human = (await dashboard.get({ ...window, scope: "human" })).spend;
+
+    const date = (offset: number) =>
+      new Date((day + offset) * MS_PER_DAY).toISOString().slice(0, 10);
+    expect(all.daily).toEqual([
+      { date: date(3), sources: { automation: 4 } },
+      { date: date(4), sources: { user: 2, "github-review": 3 } },
+      { date: date(5), sources: { user: 0.5 } },
+      { date: date(6), sources: { "github-mention": 1 } },
+      { date: date(10), sources: { user: 1 } },
+    ]);
+    expect(all.sources).toEqual([
+      {
+        source: "automation",
+        automationId: "daily",
+        automationName: "Daily",
+        runs: 1,
+        cost: 4,
+        previousCost: 0,
+      },
+      { source: "user", runs: 1, cost: 3.5, previousCost: 5 },
+      { source: "github-review", runs: 1, cost: 3, previousCost: 0 },
+      { source: "github-mention", runs: 1, cost: 1, previousCost: 0 },
+    ]);
+    expect(human.sources).toContainEqual({ source: "user", runs: 1, cost: 3, previousCost: 5 });
+    expect(human.sources.some((entry) => entry.source === "automation")).toBe(false);
   });
 });

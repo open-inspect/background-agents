@@ -148,6 +148,56 @@ export interface AnalyticsRunsResponse {
   runs: SessionRun[];
 }
 
+// ─── Spend by day and source ─────────────────────────────────────────────────
+
+/**
+ * What started the work a cost belongs to: the root session's spawn source,
+ * with GitHub bot sessions split into pull-request reviews and @mentions.
+ * `agent` remains only for sub-sessions whose root is gone.
+ */
+export const ANALYTICS_SPEND_SOURCES = [
+  "user",
+  "slack-bot",
+  "linear-bot",
+  "github-review",
+  "github-mention",
+  "automation",
+  "agent",
+] as const;
+export type AnalyticsSpendSource = (typeof ANALYTICS_SPEND_SOURCES)[number];
+
+export interface AnalyticsDailySpendPoint {
+  date: string;
+  /** Cost incurred that day by source; sources without cost are absent. */
+  sources: Partial<Record<AnalyticsSpendSource, number>>;
+}
+
+interface AnalyticsSpendTotals {
+  /** Root sessions that incurred cost in the window. */
+  runs: number;
+  /** Cost incurred in the window. */
+  cost: number;
+  /** Cost incurred in the equally long window just before it. */
+  previousCost: number;
+}
+
+/** One row per source, except automations, which get one row per automation. */
+export type AnalyticsSpendSourceEntry = AnalyticsSpendTotals &
+  (
+    | { source: Exclude<AnalyticsSpendSource, "automation"> }
+    | {
+        source: "automation";
+        /** Null when the automation no longer exists. */
+        automationId: string | null;
+        automationName: string | null;
+      }
+  );
+
+export interface AnalyticsSpendResponse {
+  daily: AnalyticsDailySpendPoint[];
+  sources: AnalyticsSpendSourceEntry[];
+}
+
 // ─── Pull-request analytics ──────────────────────────────────────────────────
 //
 // PR-scoped by design (docs/pr-analytics-design.md §2): sessions serve many
@@ -246,4 +296,5 @@ export interface AnalyticsDashboardResponse {
   };
   pullRequests: AnalyticsPullRequestsResponse;
   runs: SessionRun[];
+  spend: AnalyticsSpendResponse;
 }
