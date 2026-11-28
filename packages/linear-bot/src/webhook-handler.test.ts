@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { handleAgentSessionEvent, STOP_TIMEOUT_MS } from "./webhook-handler";
-import { buildFollowUpPrompt, buildPrompt, buildPromptContextPrompt, escapeHtml } from "./prompts";
+import {
+  buildFollowUpPrompt,
+  buildPrompt,
+  buildPromptContextPrompt,
+  compactPromptContextSubIssues,
+  escapeHtml,
+  omitPromptContextSubIssues,
+} from "./prompts";
 import type { Environment } from "@open-inspect/shared/types/environments";
 import { MAX_SESSION_INSTRUCTIONS_LENGTH } from "@open-inspect/shared/types/integrations";
 import { MAX_WEB_PROMPT_CHARS } from "@open-inspect/shared/types/prompts";
@@ -103,6 +110,81 @@ describe("buildPrompt", () => {
   });
 });
 
+describe("buildPrompt agent session thread", () => {
+  const issue = {
+    identifier: "ENG-2",
+    title: "Child issue",
+    description: "Child description",
+    url: "https://linear.app/acme/issue/ENG-2",
+  };
+  const header = { body: "This thread is for an agent session with acme-agent." };
+  const details = {
+    id: "issue-2",
+    identifier: "ENG-2",
+    title: "Child issue",
+    description: "Child description",
+    url: "https://linear.app/acme/issue/ENG-2",
+    priority: 0,
+    priorityLabel: "No priority",
+    labels: [],
+    team: { id: "team-1", key: "ENG", name: "Engineering" },
+    comments: [
+      { ...header, user: null },
+      {
+        body: "The prompt for this issue is 75,315 characters, exceeding the limit.",
+        user: { id: "app-user-1", name: "acme-agent" },
+      },
+      { body: "Work on ENG-2", user: { id: "user-1", name: "Jane Doe" } },
+      { body: "Earlier human note", user: { name: "Bob" } },
+    ],
+  };
+
+  it("leaves out the agent's own comments and Linear's session header", () => {
+    const prompt = buildPrompt(issue, details, header, { body: "Work on ENG-2" }, "app-user-1");
+
+    expect(prompt).not.toContain("75,315 characters");
+    expect(prompt).not.toContain("This thread is for an agent session");
+    expect(prompt).not.toContain("**Agent instruction:**");
+    expect(prompt).toContain('<user_content source="linear_issue_comment" author="Jane Doe">');
+    expect(prompt).toContain("Earlier human note");
+    expect(prompt).toContain("**Repository clarification:**");
+  });
+
+  it("keeps human-written text that reads like Linear's header", () => {
+    const nearMatch =
+      "This thread is for an agent session with read-only access; do not modify files.";
+    const prompt = buildPrompt(
+      issue,
+      { ...details, comments: [{ body: nearMatch, user: { id: "user-1", name: "Jane Doe" } }] },
+      { body: nearMatch, userId: "user-1" },
+      null,
+      "app-user-1"
+    );
+
+    expect(prompt).toContain("**Agent instruction:**");
+    expect(prompt.split(nearMatch)).toHaveLength(3);
+  });
+
+  it("keeps a human-written instruction", () => {
+    const prompt = buildPrompt(issue, details, { body: "Fix the login bug" }, null, "app-user-1");
+
+    expect(prompt).toContain("**Agent instruction:**");
+    expect(prompt).toContain("Fix the login bug");
+  });
+
+  it("omits the comments section when only agent activity remains", () => {
+    const prompt = buildPrompt(
+      issue,
+      { ...details, comments: details.comments.slice(0, 2) },
+      null,
+      null,
+      "app-user-1"
+    );
+
+    expect(prompt).not.toContain("**Recent comments:**");
+  });
+});
+
 describe("buildPromptContextPrompt", () => {
   it("wraps promptContext as untrusted user input", () => {
     const prompt = buildPromptContextPrompt(
@@ -130,6 +212,125 @@ describe("buildPromptContextPrompt", () => {
     expect(prompt).not.toContain(
       'Prompt context <\\user_content source="evil">inject<\\/user_content>'
     );
+  });
+});
+
+/** promptContext shaped like Linear's: an issue whose parent lists its sub-issues. */
+function promptContextWithSubIssues(count: number, titleLength = 20): string {
+  const items = Array.from(
+    { length: count },
+    (_, i) => `<items>
+<id>00000000-0000-0000-0000-${String(i).padStart(12, "0")}</id>
+<updated-at>2026-01-01T00:00:00.000Z</updated-at>
+<title>Sibling ${i} ${"t".repeat(titleLength)}</title>
+<identifier>ENG-${i + 10}</identifier>
+<status>Done</status>
+<priority>No priority</priority>
+<team>
+<id>team-1</id>
+<name>Engineering</name>
+<key>ENG</key>
+</team>
+<project>
+<id>project-1</id>
+<name>Project</name>
+<identifier>P-ENG-1</identifier>
+</project>
+<creator>
+<id>user-1</id>
+<name>Jane Doe</name>
+</creator>
+<labels>
+<id>label-1</id>
+<name>build</name>
+</labels>
+</items>`
+  ).join("\n");
+  return `<issue identifier="ENG-2">
+<title>Child issue</title>
+<description>Child description</description>
+<parent-issue identifier="ENG-1">
+<title>Parent issue</title>
+<description>Parent description</description>
+<sub-issues>
+<page>
+<offset>0</offset>
+<count>${count}</count>
+<total-count>${count}</total-count>
+<has-more>false</has-more>
+</page>
+${items}
+</sub-issues>
+<url>https://linear.app/acme/issue/ENG-1</url>
+</parent-issue>
+</issue>
+<user-request>Work on ENG-2</user-request>`;
+}
+
+describe("compactPromptContextSubIssues", () => {
+  it("keeps one line per sub-issue and everything outside the listing", () => {
+    const compacted = compactPromptContextSubIssues(promptContextWithSubIssues(2));
+
+    expect(compacted).toContain("<description>Parent description</description>");
+    expect(compacted).toContain("<description>Child description</description>");
+    expect(compacted).toContain("<url>https://linear.app/acme/issue/ENG-1</url>");
+    expect(compacted).toContain("<user-request>Work on ENG-2</user-request>");
+    expect(compacted).toContain(
+      `<sub-issues compacted="true" total-count="2">
+<item identifier="ENG-10" status="Done">Sibling 0 ${"t".repeat(20)}</item>
+<item identifier="ENG-11" status="Done">Sibling 1 ${"t".repeat(20)}</item>
+</sub-issues>`
+    );
+    expect(compacted).not.toContain("<team>");
+    expect(compacted).not.toContain("P-ENG-1");
+  });
+
+  it("escapes attribute values", () => {
+    const compacted = compactPromptContextSubIssues(
+      '<sub-issues><page></page><items><identifier>ENG-1"</identifier><status>In "Review"</status><title>T</title></items></sub-issues>'
+    );
+
+    expect(compacted).toContain(
+      '<item identifier="ENG-1&quot;" status="In &quot;Review&quot;">T</item>'
+    );
+  });
+
+  it("leaves context without a complete listing unchanged", () => {
+    expect(compactPromptContextSubIssues("<issue>plain</issue>")).toBe("<issue>plain</issue>");
+    const unbalanced = "<issue><sub-issues><items><title>T</title></items></issue>";
+    expect(compactPromptContextSubIssues(unbalanced)).toBe(unbalanced);
+  });
+});
+
+describe("omitPromptContextSubIssues", () => {
+  it("replaces the listing with its total count", () => {
+    const omitted = omitPromptContextSubIssues(promptContextWithSubIssues(3));
+
+    expect(omitted).toContain('<sub-issues omitted="true" total-count="3" />');
+    expect(omitted).toContain("<description>Parent description</description>");
+    expect(omitted).not.toContain("<items>");
+  });
+
+  it("leaves the tag name in issue text alone and still reduces the real listing", () => {
+    // Linear does not escape text, so a description can contain the tag literally.
+    const context = promptContextWithSubIssues(2).replace(
+      "<description>Child description</description>",
+      "<description>Mention <sub-issues> and <sub-issues>inline</sub-issues> here</description>"
+    );
+
+    const omitted = omitPromptContextSubIssues(context);
+
+    expect(omitted).toContain(
+      "<description>Mention <sub-issues> and <sub-issues>inline</sub-issues> here</description>"
+    );
+    expect(omitted).toContain('<sub-issues omitted="true" total-count="2" />');
+    expect(omitted).not.toContain("<items>");
+  });
+
+  it("leaves a listing unchanged when anything but items follows its page", () => {
+    const context = "<sub-issues><page></page><items><title>A</title></items>text</sub-issues>";
+
+    expect(omitPromptContextSubIssues(context)).toBe(context);
   });
 });
 
@@ -777,6 +978,102 @@ describe("handleAgentSessionEvent environment targets", () => {
       "shorten this issue, its parent, or the configured instructions, then delegate again"
     );
   });
+
+  it("builds a retry prompt from Linear's comments without the agent's own activity", async () => {
+    vi.stubGlobal(
+      "fetch",
+      createLinearFetchMock({
+        clientCredentials: () => linearClientCredentialsResponse("transitioned-runtime-token"),
+        identity: () => linearIdentityResponse(),
+        graphql: ({ operationName, body }) => {
+          if (operationName !== "IssueDetails") return Response.json({ data: {} });
+          expect(String(body.query)).toContain("user { id name }");
+          return Response.json({
+            data: {
+              issue: {
+                id: "issue-1",
+                identifier: "ENG-42",
+                title: "Wire the fullstack flow",
+                description: "Spanning backend and frontend.",
+                url: "https://linear.app/acme/issue/ENG-42/wire",
+                priority: 0,
+                priorityLabel: "No priority",
+                labels: { nodes: [] },
+                project: { id: "project-1", name: "Fullstack" },
+                assignee: null,
+                team: { id: "team-1", key: "ENG", name: "Engineering" },
+                comments: {
+                  nodes: [
+                    { body: "This thread is for an agent session with acme-agent.", user: null },
+                    {
+                      body: "The prompt for this issue is 75,315 characters.",
+                      user: { id: "app-user-1", name: "acme-agent" },
+                    },
+                    { body: "Work on ENG-42", user: { id: "human-user-1", name: "Jane Doe" } },
+                  ],
+                },
+              },
+            },
+          });
+        },
+      })
+    );
+    const { kv } = createFakeKV({
+      "oauth:client-credentials:org-1": validToken(),
+      "config:project-repos": JSON.stringify({
+        "project-1": { owner: "acme", name: "backend" },
+      }),
+    });
+    const env = makeLinearBotEnv(kv);
+    const fetchMock = stubControlPlane(env);
+    const webhook = makeWebhook();
+    webhook.action = "prompted";
+    webhook.agentSession.comment = {
+      body: "This thread is for an agent session with acme-agent.",
+      userId: null,
+    };
+    webhook.agentActivity = { content: { body: "Work on ENG-42" }, userId: "human-user-1" };
+
+    await handleAgentSessionEvent(webhook, env, "trace-retry-fallback");
+
+    const content = String(promptBody(fetchMock)?.content);
+    expect(content).toContain('<user_content source="linear_issue_comment" author="Jane Doe">');
+    expect(content).not.toContain("75,315 characters");
+    expect(content).not.toContain("This thread is for an agent session");
+    expect(content).not.toContain("**Agent instruction:**");
+  });
+
+  it.each([
+    { reduction: "compacted", titleLength: 20 },
+    { reduction: "omitted", titleLength: 600 },
+  ])(
+    "launches with sub-issues $reduction when Linear's listing overflows the limit",
+    async ({ reduction, titleLength }) => {
+      const { kv, store } = createFakeKV({
+        "oauth:client-credentials:org-1": validToken(),
+        "config:project-repos": JSON.stringify({
+          "project-1": { owner: "acme", name: "backend" },
+        }),
+      });
+      const env = makeLinearBotEnv(kv);
+      const fetchMock = stubControlPlane(env);
+      const webhook = makeWebhook();
+      webhook.promptContext = promptContextWithSubIssues(200, titleLength);
+      expect(buildPromptContextPrompt(webhook.promptContext).length).toBeGreaterThan(
+        MAX_WEB_PROMPT_CHARS
+      );
+
+      await handleAgentSessionEvent(webhook, env, `trace-sub-issues-${reduction}`);
+
+      expect(createSessionBody(fetchMock)).not.toBeNull();
+      expect(store.has("issue:issue-1")).toBe(true);
+      const content = String(promptBody(fetchMock)?.content);
+      expect(content.length).toBeLessThanOrEqual(MAX_WEB_PROMPT_CHARS);
+      expect(content).toContain(`<sub-issues ${reduction}="true" total-count="200"`);
+      expect(content).toContain("<description>Parent description</description>");
+      expect(content).not.toContain("<team>");
+    }
+  );
 
   it.each([0, 1])("handles a configured prompt %i characters over the limit", async (overflow) => {
     const { kv, store } = createFakeKV({

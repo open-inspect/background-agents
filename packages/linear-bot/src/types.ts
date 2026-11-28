@@ -134,7 +134,7 @@ export type IssueSession = z.infer<typeof issueSessionSchema>;
 const linearNameSchema = z.object({ id: z.string(), name: z.string() });
 const linearCommentSchema = z.object({
   body: z.string(),
-  user: z.object({ name: z.string() }).nullable().optional(),
+  user: z.object({ id: z.string().optional(), name: z.string() }).nullable().optional(),
 });
 
 const linearIssueDetailsSchema = z

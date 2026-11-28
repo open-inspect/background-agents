@@ -283,7 +283,7 @@ export async function fetchIssueDetails(
           comments(first: 10, orderBy: createdAt) {
             nodes {
               body
-              user { name }
+              user { id name }
             }
           }
         }
